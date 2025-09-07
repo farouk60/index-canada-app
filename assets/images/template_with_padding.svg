@@ -1,0 +1,19 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Fond blanc complet -->
+  <rect width="1024" height="1024" fill="#ffffff"/>
+  
+  <!-- Zone centrale pour votre logo (50% de la taille totale = beaucoup d'espace blanc) -->
+  <rect x="256" y="256" width="512" height="512" fill="#f0f0f0" stroke="#ddd" stroke-width="2" opacity="0.3"/>
+  
+  <!-- Instructions pour remplacer par votre logo -->
+  <text x="512" y="400" text-anchor="middle" fill="#666" font-size="48" font-family="Arial">Placez votre logo ici</text>
+  <text x="512" y="460" text-anchor="middle" fill="#666" font-size="36" font-family="Arial">dans cette zone centrale</text>
+  <text x="512" y="520" text-anchor="middle" fill="#666" font-size="36" font-family="Arial">(50% de la taille)</text>
+  <text x="512" y="580" text-anchor="middle" fill="#666" font-size="36" font-family="Arial">= 50% d'espace blanc visible</text>
+  
+  <!-- Indicateurs d'espace blanc -->
+  <text x="128" y="100" text-anchor="middle" fill="#999" font-size="24">Espace blanc</text>
+  <text x="896" y="100" text-anchor="middle" fill="#999" font-size="24">Espace blanc</text>
+  <text x="128" y="950" text-anchor="middle" fill="#999" font-size="24">Espace blanc</text>
+  <text x="896" y="950" text-anchor="middle" fill="#999" font-size="24">Espace blanc</text>
+</svg>

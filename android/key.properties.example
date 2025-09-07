@@ -1,0 +1,11 @@
+# Example key.properties for signing
+# Copy this file to android/key.properties and fill the values.
+
+storePassword=YOUR_STORE_PASSWORD
+keyPassword=YOUR_KEY_PASSWORD
+keyAlias=upload
+storeFile=../upload-keystore.jks
+
+# Generate a keystore locally with:
+# keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+# Place the generated upload-keystore.jks in the android/ directory and update storeFile path accordingly.

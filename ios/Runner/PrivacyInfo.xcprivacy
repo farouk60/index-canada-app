@@ -1,0 +1,19 @@
+{
+  "privacy": {
+    "tracking": {
+      "usesAppTrackingTransparency": false
+    },
+    "accessedAPITypes": [
+      {
+        "category": "photos",
+        "reason": "Display user-provided profile and gallery photos",
+        "optional": true
+      },
+      {
+        "category": "location",
+        "reason": "Show nearby professionals and provide directions",
+        "optional": true
+      }
+    ]
+  }
+}

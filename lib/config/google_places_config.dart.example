@@ -1,0 +1,20 @@
+class GooglePlacesConfig {
+  // Clé API Google Places
+  // IMPORTANT: Remplacez cette valeur par votre vraie clé API Google Places
+  // Vous pouvez obtenir une clé API ici: https://console.cloud.google.com/
+  // Assurez-vous d'activer l'API Places et de restricter la clé pour la sécurité
+  static const String apiKey = 'YOUR_GOOGLE_PLACES_API_KEY';
+  
+  // Configuration pour les requêtes Places
+  static const String baseUrl = 'https://maps.googleapis.com/maps/api/place';
+  static const String autocompleteEndpoint = '/autocomplete/json';
+  static const String detailsEndpoint = '/details/json';
+  
+  // Paramètres par défaut
+  static const String defaultCountry = 'ca'; // Canada
+  static const String defaultLanguage = 'fr'; // Français
+  static const String defaultTypes = 'address'; // Adresses uniquement
+  
+  // Vérifie si la clé API est configurée
+  static bool get isConfigured => apiKey != 'YOUR_GOOGLE_PLACES_API_KEY';
+}
