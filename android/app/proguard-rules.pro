@@ -25,10 +25,6 @@
     public static void main(java.lang.String[]);
 }
 
-# Firebase
--keep class com.google.firebase.** { *; }
--dontwarn com.google.firebase.**
-
 # Image picker and file picker
 -keep class io.flutter.plugins.imagepicker.** { *; }
 -keep class com.mr.flutter.plugin.filepicker.** { *; }

@@ -76,13 +76,15 @@ class DataService {
 
   /// Méthode privée pour récupérer les données depuis l'API
   Future<Map<String, dynamic>> _fetchAllData({bool forceRefresh = false}) async {
-    // Éviter les requêtes multiples simultanées
-    if (_isRequestInProgress && _pendingRequest != null && !forceRefresh) {
+    // Éviter les requêtes multiples simultanées (même si forceRefresh est demandé)
+    // On attend la requête en cours pour éviter les courses aux accès sur _pendingRequest
+    if (_isRequestInProgress && _pendingRequest != null) {
       return await _pendingRequest!.future;
     }
 
     _isRequestInProgress = true;
     _pendingRequest = Completer<Map<String, dynamic>>();
+    final localCompleter = _pendingRequest!; // capturer une référence stable
 
     try {
       print('🌐 Récupération des données depuis Wix...');
@@ -108,7 +110,9 @@ class DataService {
         _cachedData = data;
         
         print('✅ Données récupérées et mises en cache avec succès');
-        _pendingRequest!.complete(data);
+        if (!localCompleter.isCompleted) {
+          localCompleter.complete(data);
+        }
         
         return data;
       } else {
@@ -116,11 +120,20 @@ class DataService {
       }
     } catch (e) {
       print('❌ Erreur lors de la récupération des données: $e');
-      _pendingRequest!.completeError(e);
+      if (!localCompleter.isCompleted) {
+        try {
+          localCompleter.completeError(e);
+        } catch (_) {
+          // ignorer les erreurs de double complétion
+        }
+      }
       throw e;
     } finally {
-      _isRequestInProgress = false;
-      _pendingRequest = null;
+      // Ne remettre à zéro que si nous sommes toujours le completer actif
+      if (identical(_pendingRequest, localCompleter) || _pendingRequest == null) {
+        _isRequestInProgress = false;
+        _pendingRequest = null;
+      }
     }
   }
 

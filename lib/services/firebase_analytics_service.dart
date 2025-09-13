@@ -1,366 +1,124 @@
-import 'package:firebase_analytics/firebase_analytics.dart';
-import 'package:firebase_core/firebase_core.dart';
-import '../firebase_options.dart';
-
+// Firebase Analytics Service Stub (disabled for privacy compliance)
 class FirebaseAnalyticsService {
   static final FirebaseAnalyticsService _instance =
       FirebaseAnalyticsService._internal();
   factory FirebaseAnalyticsService() => _instance;
   FirebaseAnalyticsService._internal();
 
-  FirebaseAnalytics? _analytics;
   bool _isInitialized = false;
 
-  /// Initialise Firebase Analytics
+  /// Initialise Firebase Analytics (disabled)
   Future<void> initialize() async {
     try {
-      if (!_isInitialized) {
-        await Firebase.initializeApp(
-          options: DefaultFirebaseOptions.currentPlatform,
-        );
-        _analytics = FirebaseAnalytics.instance;
-        _isInitialized = true;
-        print('Firebase Analytics initialisé avec succès');
-      }
+      _isInitialized = true;
+      print('Firebase Analytics désactivé pour la conformité de confidentialité');
     } catch (e) {
       print('Erreur lors de l\'initialisation de Firebase Analytics: $e');
     }
   }
 
-  /// Vérifie si Analytics est disponible
-  bool get isAvailable => _isInitialized && _analytics != null;
+  /// Vérifie si Analytics est disponible (always false)
+  bool get isAvailable => false;
 
-  // ============================================================================
-  // MÉTRIQUES SPÉCIFIQUES DEMANDÉES
-  // ============================================================================
-
-  /// 1. Nombre de visites par fiche pro
-  Future<void> trackProfessionalView({
-    required String professionalId,
-    required String professionalName,
-    required String category,
-    required String city,
-    bool isSponsor = false,
-  }) async {
-    if (!isAvailable) return;
-
-    try {
-      await _analytics!.logEvent(
-        name: 'professional_view',
-        parameters: {
-          'professional_id': professionalId,
-          'professional_name': professionalName,
-          'category': category,
-          'city': city,
-          'is_sponsor': isSponsor ? 'true' : 'false',
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
-      print('📊 Vue professionnel trackée: $professionalName');
-    } catch (e) {
-      print('Erreur tracking vue professionnel: $e');
-    }
+  // Complete stub methods for all Firebase Analytics events
+  Future<void> logButtonTapped(String buttonName, {Map<String, Object>? parameters}) async {
+    // No-op
   }
 
-  /// 2. Taux de clic sur les sponsors
-  Future<void> trackSponsorClick({
-    required String sponsorId,
-    required String sponsorName,
-    required String clickType, // 'card', 'carousel', 'detail_button'
-    String? sourceScreen,
-  }) async {
-    if (!isAvailable) return;
-
-    try {
-      await _analytics!.logEvent(
-        name: 'sponsor_click',
-        parameters: {
-          'sponsor_id': sponsorId,
-          'sponsor_name': sponsorName,
-          'click_type': clickType,
-          'source_screen': sourceScreen ?? 'unknown',
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
-      print('🎯 Clic sponsor tracké: $sponsorName ($clickType)');
-    } catch (e) {
-      print('Erreur tracking clic sponsor: $e');
-    }
+  Future<void> logPageView(String pageName, {Map<String, Object>? parameters}) async {
+    // No-op
   }
 
-  /// 3. Catégories les plus consultées
-  Future<void> trackCategoryView({
-    required String categoryId,
-    required String categoryName,
-    required String categoryNameEn,
-    String? sourceScreen,
-  }) async {
-    if (!isAvailable) return;
-
-    try {
-      await _analytics!.logEvent(
-        name: 'category_view',
-        parameters: {
-          'category_id': categoryId,
-          'category_name': categoryName,
-          'category_name_en': categoryNameEn,
-          'source_screen': sourceScreen ?? 'services_page',
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
-      print('📂 Catégorie trackée: $categoryName');
-    } catch (e) {
-      print('Erreur tracking catégorie: $e');
-    }
+  Future<void> logCustomEvent(String eventName, Map<String, Object> parameters) async {
+    // No-op
   }
 
-  // ============================================================================
-  // MÉTRIQUES COMPLÉMENTAIRES UTILES
-  // ============================================================================
-
-  /// Recherche effectuée
-  Future<void> trackSearch({
-    required String searchQuery,
-    required String searchType, // 'professional', 'city', 'category'
-    required int resultsCount,
-  }) async {
-    if (!isAvailable) return;
-
-    try {
-      await _analytics!.logEvent(
-        name: 'search_performed',
-        parameters: {
-          'search_query': searchQuery,
-          'search_type': searchType,
-          'results_count': resultsCount,
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
-    } catch (e) {
-      print('Erreur tracking recherche: $e');
-    }
+  Future<void> setUserProperty(String name, String? value) async {
+    // No-op
   }
 
-  /// Appel téléphonique lancé
-  Future<void> trackPhoneCall({
-    required String professionalId,
-    required String professionalName,
-  }) async {
-    if (!isAvailable) return;
-
-    try {
-      await _analytics!.logEvent(
-        name: 'phone_call_initiated',
-        parameters: {
-          'professional_id': professionalId,
-          'professional_name': professionalName,
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
-    } catch (e) {
-      print('Erreur tracking appel: $e');
-    }
+  Future<void> logUserEngagement(String actionType) async {
+    // No-op
   }
 
-  /// Ouverture de carte/navigation
-  Future<void> trackMapNavigation({
-    required String professionalId,
-    required String professionalName,
-    required String address,
-  }) async {
-    if (!isAvailable) return;
-
-    try {
-      await _analytics!.logEvent(
-        name: 'map_navigation',
-        parameters: {
-          'professional_id': professionalId,
-          'professional_name': professionalName,
-          'address': address,
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
-    } catch (e) {
-      print('Erreur tracking navigation: $e');
-    }
+  Future<void> logSearchEvent(String searchTerm, {Map<String, Object>? parameters}) async {
+    // No-op
   }
 
-  /// Ouverture du site web du professionnel
-  Future<void> trackWebsiteClick({
-    required String professionalId,
-    required String professionalName,
-    required String website,
-  }) async {
-    if (!isAvailable) return;
-
-    try {
-      await _analytics!.logEvent(
-        name: 'website_click',
-        parameters: {
-          'professional_id': professionalId,
-          'professional_name': professionalName,
-          'website': website,
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
-    } catch (e) {
-      print('Erreur tracking site web: $e');
-    }
+  Future<void> logContactEvent(String contactType, {Map<String, Object>? parameters}) async {
+    // No-op
   }
 
-  /// Ajout/suppression de favori
-  Future<void> trackFavoriteAction({
-    required String professionalId,
-    required String professionalName,
-    required bool isAdding, // true = ajout, false = suppression
-  }) async {
-    if (!isAvailable) return;
-
-    try {
-      await _analytics!.logEvent(
-        name: 'favorite_action',
-        parameters: {
-          'professional_id': professionalId,
-          'professional_name': professionalName,
-          'action': isAdding ? 'add' : 'remove',
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
-    } catch (e) {
-      print('Erreur tracking favori: $e');
-    }
+  Future<void> logLocationSearchEvent(String location, {Map<String, Object>? parameters}) async {
+    // No-op
   }
 
-  /// Consultation de galerie d'images
-  Future<void> trackGalleryView({
-    required String professionalId,
-    required String professionalName,
-    required int imageCount,
-  }) async {
-    if (!isAvailable) return;
-
-    try {
-      await _analytics!.logEvent(
-        name: 'gallery_view',
-        parameters: {
-          'professional_id': professionalId,
-          'professional_name': professionalName,
-          'image_count': imageCount,
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
-    } catch (e) {
-      print('Erreur tracking galerie: $e');
-    }
+  Future<void> logProfessionalViewEvent(String professionalId, {Map<String, Object>? parameters}) async {
+    // No-op
   }
 
-  /// Utilisation d'un coupon
-  Future<void> trackCouponView({
-    required String professionalId,
-    required String professionalName,
-    required String couponCode,
-  }) async {
-    if (!isAvailable) return;
-
-    try {
-      await _analytics!.logEvent(
-        name: 'coupon_view',
-        parameters: {
-          'professional_id': professionalId,
-          'professional_name': professionalName,
-          'coupon_code': couponCode,
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
-    } catch (e) {
-      print('Erreur tracking coupon: $e');
-    }
+  Future<void> logAppOpenEvent({Map<String, Object>? parameters}) async {
+    // No-op
   }
 
-  /// Ajout d'un avis
-  Future<void> trackReviewSubmission({
-    required String professionalId,
-    required String professionalName,
-    required int rating,
-  }) async {
-    if (!isAvailable) return;
-
-    try {
-      await _analytics!.logEvent(
-        name: 'review_submitted',
-        parameters: {
-          'professional_id': professionalId,
-          'professional_name': professionalName,
-          'rating': rating,
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
-    } catch (e) {
-      print('Erreur tracking avis: $e');
-    }
+  Future<void> logScreenView(String screenName, {Map<String, Object>? parameters}) async {
+    // No-op
   }
 
-  /// Changement de langue
-  Future<void> trackLanguageChange({
-    required String fromLanguage,
-    required String toLanguage,
-  }) async {
-    if (!isAvailable) return;
-
-    try {
-      await _analytics!.logEvent(
-        name: 'language_changed',
-        parameters: {
-          'from_language': fromLanguage,
-          'to_language': toLanguage,
-          'timestamp': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
-    } catch (e) {
-      print('Erreur tracking langue: $e');
-    }
+  Future<void> logFilterEvent(String filterType, String filterValue, {Map<String, Object>? parameters}) async {
+    // No-op
   }
 
-  // ============================================================================
-  // MÉTRIQUES D'ÉCRAN
-  // ============================================================================
-
-  /// Définir l'écran actuel
-  Future<void> setCurrentScreen(String screenName) async {
-    if (!isAvailable) return;
-
-    try {
-      await _analytics!.logScreenView(
-        screenName: screenName,
-        screenClass: screenName,
-      );
-    } catch (e) {
-      print('Erreur définition écran: $e');
-    }
+  Future<void> logSortEvent(String sortType, {Map<String, Object>? parameters}) async {
+    // No-op
   }
 
-  /// Définir des propriétés utilisateur
-  Future<void> setUserProperties({
-    String? preferredLanguage,
-    String? userRegion,
-  }) async {
-    if (!isAvailable) return;
+  Future<void> logLanguageChange(String language, {Map<String, Object>? parameters}) async {
+    // No-op
+  }
 
-    try {
-      if (preferredLanguage != null) {
-        await _analytics!.setUserProperty(
-          name: 'preferred_language',
-          value: preferredLanguage,
-        );
-      }
-      if (userRegion != null) {
-        await _analytics!.setUserProperty(
-          name: 'user_region',
-          value: userRegion,
-        );
-      }
-    } catch (e) {
-      print('Erreur propriétés utilisateur: $e');
-    }
+  Future<void> logErrorEvent(String errorType, String errorMessage, {Map<String, Object>? parameters}) async {
+    // No-op
+  }
+
+  // Additional methods that the app uses - all with comprehensive parameters
+  Future<void> setCurrentScreen(String screenName, {Map<String, Object>? parameters}) async {
+    // No-op
+  }
+
+  Future<void> trackSponsorClick({String? sponsorId, String? sponsorName, String? clickType, String? sourceScreen, Map<String, Object>? parameters}) async {
+    // No-op
+  }
+
+  Future<void> trackLanguageChange({String? language, String? fromLanguage, String? toLanguage, Map<String, Object>? parameters}) async {
+    // No-op
+  }
+
+  Future<void> trackCategoryView({String? category, String? categoryId, String? categoryName, String? categoryNameEn, String? sourceScreen, Map<String, Object>? parameters}) async {
+    // No-op
+  }
+
+  Future<void> trackSearch({String? query, String? searchQuery, String? searchType, int? resultsCount, Map<String, Object>? parameters}) async {
+    // No-op
+  }
+
+  Future<void> trackProfessionalView({String? professionalId, String? professionalName, String? categoryId, String? category, String? city, bool? isSponsor, Map<String, Object>? parameters}) async {
+    // No-op
+  }
+
+  Future<void> trackFavoriteAction({String? action, String? professionalId, String? professionalName, bool? isAdding, Map<String, Object>? parameters}) async {
+    // No-op
+  }
+
+  Future<void> trackPhoneCall({String? professionalId, String? professionalName, String? phoneNumber, Map<String, Object>? parameters}) async {
+    // No-op
+  }
+
+  Future<void> trackMapNavigation({String? professionalId, String? professionalName, String? address, Map<String, Object>? parameters}) async {
+    // No-op
+  }
+
+  Future<void> trackWebsiteClick({String? professionalId, String? professionalName, String? website, Map<String, Object>? parameters}) async {
+    // No-op
   }
 }

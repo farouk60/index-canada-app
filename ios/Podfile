@@ -28,7 +28,8 @@ require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelpe
 flutter_ios_podfile_setup
 
 target 'Runner' do
-  use_frameworks!
+  # Use static frameworks to improve compatibility with Flutter plugins
+  use_frameworks! :linkage => :static
   use_modular_headers!
 
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
@@ -39,8 +40,10 @@ post_install do |installer|
     flutter_additional_ios_build_settings(target)
     
     target.build_configurations.each do |config|
-      # iOS 12.0 minimum deployment target
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '12.0'
+  # iOS 15.0 minimum deployment target (Firebase 12.x and Stripe Core require)
+  config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+  # Allow non-modular includes when CocoaPods verifies modules for plugin pods
+  config.build_settings['CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES'] = 'YES'
       
       # Performance optimizations
       config.build_settings['GCC_OPTIMIZATION_LEVEL'] = '3'

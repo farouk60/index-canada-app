@@ -64,7 +64,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '762725959551',
     projectId: 'index-immigrant-index-2025',
     storageBucket: 'index-immigrant-index-2025.firebasestorage.app',
-    iosBundleId: 'com.example.monIndexApp',
+  iosBundleId: 'ca.indexcanada.app',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(
@@ -73,7 +73,7 @@ class DefaultFirebaseOptions {
     messagingSenderId: '762725959551',
     projectId: 'index-immigrant-index-2025',
     storageBucket: 'index-immigrant-index-2025.firebasestorage.app',
-    iosBundleId: 'com.example.monIndexApp',
+  iosBundleId: 'ca.indexcanada.app',
   );
 
   static const FirebaseOptions windows = FirebaseOptions(

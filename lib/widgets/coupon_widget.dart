@@ -34,19 +34,17 @@ class CouponWidget extends StatelessWidget {
 
   // Vérifier si le coupon expire bientôt (dans les 7 prochains jours)
   bool get isExpiringSoon {
-    if (professionnel.couponExpirationDate == null) return false;
-    final daysUntilExpiration = professionnel.couponExpirationDate!
-        .difference(DateTime.now())
-        .inDays;
+    final exp = professionnel.couponExpirationDate;
+    if (exp == null) return false;
+    final daysUntilExpiration = exp.difference(DateTime.now()).inDays;
     return daysUntilExpiration <= 7 && daysUntilExpiration > 0;
   }
 
   // Obtenir le nombre de jours restants
   int get daysUntilExpiration {
-    if (professionnel.couponExpirationDate == null) return 0;
-    return professionnel.couponExpirationDate!
-        .difference(DateTime.now())
-        .inDays;
+    final exp = professionnel.couponExpirationDate;
+    if (exp == null) return 0;
+    return exp.difference(DateTime.now()).inDays;
   }
 
   @override

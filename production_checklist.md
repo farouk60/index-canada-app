@@ -3,9 +3,9 @@
 ## ✅ Corrections techniques effectuées
 
 ### Configuration de l'application
-- [x] Application ID changé de `com.example.mon_index_app` à `com.monindex.app`
+- [x] Application ID changé de `com.example.mon_index_app` à `ca.indexcanada.app`
 - [x] Nom d'affichage Android changé de "mon_index_app" à "Mon Index"
-- [x] Bundle ID iOS mis à jour vers `com.monindex.app`
+- [x] Bundle ID iOS mis à jour vers `ca.indexcanada.app`
 - [x] Description professionnelle ajoutée dans pubspec.yaml
 - [x] Configuration de production activée (minification, proguard)
 

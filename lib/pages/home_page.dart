@@ -571,8 +571,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (!hasCodeAndTitle) return false;
 
     // Si une date d'expiration est définie, elle doit être dans le futur
-    if (professionnel.couponExpirationDate != null) {
-      return professionnel.couponExpirationDate!.isAfter(DateTime.now());
+    final exp = professionnel.couponExpirationDate;
+    if (exp != null) {
+      return exp.isAfter(DateTime.now());
     }
 
     // Si pas de date d'expiration définie, le coupon est considéré comme valide
