@@ -19,9 +19,9 @@ class StripeNativePaymentService {
 
   // Prix pour affichage (doivent correspondre à ceux configurés dans Stripe)
   static const Map<String, double> planPrices = {
-  'basic': 49.99,
-  'premium': 69.99,
-  'professional': 119.99,
+    'basic': 0.00,
+    'premium': 49.99,
+    'professional': 119.99,
   };
 
   /// Créer un Payment Intent via votre backend
@@ -109,6 +109,16 @@ class StripeNativePaymentService {
     Map<String, dynamic>? registrationData,
   }) async {
     try {
+      // Vérifier si le plan est gratuit
+      final price = planPrices[planId];
+      if (price != null && price <= 0) {
+        print('🎁 Plan gratuit détecté ($planId), passage du paiement Stripe');
+        return PaymentResult(
+          success: true,
+          paymentIntentId: 'free_plan_${DateTime.now().millisecondsSinceEpoch}',
+        );
+      }
+
       // 1. Créer le Payment Intent
       final paymentIntentData = await createPaymentIntent(
         planId: planId,

@@ -13,9 +13,9 @@ class WixPaymentService {
 
   // Prix des différents plans (Prix de test)
   static const Map<String, double> planPrices = {
-  'basic': 49.99,
-  'premium': 69.99,
-  'professional': 119.99, // Plan "En Vedette"
+    'basic': 0.00,
+    'premium': 49.99,
+    'professional': 119.99, // Plan "En Vedette"
   };
 
   // Ouvrir le lien de paiement Stripe avec l'ID du professionnel
@@ -190,7 +190,7 @@ class PaymentPlan {
         id: 'basic',
         name: 'Plan Basique',
         nameEn: 'Basic Plan',
-  price: 49.99,
+        price: 0.00,
         currency: 'CAD',
         features: [
           'Profil professionnel',
@@ -209,7 +209,7 @@ class PaymentPlan {
         id: 'premium',
         name: 'Plan Premium',
         nameEn: 'Premium Plan',
-  price: 69.99, // Prix final
+        price: 49.99, // Prix final
         currency: 'CAD',
         isPopular: true,
         features: [
