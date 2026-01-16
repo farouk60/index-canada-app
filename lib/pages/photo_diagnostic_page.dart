@@ -3,8 +3,10 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 
 class PhotoDiagnosticPage extends StatefulWidget {
+  const PhotoDiagnosticPage({Key? key}) : super(key: key);
+
   @override
-  _PhotoDiagnosticPageState createState() => _PhotoDiagnosticPageState();
+  State<PhotoDiagnosticPage> createState() => _PhotoDiagnosticPageState();
 }
 
 class _PhotoDiagnosticPageState extends State<PhotoDiagnosticPage> {
