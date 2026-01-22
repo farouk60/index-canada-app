@@ -87,7 +87,7 @@ class _PaymentSuccessPageState extends State<PaymentSuccessPage>
       backgroundColor: Colors.white,
       appBar: AppBar(
         title: Text(
-          isEnglish ? 'Payment Processing' : 'Traitement du paiement',
+          isEnglish ? 'Registration Processing' : "Traitement de l'inscription",
           style: const TextStyle(color: Colors.white),
         ),
         backgroundColor: Colors.blue[700],
@@ -142,7 +142,7 @@ class _PaymentSuccessPageState extends State<PaymentSuccessPage>
         const SizedBox(height: 32),
 
         Text(
-          isEnglish ? 'Processing Payment...' : 'Traitement du paiement...',
+          isEnglish ? 'Processing Registration...' : "Traitement de l'inscription...",
           style: const TextStyle(
             fontSize: 24,
             fontWeight: FontWeight.bold,
@@ -155,8 +155,8 @@ class _PaymentSuccessPageState extends State<PaymentSuccessPage>
 
         Text(
           isEnglish
-              ? 'Please wait while we confirm your payment and activate your professional profile.'
-              : 'Veuillez patienter pendant que nous confirmons votre paiement et activons votre profil professionnel.',
+              ? 'Please wait while we confirm your registration and activate your professional profile.'
+              : 'Veuillez patienter pendant que nous confirmons votre inscription et activons votre profil professionnel.',
           style: const TextStyle(
             fontSize: 16,
             color: Color(0xFF757575), // Couleur grise fixe
@@ -232,7 +232,7 @@ class _PaymentSuccessPageState extends State<PaymentSuccessPage>
         const SizedBox(height: 32),
 
         Text(
-          isEnglish ? 'Payment Successful!' : 'Paiement réussi !',
+          isEnglish ? 'Registration Successful!' : 'Inscription réussie !',
           style: TextStyle(
             fontSize: 28,
             fontWeight: FontWeight.bold,

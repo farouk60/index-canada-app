@@ -11,7 +11,7 @@ plugins {
 android {
     namespace = "ca.indexcanada.app"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = "27.0.12077973"
+    // ndkVersion = "27.0.12077973"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -64,9 +64,11 @@ android {
             )
             // Export native symbol tables for Play Console (reduces crash obfuscation)
             // Possible values: "NONE", "SYMBOL_TABLE", "FULL". SYMBOL_TABLE is a good balance.
+            /*
             ndk {
                 debugSymbolLevel = "SYMBOL_TABLE"
             }
+            */
         }
         debug {
             signingConfig = signingConfigs.getByName("debug")

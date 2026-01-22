@@ -191,6 +191,10 @@ class StripeNativePaymentService {
     required String professionalId,
     required String planId,
     required String businessName,
+    String? email,
+    String? categoryId,
+    String? ville,
+    String? phone,
     Map<String, dynamic>? registrationData, // pour transmettre les images Base64
   }) async {
     try {
@@ -229,6 +233,23 @@ class StripeNativePaymentService {
         'planId': planId,
         'businessName': businessName,
       };
+      
+      if (email != null) requestBody['email'] = email;
+      if (categoryId != null) requestBody['categoryId'] = categoryId;
+      if (ville != null) requestBody['ville'] = ville;
+      if (phone != null) requestBody['phone'] = phone;
+      
+      // Ajouter les autres champs de registrationData si présents
+      if (registrationData != null) {
+         requestBody['description'] = registrationData['description'];
+         requestBody['address'] = registrationData['address'];
+         requestBody['website'] = registrationData['website'];
+         requestBody['facebook'] = registrationData['facebook'];
+         requestBody['instagram'] = registrationData['instagram'];
+         requestBody['tiktok'] = registrationData['tiktok'];
+         requestBody['youtube'] = registrationData['youtube'];
+         requestBody['whatsapp'] = registrationData['whatsapp'];
+      }
 
       // Ajouter l'action dans le body pour le routing
       requestBody['action'] = 'confirmPayment';
