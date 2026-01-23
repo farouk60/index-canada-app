@@ -1,0 +1,9 @@
+FR-CA:
+- Amélioration de l'interface d'inscription.
+- Correction du bouton de confirmation pour le plan de base.
+- Mise à jour des performances et corrections mineures.
+
+EN-CA:
+- Improved registration interface.
+- Fixed confirmation button for basic plan.
+- Performance updates and minor bug fixes.

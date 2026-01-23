@@ -945,7 +945,9 @@ class _ProfessionalRegistrationPageState extends State<ProfessionalRegistrationP
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                         ),
                         child: Text(isLast 
-                          ? (isEn ? 'FINISH & PAY' : 'TERMINER & PAYER')
+                          ? (_selectedPlan == 'basic' 
+                              ? (isEn ? 'FINISH' : 'TERMINER') 
+                              : (isEn ? 'FINISH & PAY' : 'TERMINER & PAYER'))
                           : (isEn ? 'NEXT' : 'SUIVANT'),
                           style: const TextStyle(fontWeight: FontWeight.bold)
                         ),
