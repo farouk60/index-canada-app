@@ -40,11 +40,11 @@ export function get_data(request) {
   const categoryFilter = request.query.category || '';
   const cityFilter = request.query.city || '';
 
-  const professionnelsPromise = wixData.query("Professionnel").find();
-  const sousCategoriesPromise = wixData.query("SousCategorie").find();
-  const reviewsPromise = wixData.query("Reviews").find();
-  const partenairesPromise = wixData.query("Partenaires").find();
-  const offresPartenairesPromise = wixData.query("OffresPartenaire").find();
+  const professionnelsPromise = wixData.query("Professionnel").limit(1000).find();
+  const sousCategoriesPromise = wixData.query("SousCategorie").limit(1000).find();
+  const reviewsPromise = wixData.query("Reviews").limit(1000).find();
+  const partenairesPromise = wixData.query("Partenaires").limit(1000).find();
+  const offresPartenairesPromise = wixData.query("OffresPartenaire").limit(1000).find();
 
   return Promise.all([professionnelsPromise, sousCategoriesPromise, reviewsPromise, partenairesPromise, offresPartenairesPromise])
     .then(([professionnelsResult, sousCategoriesResult, reviewsResult, partenairesResult, offresPartenairesResult]) => {
@@ -120,14 +120,14 @@ export function get_search_professionals(request) {
   const searchQuery = request.query.search || '';
   const categoryFilter = request.query.category || '';
   const cityFilter = request.query.city || '';
-  const limit = parseInt(request.query.limit) || 50;
+  const limit = parseInt(request.query.limit) || 100;
 
   if (!searchQuery && !categoryFilter && !cityFilter) {
     options.body = { error: "Au moins un critère de recherche est requis" };
     return badRequest(options);
   }
 
-  return wixData.query("Professionnel").find()
+  return wixData.query("Professionnel").limit(1000).find()
     .then((professionnelsResult) => {
       let filteredProfessionnels = professionnelsResult.items;
       let searchResults = [];
