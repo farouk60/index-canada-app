@@ -41,7 +41,7 @@ export function get_data(request) {
   const cityFilter = request.query.city || '';
 
   const professionnelsPromise = wixData.query("Professionnel").limit(1000).find();
-  const sousCategoriesPromise = wixData.query("SousCategorie").limit(1000).find();
+  const sousCategoriesPromise = wixData.query("SousCategorie").limit(1000).ascending("title").find();
   const reviewsPromise = wixData.query("Reviews").limit(1000).find();
   const partenairesPromise = wixData.query("Partenaires").limit(1000).find();
   const offresPartenairesPromise = wixData.query("OffresPartenaire").limit(1000).find();
