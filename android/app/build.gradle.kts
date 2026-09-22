@@ -10,7 +10,7 @@ plugins {
 android {
     namespace = "ca.indexcanada.app"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = "28.2.13676358"
+    ndkVersion = flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
