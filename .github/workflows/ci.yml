@@ -142,21 +142,35 @@ jobs:
         run: |
           set -euo pipefail
 
+          android_log="$(mktemp)"
+          set +e
           flutter build appbundle --release \
             --dart-define=APP_ENVIRONMENT=staging \
             --dart-define=API_BASE_URL=https://ci.index-canada.example/_functions \
-            --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_0000000000000000
+            --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_0000000000000000 \
+            2>&1 | tee "$android_log"
+          build_status="${PIPESTATUS[0]}"
+          set -e
+
+          if [[ "$build_status" -ne 0 ]]; then
+            diagnostic="$(tail -n 80 "$android_log" | sed -E $'s/\\x1B\\[[0-9;]*[mK]//g')"
+            diagnostic="${diagnostic//'%'/'%25'}"
+            diagnostic="${diagnostic//$'\r'/'%0D'}"
+            diagnostic="${diagnostic//$'\n'/'%0A'}"
+            echo "::error title=Compilation Android échouée::$diagnostic"
+            exit "$build_status"
+          fi
 
           bundle_path="$(find build/app/outputs/bundle/release \
             -maxdepth 1 -type f -name '*.aab' -print -quit)"
           if [[ -z "$bundle_path" ]]; then
-            echo "Le bundle Android release est introuvable."
+            echo "::error title=Bundle Android absent::Le bundle Android release est introuvable."
             exit 1
           fi
 
           if unzip -Z1 "$bundle_path" \
             | grep -Ei '^META-INF/[^/]+\.(RSA|DSA|EC)$' > /dev/null; then
-            echo "Le bundle CI ne doit pas être signé."
+            echo "::error title=Bundle Android signé::Le bundle CI ne doit pas être signé."
             exit 1
           fi
 
@@ -189,4 +203,16 @@ jobs:
           --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_0000000000000000
 
       - name: Vérifier la cohérence du lockfile iOS
-        run: git diff --exit-code -- ios/Podfile.lock
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! git diff --quiet -- ios/Podfile.lock; then
+            git diff -- ios/Podfile.lock
+            diagnostic="$(git diff -- ios/Podfile.lock | tail -n 120)"
+            diagnostic="${diagnostic//'%'/'%25'}"
+            diagnostic="${diagnostic//$'\r'/'%0D'}"
+            diagnostic="${diagnostic//$'\n'/'%0A'}"
+            echo "::error title=Podfile.lock régénéré::$diagnostic"
+            exit 1
+          fi
