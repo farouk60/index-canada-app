@@ -1,0 +1,192 @@
+name: Flutter CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'candidate/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flutter-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-security:
+    name: Sécurité, médias et pagination du backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Installer les dépendances backend verrouillées
+        run: npm ci --prefix backend
+
+      - name: Vérifier la syntaxe des modules backend
+        run: >-
+          node --check backend/http-functions.js &&
+          node --check backend/security-core.js &&
+          node --check backend/directory-pagination.js
+
+      - name: Auditer les dépendances backend de production
+        run: npm audit --prefix backend --omit=dev --audit-level=high
+
+      - name: Tester le backend
+        run: npm test --prefix backend
+
+  quality:
+    name: Format, analyse et tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Vérifier les fichiers sensibles suivis
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sensitive_files="$({
+            git ls-files \
+              | grep -E '(^|/)(\.env($|\.)|key\.properties$|service-account[^/]*\.json$|[^/]+\.(jks|keystore|p12|pfx|pem|key)$)' \
+              | grep -Ev '(\.example|\.sample|\.template)$'
+          } || true)"
+
+          if [[ -n "$sensitive_files" ]]; then
+            echo "Fichiers potentiellement sensibles suivis par Git :"
+            echo "$sensitive_files"
+            exit 1
+          fi
+
+      - name: Rechercher des motifs de secrets connus
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          secret_matches="$({
+            git grep -nI -E \
+              '(sk_(live|test)_[[:alnum:]]{16,}|rk_(live|test)_[[:alnum:]]{16,}|whsec_[[:alnum:]]{16,}|AIza[[:alnum:]_-]{30,}|AKIA[0-9A-Z]{16}|gh[pousr]_[[:alnum:]]{20,}|-----BEGIN ((RSA|EC|OPENSSH) )?PRIVATE KEY-----)' \
+              -- . ':(exclude).github/workflows/ci.yml'
+          } || true)"
+
+          if [[ -n "$secret_matches" ]]; then
+            echo "Motifs de secrets potentiels détectés :"
+            echo "$secret_matches"
+            exit 1
+          fi
+
+      - name: Installer Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Installer Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Installer Flutter
+        uses: subosito/flutter-action@v2.23.0
+        with:
+          flutter-version: '3.47.4'
+          channel: stable
+          cache: true
+
+      - name: Afficher les versions
+        run: flutter --version
+
+      - name: Installer les dépendances verrouillées
+        run: flutter pub get --enforce-lockfile
+
+      - name: Autoriser le wrapper Gradle
+        run: chmod +x android/gradlew
+
+      - name: Vérifier le format du code et des tests
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Analyser l'application et les tests
+        run: flutter analyze --fatal-infos --fatal-warnings
+
+      - name: Exécuter les tests avec couverture
+        run: flutter test --coverage --reporter expanded
+
+      - name: Compiler la cible Web en release
+        run: >-
+          flutter build web --release
+          --dart-define=APP_ENVIRONMENT=staging
+          --dart-define=API_BASE_URL=https://ci.index-canada.example/_functions
+          --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_0000000000000000
+
+      - name: Compiler le bundle Android release sans signature
+        shell: bash
+        env:
+          GRADLE_OPTS: -Dorg.gradle.project.indexCanada.allowUnsignedRelease=true
+        run: |
+          set -euo pipefail
+
+          flutter build appbundle --release \
+            --dart-define=APP_ENVIRONMENT=staging \
+            --dart-define=API_BASE_URL=https://ci.index-canada.example/_functions \
+            --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_0000000000000000
+
+          bundle_path="$(find build/app/outputs/bundle/release \
+            -maxdepth 1 -type f -name '*.aab' -print -quit)"
+          if [[ -z "$bundle_path" ]]; then
+            echo "Le bundle Android release est introuvable."
+            exit 1
+          fi
+
+          if unzip -Z1 "$bundle_path" \
+            | grep -Ei '^META-INF/[^/]+\.(RSA|DSA|EC)$' > /dev/null; then
+            echo "Le bundle CI ne doit pas être signé."
+            exit 1
+          fi
+
+  ios-build:
+    name: Compilation iOS
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Installer Flutter
+        uses: subosito/flutter-action@v2.23.0
+        with:
+          flutter-version: '3.47.4'
+          channel: stable
+          cache: true
+
+      - name: Installer les dépendances verrouillées
+        run: flutter pub get --enforce-lockfile
+
+      - name: Compiler la cible iOS sans signature
+        run: >-
+          flutter build ios --release --no-codesign
+          --dart-define=APP_ENVIRONMENT=staging
+          --dart-define=API_BASE_URL=https://ci.index-canada.example/_functions
+          --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_0000000000000000
+
+      - name: Vérifier la cohérence du lockfile iOS
+        run: git diff --exit-code -- ios/Podfile.lock

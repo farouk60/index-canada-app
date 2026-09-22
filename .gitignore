@@ -32,6 +32,8 @@ migrate_working_dir/
 .pub-cache/
 .pub/
 /build/
+/coverage/
+/backend/node_modules/
 
 # Symbolication related
 app.*.symbols
@@ -43,8 +45,14 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/build/
 
 # Archived non-production files
 /archive/
 /android/key.properties
 /android/upload-keystore.jks
+
+# Local/runtime configuration and secrets
+.env
+.env.*
+!.env.example

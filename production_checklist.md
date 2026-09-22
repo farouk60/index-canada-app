@@ -1,125 +1,132 @@
-# Liste de vérification pour la publication sur les stores
+# Liste de contrôle de mise en production
 
-## ✅ Corrections techniques effectuées
+## Décision actuelle : NO-GO
 
-### Configuration de l'application
-- [x] Application ID changé de `com.example.mon_index_app` à `ca.indexcanada.app`
-- [x] Nom d'affichage Android changé de "mon_index_app" à "Mon Index"
-- [x] Bundle ID iOS mis à jour vers `ca.indexcanada.app`
-- [x] Description professionnelle ajoutée dans pubspec.yaml
-- [x] Configuration de production activée (minification, proguard)
+Cette liste est un registre de preuves, pas une estimation commerciale. Une case n'est cochée que lorsqu'une preuve reproductible existe pour la version candidate. L'application ne doit pas être présentée comme prête pour la production avant la fermeture de tous les éléments marqués **bloquant**.
 
-### Sécurité et stabilité
-- [x] Null safety améliorée dans DataService
-- [x] Gestion d'erreurs comprehensive avec try-catch
-- [x] Types de données sécurisés avec casting approprié
-- [x] Debug logging conditionnel ajouté
-- [x] Fallbacks ajoutés pour les modèles de données
+## État confirmé dans le dépôt
 
-## 🔄 Actions en cours d'implémentation
+- [x] Identifiant Android : `ca.indexcanada.app`.
+- [x] Bundle Identifier iOS : `ca.indexcanada.app`.
+- [x] Nom affiché Android/iOS : `Index Canada`.
+- [x] Version actuelle du projet : `1.0.3+21`.
+- [x] Minification et réduction des ressources activées pour Android release.
+- [x] Le build Android release exige une signature, sauf dérogation CI explicite produisant un artefact non distribuable.
+- [x] La CI iOS compile sans signature et ne produit pas d'archive soumissible.
+- [x] Firebase Analytics est désactivé par un stub ; aucun événement Firebase n'est actuellement collecté.
+- [x] Permissions Android déclarées : réseau et caméra seulement. Aucune permission de localisation, d'appel téléphonique ou de stockage.
+- [x] Des contrôles automatisés existent pour l'analyse, les tests et les compilations.
+- [ ] **Bloquant —** Archiver un passage complet réussi de ces contrôles sur le commit exact de la version candidate.
+- [ ] **Bloquant —** Exécuter et consigner de vrais tests de bout en bout avec Wix, Stripe et des appareils Android/iOS.
 
-### Corrections techniques critiques
-- [ ] Mise à jour des certificats de signature
-- [ ] Configuration des variables d'environnement de production
-- [ ] Tests de sécurité approfondis
-- [ ] Optimisation des performances
+## 1. Backend Wix — bloquant
 
-## 📋 Actions restantes pour publication
+- [ ] Exécuter intégralement le guide [`WIX_DEPLOYMENT.md`](WIX_DEPLOYMENT.md) dans l'environnement de préproduction, puis en production.
+- [x] Installer `stripe@22.6.2` dans le Package Manager Wix, vérifier qu'il correspond exactement à `backend/package-lock.json` et prouver son chargement en préproduction.
+- [ ] Confirmer les schémas, index et permissions des collections utilisées, notamment les professionnels, catégories, avis, partenaires, offres, `PaymentCheckouts` et `ApiRateLimits`.
+- [ ] Interdire les écritures directes publiques sur les collections sensibles ; faire passer les mutations par les fonctions backend validées.
+- [x] Vérifier que seules les colonnes nécessaires sont retournées au client.
+- [ ] Tester la pagination sur plusieurs pages pour chaque collection et confirmer qu'aucune donnée n'est silencieusement tronquée.
+- [ ] Tester les limites maximales de jeux de données et le message d'échec opérationnel associé.
+- [ ] Tester les routes v2 `/categories`, `/professionals`, `/reviews`, `/partners` et `/offers` sur plusieurs pages, avec `limit`, `cursor` et tous leurs filtres; confirmer que `/data` reste seulement une compatibilité v1 mesurée.
+- [ ] Vérifier les index Wix utilisés pour les états actifs/approuvés/officiels, `sponsor`, la catégorie, `professionalId` et l'ordre `_id`, y compris les anciens champs encore présents pendant la migration.
+- [ ] Tester qu'un curseur malformé/non canonique ou réutilisé avec d'autres filtres est rejeté, que le client détecte un curseur répété et qu'une page d'éléments masqués progresse sans boucle ni doublon.
+- [ ] Confirmer que les images validées sont envoyées à Wix Media Manager et que les collections ne contiennent ni Base64 ni binaire volumineux.
+- [ ] Tester le nettoyage des médias en cas d'échec ou de concurrence entre deux inscriptions.
+- [ ] Configurer les secrets de production dans Wix Secrets Manager et vérifier qu'aucun secret n'est exposé au client ou dans les journaux.
+- [ ] Révoquer et remplacer toute clé Wix ou Stripe réelle qui aurait déjà été publiée dans l'historique Git ou dans un fichier partagé.
+- [ ] Vérifier les règles CORS, les limites de débit et les réponses d'erreur génériques depuis un domaine/appareil non autorisé.
+- [ ] Vérifier que toute inscription gratuite ou payante reste `pending_review`, `isActive=false` et absente du répertoire jusqu'à l'approbation humaine dans Wix.
+- [ ] Activer des journaux exploitables sans données personnelles, secrets ni contenu d'images.
 
-### Google Play Store
-- [ ] Créer un compte développeur Google Play (25$ USD)
-- [ ] Générer un keystore de signature pour Android
-- [ ] Créer les captures d'écran pour toutes les tailles d'écran
-- [ ] Rédiger la description store optimisée SEO
-- [ ] Politique de confidentialité (URL publique requise)
-- [ ] Conditions d'utilisation
-- [ ] Icône haute résolution 512x512px
-- [ ] Bannière promotionnelle
-- [ ] Build APK/AAB signé pour production
+## 2. Stripe — bloquant
 
-### Apple App Store
-- [ ] Compte développeur Apple (99$ USD/an)
-- [ ] Certificats de distribution iOS
-- [ ] Provisioning profiles
-- [ ] Captures d'écran pour iPhone/iPad
-- [ ] Icône App Store 1024x1024px
-- [ ] Build IPA signé pour production
-- [ ] Révision App Store Connect
+- [ ] Vérifier le catalogue de forfaits, les montants et la devise directement dans l'environnement de production.
+- [ ] Configurer le webhook de production et son secret dans Wix.
+- [x] Valider la signature du webhook et rejeter les événements invalides.
+- [ ] Tester un forfait gratuit sans création de PaymentIntent.
+- [ ] Tester un paiement réussi sur l'application native avec une clé de test et le webhook actif.
+- [x] Vérifier qu'un paiement réussi confirme le volet financier sans activer ni publier automatiquement le profil.
+- [ ] Tester paiement refusé, annulation, 3-D Secure et interruption réseau.
+- [x] Renvoyer plusieurs fois le même webhook et la même confirmation ; vérifier l'absence de double débit et de profil dupliqué.
+- [ ] Vérifier qu'un identifiant Stripe appartenant à un autre forfait ou professionnel est refusé.
+- [ ] Rapprocher dans Stripe, Wix et l'application le montant, le statut, le profil et les identifiants d'idempotence.
+- [ ] Confirmer dans les fiches store que le paiement payant Web n'est pas annoncé comme disponible.
 
-### Métadonnées store
-- [ ] Mots-clés optimisés SEO
-- [ ] Descriptions multilingues (FR/EN)
-- [ ] Classification par âge appropriée
-- [ ] Catégorie: Business/Productivity
+## 3. Confidentialité et aspects juridiques — bloquant
 
-## 🎯 Potentiel de marché confirmé
+- [ ] Publier une politique de confidentialité spécifique à Index Canada sur une URL publique stable.
+- [ ] Ajouter un accès à cette politique dans l'application.
+- [ ] Inventorier les données réellement envoyées à Wix et Stripe : coordonnées professionnelles, adresse, photos, identifiants techniques et données liées au paiement.
+- [ ] Vérifier la finalité, la durée de conservation, l'accès interne et la procédure de suppression de chaque type de donnée.
+- [ ] Compléter Google Play « Sécurité des données » à partir de l'inventaire observé, pas à partir d'hypothèses.
+- [ ] Compléter App Store « App Privacy » avec les mêmes pratiques réelles.
+- [ ] Vérifier si l'inscription professionnelle déclenche les exigences de suppression de compte et, si applicable, fournir le parcours dans l'application et le lien Web requis.
+- [ ] Faire approuver les conditions d'utilisation, la politique de confidentialité et les déclarations store.
+- [ ] Ne pas déclarer Firebase Analytics ou Crashlytics comme actifs tant qu'ils restent absents/désactivés.
 
-### Analyse du marché cible
-- **Immigrants francophones au Canada**: Marché de 200,000+ personnes
-- **Professionnels québécois**: 50,000+ entreprises potentielles
-- **Taux de pénétration estimé**: 2-5% la première année
+## 4. QA de la version candidate — bloquant
 
-### Projections financières
-- **Année 1**: 30,000 - 90,000 CAD
-- **Année 2**: 200,000 - 500,000 CAD
-- **ROI potentiel**: TRÈS ÉLEVÉ
+- [ ] Geler un commit et consigner la version candidate, la configuration et l'environnement testés.
+- [ ] Analyse statique sans erreur et toutes les suites automatisées réussies sur ce commit.
+- [ ] Android réel : installation depuis Google Play test interne, démarrage et parcours critiques réussis.
+- [ ] iPhone réel : installation depuis TestFlight, démarrage et parcours critiques réussis.
+- [ ] Vérifier FR et EN, changement de langue, petite largeur et grande taille de texte.
+- [ ] Vérifier recherche, catégories, fiches, partenaires, offres, favoris et liens externes.
+- [ ] Vérifier inscription gratuite et payante, téléversement caméra/galerie et reprise après erreur.
+- [ ] Tester accord, refus et refus permanent des permissions caméra/photos.
+- [ ] Tester hors ligne, réseau lent, expiration, réponses Wix invalides et reprise.
+- [ ] Vérifier qu'aucune donnée personnelle ni aucun secret n'apparaît dans les journaux.
+- [ ] Aucun défaut critique ou majeur ouvert ; les risques résiduels sont acceptés par la personne responsable du produit.
 
-### Facteurs de succès
-- Application unique sur le marché francophone canadien
-- Interface bilingue parfaitement adaptée
-- Modèle économique B2B viable
-- Forte demande du marché cible
+## 5. Android / Google Play — bloquant
 
-## 🚀 Timeline de lancement
+- [ ] Compte développeur et profil Play Console vérifiés.
+- [ ] Application créée avec le package immuable `ca.indexcanada.app`.
+- [ ] Play App Signing activé et clé d'envoi sauvegardée de façon sécurisée.
+- [ ] `android/key.properties` local configuré sans être versionné.
+- [ ] AAB de production compilé avec les vraies valeurs approuvées et une signature vérifiée.
+- [ ] Démarrage de l'AAB confirmé avec `APP_ENVIRONMENT=production`, une `API_BASE_URL` HTTPS non factice et une clé Stripe publique `pk_live_` du compte attendu.
+- [ ] Version installée et testée depuis le canal interne Google Play.
+- [ ] Exigences de test fermé du compte vérifiées et satisfaites, si applicables.
+- [ ] Politique de confidentialité, sécurité des données, accès à l'application, public cible, classification du contenu et déclarations requises complétés.
+- [ ] Icône, bannière et captures conformes et représentatives de la version testée.
+- [ ] Description FR et EN relue ; aucune promesse de qualification, de couverture nationale ou de fonctionnalité non démontrée.
+- [ ] Déploiement progressif et procédure de retour arrière approuvés.
 
-### Phase 1 (Semaines 1-2)
-- Finaliser les corrections techniques restantes
-- Créer les comptes développeur
-- Préparer les assets graphiques
+## 6. iOS / App Store — bloquant
 
-### Phase 2 (Semaine 3)
-- Builds de production et signature
-- Soumission aux stores
-- Tests bêta avec utilisateurs réels
+- [ ] Adhésion Apple Developer et contrats App Store Connect actifs.
+- [ ] App ID `ca.indexcanada.app`, équipe, certificats et profils de provisionnement configurés.
+- [ ] Archive Release signée avec les vraies valeurs de production.
+- [ ] Démarrage de l'archive confirmé avec `APP_ENVIRONMENT=production`, une `API_BASE_URL` HTTPS non factice et une clé Stripe publique `pk_live_` du compte attendu.
+- [ ] Version installée et testée depuis TestFlight.
+- [ ] `Info.plist` et `PrivacyInfo.xcprivacy` validés contre les SDK et comportements réels.
+- [ ] Fiche App Privacy, public cible, classification et informations de révision complétées.
+- [ ] Captures et métadonnées FR/EN représentatives de la version testée.
+- [ ] Soumission App Store approuvée par la personne responsable du produit.
 
-### Phase 3 (Semaine 4)
-- Révisions store si nécessaires
-- Lancement marketing
-- Suivi des métriques initiales
+## 7. Exploitation et lancement — bloquant
 
-## 📊 Métriques de succès à suivre
+- [ ] Responsables nommés pour Wix, Stripe, stores, confidentialité et support utilisateur.
+- [ ] Alertes et procédure d'investigation définies pour les échecs de webhook, d'inscription et d'envoi de média.
+- [ ] Android vitals et métriques App Store surveillés dès la bêta.
+- [ ] Canal support, délai de réponse et procédure d'incident publiés.
+- [ ] Procédure de désactivation d'un forfait ou du paiement testée.
+- [ ] Sauvegarde/export des données Wix et procédure de restauration vérifiés.
+- [ ] Décision GO datée et signée après revue de toutes les preuves.
 
-### Téléchargements
-- Objectif mois 1: 1,000 téléchargements
-- Objectif mois 3: 5,000 téléchargements
-- Objectif année 1: 20,000+ téléchargements
+## 8. Indicateurs produit après lancement
 
-### Conversion professionnels
-- Objectif mois 1: 50 professionnels inscrits
-- Objectif mois 3: 200 professionnels
-- Objectif année 1: 1,000+ professionnels
+Aucun volume de téléchargements, revenu, taux de pénétration ou retour sur investissement n'est confirmé par le dépôt. Les objectifs doivent être établis avec une source, une période et un responsable après mesure d'une bêta.
 
-### Revenus
-- Objectif mois 1: 2,500 CAD
-- Objectif mois 3: 10,000 CAD
-- Objectif année 1: 50,000+ CAD
+| Indicateur | Référence de départ | Objectif approuvé | Période | Responsable |
+| --- | --- | --- | --- | --- |
+| Installations actives | À mesurer | À définir | À définir | À définir |
+| Recherche vers ouverture de fiche | À mesurer | À définir | À définir | À définir |
+| Inscription commencée vers complétée | À mesurer | À définir | À définir | À définir |
+| Paiements réussis / tentatives | À mesurer | À définir | À définir | À définir |
+| Rétention et désinstallation | À mesurer | À définir | À définir | À définir |
+| Demandes support et incidents | À mesurer | À définir | À définir | À définir |
 
-## 🔧 Support technique post-lancement
-
-### Monitoring et maintenance
-- Crash reporting (Firebase Crashlytics)
-- Analytics utilisateur (Firebase Analytics)
-- Feedback utilisateurs via stores
-- Mises à jour régulières (mensuel)
-
-### Évolution produit
-- Nouvelles fonctionnalités basées sur feedback
-- Expansion géographique (Ontario, Nouveau-Brunswick)
-- Intégration API tierces (Google My Business, etc.)
-- Version web responsive
-
----
-
-**Status actuel**: Application PRESQUE prête pour publication
-**Confidence niveau**: TRÈS ÉLEVÉ pour le succès commercial
-**Temps estimé avant lancement**: 2-3 semaines
+Le suivi ne doit être activé qu'après choix d'un mécanisme conforme à la politique de confidentialité. Firebase Analytics et Crashlytics ne sont pas actifs dans l'état actuel.
