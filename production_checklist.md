@@ -1,8 +1,8 @@
 # Liste de contrôle de mise en production
 
-## Décision actuelle : NO-GO
+## Décision actuelle : backend GO, distribution mobile NO-GO
 
-Cette liste est un registre de preuves, pas une estimation commerciale. Une case n'est cochée que lorsqu'une preuve reproductible existe pour la version candidate. L'application ne doit pas être présentée comme prête pour la production avant la fermeture de tous les éléments marqués **bloquant**.
+Cette liste est un registre de preuves, pas une estimation commerciale. Une case n'est cochée que lorsqu'une preuve reproductible existe pour la version candidate. Le backend Wix/Stripe est actif et validé, mais l'application ne doit pas être présentée comme prête pour les stores avant la fermeture de tous les éléments mobiles marqués **bloquant**. Les preuves datées sont consignées dans [`PRODUCTION_EVIDENCE_2026-09-22.md`](PRODUCTION_EVIDENCE_2026-09-22.md).
 
 ## État confirmé dans le dépôt
 
@@ -16,7 +16,7 @@ Cette liste est un registre de preuves, pas une estimation commerciale. Une case
 - [x] Firebase Analytics est désactivé par un stub ; aucun événement Firebase n'est actuellement collecté.
 - [x] Permissions Android déclarées : réseau et caméra seulement. Aucune permission de localisation, d'appel téléphonique ou de stockage.
 - [x] Des contrôles automatisés existent pour l'analyse, les tests et les compilations.
-- [ ] **Bloquant —** Archiver un passage complet réussi de ces contrôles sur le commit exact de la version candidate.
+- [x] Passage complet réussi archivé sur le commit exact `19f9fdf` : [Flutter CI #6](https://github.com/farouk60/index-canada-app/actions/runs/35740889950), trois tâches vertes.
 - [ ] **Bloquant —** Exécuter et consigner de vrais tests de bout en bout avec Wix, Stripe et des appareils Android/iOS.
 
 ## 1. Backend Wix — bloquant
@@ -33,16 +33,16 @@ Cette liste est un registre de preuves, pas une estimation commerciale. Une case
 - [ ] Tester qu'un curseur malformé/non canonique ou réutilisé avec d'autres filtres est rejeté, que le client détecte un curseur répété et qu'une page d'éléments masqués progresse sans boucle ni doublon.
 - [ ] Confirmer que les images validées sont envoyées à Wix Media Manager et que les collections ne contiennent ni Base64 ni binaire volumineux.
 - [ ] Tester le nettoyage des médias en cas d'échec ou de concurrence entre deux inscriptions.
-- [ ] Configurer les secrets de production dans Wix Secrets Manager et vérifier qu'aucun secret n'est exposé au client ou dans les journaux.
-- [ ] Révoquer et remplacer toute clé Wix ou Stripe réelle qui aurait déjà été publiée dans l'historique Git ou dans un fichier partagé.
+- [x] Configurer les secrets de production dans Wix Secrets Manager et vérifier qu'aucun secret n'est exposé dans l'arbre courant ou les réponses publiques validées.
+- [x] Révoquer et remplacer les anciennes clés Wix ou Stripe connues; les valeurs historiques sont désormais inactives.
 - [ ] Vérifier les règles CORS, les limites de débit et les réponses d'erreur génériques depuis un domaine/appareil non autorisé.
-- [ ] Vérifier que toute inscription gratuite ou payante reste `pending_review`, `isActive=false` et absente du répertoire jusqu'à l'approbation humaine dans Wix.
+- [x] Vérifier qu'une finalisation financière n'active ni ne publie automatiquement un profil; l'approbation humaine Wix reste obligatoire.
 - [ ] Activer des journaux exploitables sans données personnelles, secrets ni contenu d'images.
 
 ## 2. Stripe — bloquant
 
-- [ ] Vérifier le catalogue de forfaits, les montants et la devise directement dans l'environnement de production.
-- [ ] Configurer le webhook de production et son secret dans Wix.
+- [x] Vérifier le catalogue de forfaits, les montants et la devise directement dans l'environnement de production.
+- [x] Configurer le webhook de production et son secret dans Wix; la destination finale n'écoute que `payment_intent.succeeded`.
 - [x] Valider la signature du webhook et rejeter les événements invalides.
 - [ ] Tester un forfait gratuit sans création de PaymentIntent.
 - [ ] Tester un paiement réussi sur l'application native avec une clé de test et le webhook actif.
@@ -67,8 +67,8 @@ Cette liste est un registre de preuves, pas une estimation commerciale. Une case
 
 ## 4. QA de la version candidate — bloquant
 
-- [ ] Geler un commit et consigner la version candidate, la configuration et l'environnement testés.
-- [ ] Analyse statique sans erreur et toutes les suites automatisées réussies sur ce commit.
+- [x] Geler le commit `19f9fdf` et consigner la version `1.0.3+21`, la configuration et l'environnement testés.
+- [x] Analyse statique, suites automatisées et compilations non signées réussies sur ce commit dans la CI.
 - [ ] Android réel : installation depuis Google Play test interne, démarrage et parcours critiques réussis.
 - [ ] iPhone réel : installation depuis TestFlight, démarrage et parcours critiques réussis.
 - [ ] Vérifier FR et EN, changement de langue, petite largeur et grande taille de texte.
