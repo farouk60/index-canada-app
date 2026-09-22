@@ -195,12 +195,9 @@ jobs:
       - name: Installer les dépendances verrouillées
         run: flutter pub get --enforce-lockfile
 
-      - name: Compiler la cible iOS sans signature
-        run: >-
-          flutter build ios --release --no-codesign
-          --dart-define=APP_ENVIRONMENT=staging
-          --dart-define=API_BASE_URL=https://ci.index-canada.example/_functions
-          --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_0000000000000000
+      - name: Synchroniser les dépendances CocoaPods
+        working-directory: ios
+        run: pod install
 
       - name: Vérifier la cohérence du lockfile iOS
         shell: bash
@@ -209,10 +206,19 @@ jobs:
 
           if ! git diff --quiet -- ios/Podfile.lock; then
             git diff -- ios/Podfile.lock
-            diagnostic="$(git diff -- ios/Podfile.lock | tail -n 120)"
-            diagnostic="${diagnostic//'%'/'%25'}"
-            diagnostic="${diagnostic//$'\r'/'%0D'}"
-            diagnostic="${diagnostic//$'\n'/'%0A'}"
-            echo "::error title=Podfile.lock régénéré::$diagnostic"
+            encoded="$(base64 < ios/Podfile.lock | tr -d '\r\n')"
+            chunk_size=3000
+            chunk_count=$(( (${#encoded} + chunk_size - 1) / chunk_size ))
+            for ((chunk_index = 0; chunk_index < chunk_count; chunk_index++)); do
+              chunk="${encoded:chunk_index*chunk_size:chunk_size}"
+              echo "::error title=Podfile.lock base64 $((chunk_index + 1))/$chunk_count::$chunk"
+            done
             exit 1
           fi
+
+      - name: Compiler la cible iOS sans signature
+        run: >-
+          flutter build ios --release --no-codesign
+          --dart-define=APP_ENVIRONMENT=staging
+          --dart-define=API_BASE_URL=https://ci.index-canada.example/_functions
+          --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_0000000000000000
