@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
+
 import '../models.dart';
 import '../data_service.dart';
 import '../image_cache_service.dart';
@@ -14,7 +15,9 @@ import '../widgets/language_selector.dart';
 import 'add_review_page.dart';
 import '../theme/app_theme.dart';
 import '../widgets/full_screen_image_gallery.dart';
+
 import 'package:cached_network_image/cached_network_image.dart';
+
 import '../utils.dart';
 
 class ProfessionnelDetailPage extends StatefulWidget {
@@ -34,6 +37,9 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
   bool _isLoadingReviews = true;
   String? _reviewsError;
   bool _isFavorite = false;
+  int _reviewsLoadGeneration = 0;
+  int _favoriteLoadGeneration = 0;
+  Future<void> _favoriteWriteQueue = Future<void>.value();
 
   @override
   void initState() {
@@ -57,25 +63,34 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
   }
 
   // Charger le statut favori depuis le stockage local
-  void _loadFavoriteStatus() async {
+  Future<void> _loadFavoriteStatus() async {
+    final loadGeneration = ++_favoriteLoadGeneration;
     try {
       final favoriteService = FavoriteService.instance;
       final isFavorite = await favoriteService.isFavorite(
         widget.professionnel.id,
       );
-      if (mounted) {
+      if (mounted && loadGeneration == _favoriteLoadGeneration) {
         setState(() {
           _isFavorite = isFavorite;
         });
       }
-    } catch (e) {
+    } catch (_) {
       // Ignorer les erreurs de chargement du statut favori
-      print('Erreur lors du chargement du statut favori: $e');
     }
   }
 
   // Basculer l'état d'un favori
-  Future<void> _toggleFavorite() async {
+  Future<void> _toggleFavorite() {
+    ++_favoriteLoadGeneration;
+    final operation = _favoriteWriteQueue.then<void>((_) async {
+      await _performFavoriteToggle();
+    });
+    _favoriteWriteQueue = operation;
+    return operation;
+  }
+
+  Future<void> _performFavoriteToggle() async {
     try {
       final favoriteService = FavoriteService.instance;
       final newFavoriteStatus = await favoriteService.toggleFavorite(
@@ -106,7 +121,7 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
           ),
         );
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -147,19 +162,28 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
   }
 
   Future<void> _loadReviews() async {
+    if (!mounted) return;
+
+    final loadGeneration = ++_reviewsLoadGeneration;
+    setState(() {
+      _isLoadingReviews = true;
+      _reviewsError = null;
+    });
+
     try {
       final wixApi = DataService();
       final reviews = await wixApi.fetchReviews(widget.professionnel.id);
-      if (mounted) {
+      if (mounted && loadGeneration == _reviewsLoadGeneration) {
         setState(() {
           _reviews = reviews;
+          _reviewsError = null;
           _isLoadingReviews = false;
         });
       }
-    } catch (e) {
-      if (mounted) {
+    } catch (_) {
+      if (mounted && loadGeneration == _reviewsLoadGeneration) {
         setState(() {
-          _reviewsError = e.toString();
+          _reviewsError = 'loading_error';
           _isLoadingReviews = false;
         });
       }
@@ -220,100 +244,114 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                     end: Alignment.bottomCenter,
                   ),
                 ),
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: widget.professionnel.image.isNotEmpty
-                      ? _openFullScreenGallery
-                      : null,
-                  child: widget.professionnel.image.isNotEmpty
-                    ? Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          // DEBUG: Imprimer l'URL de l'image
-                          Builder(
-                            builder: (context) {
-                              print('Image URL: ${widget.professionnel.image}');
-                              print(
-                                'Image is valid URL: ${Uri.tryParse(widget.professionnel.image) != null}',
-                              );
-                              return ImageCacheService().buildOptimizedImage(
-                                imageUrl: widget.professionnel.image,
-                                width: double.infinity,
-                                height: 250,
-                                fit: BoxFit.cover,
-                                placeholder: Container(
-                                  decoration: const BoxDecoration(
-                                    gradient: LinearGradient(
-                                      colors: [AppTheme.brandPrimary, AppTheme.brandSecondary],
-                                      begin: Alignment.topCenter,
-                                      end: Alignment.bottomCenter,
+                child: Semantics(
+                  button: widget.professionnel.image.isNotEmpty,
+                  label: widget.professionnel.image.isNotEmpty
+                      ? _localizationService
+                            .tr('open_gallery_image')
+                            .replaceAll('{number}', '1')
+                      : _localizationService.tr('image_unavailable'),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: widget.professionnel.image.isNotEmpty
+                          ? _openFullScreenGallery
+                          : null,
+                      child: widget.professionnel.image.isNotEmpty
+                          ? Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                ImageCacheService().buildOptimizedImage(
+                                  imageUrl: widget.professionnel.image,
+                                  width: double.infinity,
+                                  height: 250,
+                                  fit: BoxFit.cover,
+                                  placeholder: Container(
+                                    decoration: const BoxDecoration(
+                                      gradient: LinearGradient(
+                                        colors: [
+                                          AppTheme.brandPrimary,
+                                          AppTheme.brandSecondary,
+                                        ],
+                                        begin: Alignment.topCenter,
+                                        end: Alignment.bottomCenter,
+                                      ),
                                     ),
-                                  ),
-                                  child: const Center(
-                                    child: CircularProgressIndicator(
-                                      valueColor: AlwaysStoppedAnimation<Color>(
-                                        Colors.white,
+                                    child: const Center(
+                                      child: CircularProgressIndicator(
+                                        valueColor:
+                                            AlwaysStoppedAnimation<Color>(
+                                              Colors.white,
+                                            ),
                                       ),
                                     ),
                                   ),
-                                ),
-                                errorWidget: Container(
-                                  decoration: const BoxDecoration(
-                                    gradient: LinearGradient(
-                                      colors: [AppTheme.brandPrimary, AppTheme.brandSecondary],
-                                      begin: Alignment.topCenter,
-                                      end: Alignment.bottomCenter,
-                                    ),
-                                  ),
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      const Icon(
-                                        Icons.person,
-                                        size: 100,
-                                        color: Colors.white,
+                                  errorWidget: Container(
+                                    decoration: const BoxDecoration(
+                                      gradient: LinearGradient(
+                                        colors: [
+                                          AppTheme.brandPrimary,
+                                          AppTheme.brandSecondary,
+                                        ],
+                                        begin: Alignment.topCenter,
+                                        end: Alignment.bottomCenter,
                                       ),
-                                      Text(
-                                        'Image non trouvée\n${widget.professionnel.image}',
-                                        style: const TextStyle(
+                                    ),
+                                    child: Column(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        const Icon(
+                                          Icons.person,
+                                          size: 100,
                                           color: Colors.white,
                                         ),
-                                        textAlign: TextAlign.center,
-                                      ),
-                                    ],
+                                        Text(
+                                          _localizationService.tr(
+                                            'image_unavailable',
+                                          ),
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ),
-                              );
-                            },
-                          ),
-                          Container(
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [
-                                  Colors.transparent,
-                                  Colors.black.withValues(alpha: 0.7),
-                                ],
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
+                                Container(
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      colors: [
+                                        Colors.transparent,
+                                        Colors.black.withValues(alpha: 0.7),
+                                      ],
+                                      begin: Alignment.topCenter,
+                                      end: Alignment.bottomCenter,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            )
+                          : Container(
+                              decoration: const BoxDecoration(
+                                gradient: LinearGradient(
+                                  colors: [
+                                    AppTheme.brandPrimary,
+                                    AppTheme.brandSecondary,
+                                  ],
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                ),
+                              ),
+                              child: const Icon(
+                                Icons.person,
+                                size: 100,
+                                color: Colors.white,
                               ),
                             ),
-                          ),
-                        ],
-                      )
-                    : Container(
-                        decoration: const BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [AppTheme.brandPrimary, AppTheme.brandSecondary],
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                          ),
-                        ),
-                        child: const Icon(
-                          Icons.person,
-                          size: 100,
-                          color: Colors.white,
-                        ),
-                      ),
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -331,7 +369,9 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                   // Informations principales
                   Card(
                     elevation: 4,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
                     child: Padding(
                       padding: const EdgeInsets.all(16),
                       child: Column(
@@ -403,7 +443,10 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                               ),
                               decoration: BoxDecoration(
                                 gradient: const LinearGradient(
-                                  colors: [AppTheme.brandSecondary, AppTheme.brandTertiary],
+                                  colors: [
+                                    AppTheme.brandSecondary,
+                                    AppTheme.brandTertiary,
+                                  ],
                                   begin: Alignment.topLeft,
                                   end: Alignment.bottomRight,
                                 ),
@@ -412,10 +455,16 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  const Icon(Icons.star, color: Colors.white, size: 16),
+                                  const Icon(
+                                    Icons.star,
+                                    color: Colors.white,
+                                    size: 16,
+                                  ),
                                   const SizedBox(width: 4),
                                   Text(
-                                    _localizationService.tr('recommended_professional'),
+                                    _localizationService.tr(
+                                      'recommended_professional',
+                                    ),
                                     style: const TextStyle(
                                       color: Colors.white,
                                       fontWeight: FontWeight.w600,
@@ -442,23 +491,6 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // DEBUG: Logs pour diagnostiquer
-                        Builder(
-                          builder: (context) {
-                            print('=== ProfessionnelDetailPage DEBUG ===');
-                            print(
-                              'Professionnel: ${widget.professionnel.title}',
-                            );
-                            print(
-                              'Nombre d\'images: ${widget.professionnel.getAllGalleryImages().length}',
-                            );
-                            print(
-                              'Images: ${widget.professionnel.getAllGalleryImages().map((img) => img.substring(0, img.length.clamp(0, 50))).toList()}',
-                            );
-                            print('====================================');
-                            return Container();
-                          },
-                        ),
                         Text(
                           _localizationService.tr('image_gallery'),
                           style: const TextStyle(
@@ -480,7 +512,9 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                   // Section des avis
                   Card(
                     elevation: 4,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
                     child: Padding(
                       padding: const EdgeInsets.all(16),
                       child: Column(
@@ -490,7 +524,9 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Text(
-                                '${_localizationService.tr('client_reviews')} (${_reviews.length})',
+                                _localizationService.clientReviewsLabel(
+                                  _reviews.length,
+                                ),
                                 style: const TextStyle(
                                   fontSize: 20,
                                   fontWeight: FontWeight.bold,
@@ -507,14 +543,9 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                                       ),
                                     ),
                                   );
+                                  if (!mounted) return;
                                   if (result == true) {
-                                    // Recharger immédiatement puis une seconde fois après un court délai
-                                    _loadReviews();
-                                    Future.delayed(const Duration(seconds: 2), () {
-                                      if (mounted) {
-                                        _loadReviews();
-                                      }
-                                    });
+                                    await _loadReviews();
                                   }
                                 },
                                 icon: const Icon(Icons.add),
@@ -551,7 +582,7 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                           else if (_reviewsError != null)
                             Center(
                               child: Text(
-                                '${_localizationService.tr('error')}: $_reviewsError',
+                                _localizationService.tr(_reviewsError!),
                                 style: TextStyle(color: Colors.red.shade600),
                               ),
                             )
@@ -571,7 +602,7 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                               shrinkWrap: true,
                               physics: const NeverScrollableScrollPhysics(),
                               itemCount: _reviews.length,
-                              separatorBuilder: (_, __) => const Divider(),
+                              separatorBuilder: (_, _) => const Divider(),
                               itemBuilder: (context, index) {
                                 final review = _reviews[index];
                                 return Padding(
@@ -632,12 +663,21 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _toggleFavorite,
-        backgroundColor: _isFavorite ? Colors.red : Colors.grey,
-        child: Icon(
-          _isFavorite ? Icons.favorite : Icons.favorite_border,
-          color: Colors.white,
+      floatingActionButton: Semantics(
+        selected: _isFavorite,
+        label: _localizationService.tr(
+          _isFavorite ? 'remove_from_favorites' : 'add_to_favorites',
+        ),
+        child: FloatingActionButton(
+          onPressed: _toggleFavorite,
+          tooltip: _localizationService.tr(
+            _isFavorite ? 'remove_from_favorites' : 'add_to_favorites',
+          ),
+          backgroundColor: _isFavorite ? Colors.red : Colors.grey,
+          child: Icon(
+            _isFavorite ? Icons.favorite : Icons.favorite_border,
+            color: Colors.white,
+          ),
         ),
       ),
     );
@@ -670,6 +710,36 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
   }
 
   // Boutons d'action principaux sous l'en-tête
+  Future<void> _callProfessional() async {
+    try {
+      await _analytics.trackPhoneCall(
+        professionalId: widget.professionnel.id,
+        professionalName: widget.professionnel.title,
+      );
+    } on Exception {
+      // La télémétrie ne doit jamais empêcher l’action principale.
+    }
+
+    try {
+      final launched = await SimplePhoneCall.call(
+        widget.professionnel.numroDeTlphone,
+      );
+      if (!launched && mounted) {
+        _showPhoneCallError();
+      }
+    } on Exception {
+      if (mounted) {
+        _showPhoneCallError();
+      }
+    }
+  }
+
+  void _showPhoneCallError() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(_localizationService.tr('phone_call_error'))),
+    );
+  }
+
   Widget _buildActionButtons() {
     final hasPhone = widget.professionnel.numroDeTlphone.isNotEmpty;
     final hasAddress = widget.professionnel.address.isNotEmpty;
@@ -678,20 +748,12 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
 
     String t(String fr, String en) => lang == 'fr' ? fr : en;
 
-  return Wrap(
+    return Wrap(
       spacing: 10,
       runSpacing: 10,
       children: [
         ElevatedButton.icon(
-          onPressed: hasPhone
-              ? () async {
-                  await _analytics.trackPhoneCall(
-                    professionalId: widget.professionnel.id,
-                    professionalName: widget.professionnel.title,
-                  );
-                  SimplePhoneCall.call(widget.professionnel.numroDeTlphone);
-                }
-              : null,
+          onPressed: hasPhone ? _callProfessional : null,
           icon: const Icon(Icons.phone),
           label: Text(t('Appeler', 'Call')),
           style: ElevatedButton.styleFrom(
@@ -702,7 +764,9 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
           ),
         ),
         ElevatedButton.icon(
-          onPressed: hasAddress ? () => _openMaps(widget.professionnel.address) : null,
+          onPressed: hasAddress
+              ? () => _openMaps(widget.professionnel.address)
+              : null,
           icon: const Icon(Icons.directions),
           label: Text(t('Itinéraire', 'Directions')),
           style: ElevatedButton.styleFrom(
@@ -713,7 +777,9 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
           ),
         ),
         ElevatedButton.icon(
-          onPressed: hasWebsite ? () => _openWebsite(widget.professionnel.website) : null,
+          onPressed: hasWebsite
+              ? () => _openWebsite(widget.professionnel.website)
+              : null,
           icon: const Icon(Icons.language),
           label: Text(t('Site web', 'Website')),
           style: ElevatedButton.styleFrom(
@@ -722,7 +788,7 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
             shape: const StadiumBorder(),
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           ),
-  ),
+        ),
       ],
     );
   }
@@ -749,7 +815,7 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
           ),
         );
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -785,7 +851,7 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
       } else {
         throw 'Impossible d\'ouvrir le site web';
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -840,8 +906,13 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                   )
                 // Si c'est une adresse, on la rend cliquable pour ouvrir Maps
                 else if (label == _localizationService.tr('address'))
-                  GestureDetector(
-                    onTap: () => _openMaps(value),
+                  TextButton(
+                    onPressed: () => _openMaps(value),
+                    style: TextButton.styleFrom(
+                      alignment: Alignment.centerLeft,
+                      minimumSize: const Size(48, 48),
+                      padding: EdgeInsets.zero,
+                    ),
                     child: Text(
                       value,
                       style: const TextStyle(
@@ -854,8 +925,13 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                   )
                 // Si c'est un site web, on le rend cliquable
                 else if (label == _localizationService.tr('website'))
-                  GestureDetector(
-                    onTap: () => _openWebsite(value),
+                  TextButton(
+                    onPressed: () => _openWebsite(value),
+                    style: TextButton.styleFrom(
+                      alignment: Alignment.centerLeft,
+                      minimumSize: const Size(48, 48),
+                      padding: EdgeInsets.zero,
+                    ),
                     child: Text(
                       value,
                       style: const TextStyle(
@@ -886,7 +962,9 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
   Widget _buildSocialMediaSection() {
     return Container(
       margin: const EdgeInsets.only(top: 16),
-      child: Row(
+      child: Wrap(
+        spacing: 4,
+        runSpacing: 8,
         children: [
           if (widget.professionnel.facebook.isNotEmpty)
             _buildSocialIcon(
@@ -942,26 +1020,20 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
     String url,
     String platform,
   ) {
-    return Container(
-      margin: const EdgeInsets.only(right: 8),
-      child: GestureDetector(
-        onTap: () => _openSocialLink(url, platform),
-        child: Container(
-          width: 40,
-          height: 40,
-          decoration: BoxDecoration(
-            color: color,
-            borderRadius: BorderRadius.circular(8),
-            boxShadow: [
-              BoxShadow(
-                color: color.withOpacity(0.3),
-                blurRadius: 4,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Icon(icon, color: Colors.white, size: 20),
-        ),
+    final actionLabel = _localizationService.currentLanguage == 'en'
+        ? 'Open $platform'
+        : 'Ouvrir $platform';
+
+    return IconButton(
+      onPressed: () => _openSocialLink(url, platform),
+      tooltip: actionLabel,
+      icon: Icon(icon, color: Colors.white, size: 22),
+      style: IconButton.styleFrom(
+        backgroundColor: color,
+        minimumSize: const Size(48, 48),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        shadowColor: color.withValues(alpha: 0.3),
+        elevation: 2,
       ),
     );
   }
@@ -986,17 +1058,17 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Impossible d\'ouvrir $platform'),
+              content: Text(_localizationService.tr('error_opening_link')),
               backgroundColor: Colors.orange,
             ),
           );
         }
       }
-    } catch (e) {
+    } on Exception {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Erreur lors de l\'ouverture: $e'),
+            content: Text(_localizationService.tr('error_opening_link')),
             backgroundColor: Colors.red,
           ),
         );

@@ -1,24 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_phone_direct_caller/flutter_phone_direct_caller.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-/// Solution ultra-simple : clic = appel direct
+import 'services/localization_service.dart';
+
+/// Ouvre le composeur téléphonique sans demander une permission d'appel direct.
 class SimplePhoneCall {
-  /// Lance directement un appel téléphonique
-  static Future<void> call(String phoneNumber) async {
-    debugPrint('📞 Tentative d\'appel vers: $phoneNumber');
+  static Future<bool> call(String phoneNumber) async {
+    final normalized = phoneNumber.trim().replaceAll(RegExp(r'[^0-9+]'), '');
+    if (normalized.isEmpty) return false;
 
-    if (phoneNumber.isEmpty) {
-      debugPrint('❌ Numéro vide !');
-      return;
-    }
-
-    try {
-      debugPrint('🔄 Lancement de l\'appel...');
-      await FlutterPhoneDirectCaller.callNumber(phoneNumber);
-      debugPrint('✅ Appel lancé avec succès');
-    } catch (e) {
-      debugPrint('❌ Appel échoué: $e');
-    }
+    return launchUrl(
+      Uri(scheme: 'tel', path: normalized),
+      mode: LaunchMode.externalApplication,
+    );
   }
 
   /// Formate le numéro pour l'affichage (optionnel)
@@ -27,6 +21,27 @@ class SimplePhoneCall {
       return '${phoneNumber.substring(0, 2)} ${phoneNumber.substring(2, 4)} ${phoneNumber.substring(4, 6)} ${phoneNumber.substring(6, 8)} ${phoneNumber.substring(8, 10)}';
     }
     return phoneNumber;
+  }
+}
+
+Future<void> _callWithFeedback(
+  BuildContext context,
+  String phoneNumber, {
+  VoidCallback? onCallInitiated,
+}) async {
+  onCallInitiated?.call();
+
+  var launched = false;
+  try {
+    launched = await SimplePhoneCall.call(phoneNumber);
+  } on Exception {
+    launched = false;
+  }
+
+  if (!launched && context.mounted) {
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(content: Text(LocalizationService().tr('phone_call_error'))),
+    );
   }
 }
 
@@ -47,12 +62,16 @@ class ClickToCall extends StatelessWidget {
   Widget build(BuildContext context) {
     if (phoneNumber.isEmpty) return const SizedBox.shrink();
 
-    return GestureDetector(
-      onTap: () {
-        debugPrint('🖱️ Clic détecté sur le numéro: $phoneNumber');
-        onCallInitiated?.call(); // Appeler le callback pour tracking
-        SimplePhoneCall.call(phoneNumber);
-      },
+    return TextButton(
+      onPressed: () => _callWithFeedback(
+        context,
+        phoneNumber,
+        onCallInitiated: onCallInitiated,
+      ),
+      style: TextButton.styleFrom(
+        minimumSize: const Size(48, 48),
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+      ),
       child: Text(
         SimplePhoneCall.format(phoneNumber),
         style:
@@ -79,12 +98,9 @@ class CallButton extends StatelessWidget {
     if (phoneNumber.isEmpty) return const SizedBox.shrink();
 
     return ElevatedButton.icon(
-      onPressed: () {
-        debugPrint('🔘 Bouton appeler pressé pour: $phoneNumber');
-        SimplePhoneCall.call(phoneNumber);
-      },
+      onPressed: () => _callWithFeedback(context, phoneNumber),
       icon: const Icon(Icons.phone),
-      label: Text(label ?? 'Appeler'),
+      label: Text(label ?? LocalizationService().tr('call')),
       style: ElevatedButton.styleFrom(
         backgroundColor: Colors.green.shade600,
         foregroundColor: Colors.white,

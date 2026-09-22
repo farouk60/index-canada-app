@@ -1,94 +1,80 @@
-import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+
 import '../models/wix_partner_models.dart';
 import '../services/localization_service.dart';
-import '../widgets/fast_image_widget.dart';
 import '../utils.dart';
+import 'fast_image_widget.dart';
 
-/// Widget carrousel pour afficher les partenaires Wix
-class WixPartnerCarousel extends StatefulWidget {
-  final List<WixPartner> partners;
-  final String title;
+Uri? _parsePartnerWebsite(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) return null;
 
+  final candidate = trimmed.contains('://') ? trimmed : 'https://$trimmed';
+  final uri = Uri.tryParse(candidate);
+  if (uri == null || uri.host.isEmpty || uri.userInfo.isNotEmpty) return null;
+
+  final scheme = uri.scheme.toLowerCase();
+  if (scheme != 'https' && scheme != 'http') return null;
+  return uri;
+}
+
+Future<void> _launchPartnerWebsite(BuildContext context, Uri uri) async {
+  var launched = false;
+  try {
+    launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+  } on Exception {
+    launched = false;
+  }
+
+  if (launched || !context.mounted) return;
+
+  ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+    SnackBar(content: Text(LocalizationService().tr('error_opening_link'))),
+  );
+}
+
+VoidCallback? _websiteAction(BuildContext context, Uri? uri) {
+  if (uri == null) return null;
+  return () => unawaited(_launchPartnerWebsite(context, uri));
+}
+
+class WixPartnerCarousel extends StatelessWidget {
   const WixPartnerCarousel({
     super.key,
     required this.partners,
     required this.title,
   });
 
-  @override
-  State<WixPartnerCarousel> createState() => _WixPartnerCarouselState();
-}
-
-class _WixPartnerCarouselState extends State<WixPartnerCarousel> {
-  late PageController _pageController;
-  Timer? _autoScrollTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    _pageController = PageController();
-
-    // Démarrer le carrousel automatique si il y a des partenaires
-    if (widget.partners.isNotEmpty) {
-      _startAutoScroll();
-    }
-  }
-
-  @override
-  void dispose() {
-    _autoScrollTimer?.cancel();
-    _pageController.dispose();
-    super.dispose();
-  }
-
-  void _startAutoScroll() {
-    _autoScrollTimer?.cancel();
-
-    // ⚠️ OPTIMISATION: Augmenter l'intervalle pour réduire les rebuilds
-    _autoScrollTimer = Timer.periodic(const Duration(seconds: 6), (timer) {
-      if (_pageController.hasClients && widget.partners.isNotEmpty && mounted) {
-        int totalPages = (widget.partners.length / 3).ceil();
-        int nextPage = (_pageController.page?.round() ?? 0) + 1;
-        if (nextPage >= totalPages) {
-          nextPage = 0;
-        }
-        _pageController.animateToPage(
-          nextPage,
-          duration: const Duration(milliseconds: 500),
-          curve: Curves.easeInOut,
-        );
-      }
-    });
-  }
+  final List<WixPartner> partners;
+  final String title;
 
   @override
   Widget build(BuildContext context) {
-    if (widget.partners.isEmpty) {
-      return const SizedBox.shrink();
-    }
+    if (partners.isEmpty) return const SizedBox.shrink();
 
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 16),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Titre de la section
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(
               children: [
-                const Text('🤝', style: TextStyle(fontSize: 24)),
+                const ExcludeSemantics(
+                  child: Text('🤝', style: TextStyle(fontSize: 24)),
+                ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
-                    widget.title,
-                    style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black87,
+                  child: Semantics(
+                    header: true,
+                    child: Text(
+                      title,
+                      style: Theme.of(context).textTheme.titleLarge
+                          ?.copyWith(fontWeight: FontWeight.w800),
                     ),
                   ),
                 ),
@@ -96,40 +82,19 @@ class _WixPartnerCarouselState extends State<WixPartnerCarousel> {
             ),
           ),
           const SizedBox(height: 12),
-
-          // Carrousel horizontal avec défilement automatique
           SizedBox(
-            height: 110, // Ajuster à la nouvelle taille
-            child: PageView.builder(
-              controller: _pageController,
-              itemCount: (widget.partners.length / 3)
-                  .ceil(), // Nombre de pages pour 3 items par page
-              itemBuilder: (context, pageIndex) {
-                // Calculer les indices pour cette page
-                int startIndex = pageIndex * 3;
-                int endIndex = (startIndex + 3).clamp(
-                  0,
-                  widget.partners.length,
-                );
-
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      for (int i = startIndex; i < endIndex; i++)
-                        Container(
-                          width: 110,
-                          height: 110,
-                          child: _WixPartnerCard(
-                            partner: widget.partners[i],
-                            key: ValueKey(
-                              'partner_${widget.partners[i].id}_$i',
-                            ), // Cache key
-                          ),
-                        ),
-                    ],
-                  ),
+            height: 110,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: partners.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 12),
+              itemBuilder: (context, index) {
+                final partner = partners[index];
+                return SizedBox(
+                  key: ValueKey(partner.id),
+                  width: 110,
+                  child: _WixPartnerCard(partner: partner),
                 );
               },
             ),
@@ -140,107 +105,44 @@ class _WixPartnerCarouselState extends State<WixPartnerCarousel> {
   }
 }
 
-/// Carte individuelle de partenaire Wix
 class _WixPartnerCard extends StatelessWidget {
-  final WixPartner partner;
+  const _WixPartnerCard({required this.partner});
 
-  const _WixPartnerCard({super.key, required this.partner});
+  final WixPartner partner;
 
   @override
   Widget build(BuildContext context) {
-    // ⚠️ LOGS RÉDUITS pour éviter le spam de console
-    // print('WixPartnerCard: Building card for ${partner.title}');
+    final localization = LocalizationService();
+    final title = partner.getTitleInLanguage(localization.currentLanguage);
+    final websiteUri = _parsePartnerWebsite(partner.website);
+    final actionLabel = '${localization.tr('visit_website')}: $title';
+    final colorScheme = Theme.of(context).colorScheme;
+    final onOpen = _websiteAction(context, websiteUri);
 
-    final validImageUrl = getValidImageUrl(partner.logo);
-
-    return GestureDetector(
-      onTap: () async {
-        // Redirection directe vers le site web du partenaire
-        if (partner.website.isNotEmpty) {
-          final url = partner.website.startsWith('http')
-              ? partner.website
-              : 'https://${partner.website}';
-          try {
-            if (await canLaunchUrl(Uri.parse(url))) {
-              await launchUrl(
-                Uri.parse(url),
-                mode: LaunchMode.externalApplication,
-              );
-            }
-          } catch (e) {
-            // En cas d'erreur, ne rien faire (silencieux)
-          }
-        }
-      },
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.1),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Container(
-          width: 120,
-          height: 120,
-          padding: const EdgeInsets.all(8),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: CachedNetworkImage(
-              imageUrl: validImageUrl,
-              fit: BoxFit.contain,
-              width: 120,
-              height: 120,
-              httpHeaders: const {
-                'User-Agent':
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-              },
-              placeholder: (context, url) => Container(
-                decoration: BoxDecoration(
-                  color: Colors.grey[200],
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    CircularProgressIndicator(strokeWidth: 2),
-                    SizedBox(height: 8),
-                    Text('Chargement...', style: TextStyle(fontSize: 10)),
-                  ],
-                ),
+    return Tooltip(
+      message: websiteUri == null ? title : actionLabel,
+      excludeFromSemantics: true,
+      child: Semantics(
+        container: true,
+        link: websiteUri != null,
+        label: websiteUri == null ? title : actionLabel,
+        onTap: onOpen,
+        child: Material(
+          color: colorScheme.surfaceContainerLowest,
+          borderRadius: BorderRadius.circular(16),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            excludeFromSemantics: true,
+            onTap: onOpen,
+            child: Ink(
+              decoration: BoxDecoration(
+                border: Border.all(color: colorScheme.outlineVariant),
+                borderRadius: BorderRadius.circular(16),
               ),
-              errorWidget: (context, url, error) {
-                // Log seulement en cas d'erreur importante
-                if (error.toString().contains('404') ||
-                    error.toString().contains('NetworkImageLoadException')) {
-                  print(
-                    '⚠️ Image error for ${partner.title}: ${error.runtimeType}',
-                  );
-                }
-                return Container(
-                  decoration: BoxDecoration(
-                    color: Colors.red[100],
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.error, color: Colors.red, size: 30),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Erreur réseau',
-                        style: TextStyle(fontSize: 8, color: Colors.red[600]),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                );
-              },
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: _PartnerLogo(partner: partner, size: 90),
+              ),
             ),
           ),
         ),
@@ -249,12 +151,7 @@ class _WixPartnerCard extends StatelessWidget {
   }
 }
 
-/// Widget bannière promotionnelle pour partenaire
 class WixPartnerPromoBanner extends StatelessWidget {
-  final WixPartner partner;
-  final String? customTitle;
-  final String? customDescription;
-
   const WixPartnerPromoBanner({
     super.key,
     required this.partner,
@@ -262,132 +159,80 @@ class WixPartnerPromoBanner extends StatelessWidget {
     this.customDescription,
   });
 
+  final WixPartner partner;
+  final String? customTitle;
+  final String? customDescription;
+
   @override
   Widget build(BuildContext context) {
     final localization = LocalizationService();
+    final title =
+        customTitle ?? partner.getTitleInLanguage(localization.currentLanguage);
+    final description =
+        customDescription ??
+        partner.getDescriptionInLanguage(localization.currentLanguage);
+    final websiteUri = _parsePartnerWebsite(partner.website);
+    final actionLabel = '${localization.tr('visit_website')}: $title';
+    final colorScheme = Theme.of(context).colorScheme;
+    final onOpen = _websiteAction(context, websiteUri);
 
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Colors.blue.shade50, Colors.blue.shade100],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.blue.shade200, width: 1),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () async {
-          // Redirection directe vers le site web du partenaire
-          if (partner.website.isNotEmpty) {
-            final url = partner.website.startsWith('http')
-                ? partner.website
-                : 'https://${partner.website}';
-            try {
-              if (await canLaunchUrl(Uri.parse(url))) {
-                await launchUrl(
-                  Uri.parse(url),
-                  mode: LaunchMode.externalApplication,
-                );
-              }
-            } catch (e) {
-              // En cas d'erreur, ne rien faire (silencieux)
-            }
-          }
-        },
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              // Logo du partenaire
-              Container(
-                width: 60,
-                height: 60,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: FastImageWidget(
-                    imageUrl: getValidImageUrl(partner.logo),
-                    width: 60,
-                    height: 60,
-                    fit: BoxFit.contain,
-                    placeholder: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.grey[200],
-                        borderRadius: BorderRadius.circular(8),
+    return Semantics(
+      container: true,
+      link: websiteUri != null,
+      label: websiteUri == null
+          ? '$title. $description'
+          : '$actionLabel. $description',
+      onTap: onOpen,
+      child: Card(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        color: colorScheme.primaryContainer,
+        elevation: 0,
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          excludeFromSemantics: true,
+          onTap: onOpen,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                _PartnerLogo(partner: partner, size: 60),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(
+                              color: colorScheme.onPrimaryContainer,
+                              fontWeight: FontWeight.w800,
+                            ),
                       ),
-                      child: const Icon(Icons.business, color: Colors.grey),
-                    ),
-                    errorWidget: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.grey[200],
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Icon(Icons.business, color: Colors.grey),
-                    ),
+                      if (description.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          description,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(color: colorScheme.onPrimaryContainer),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
-              ),
-              const SizedBox(width: 16),
-
-              // Contenu textuel
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      customTitle ??
-                          partner.getTitleInLanguage(
-                            localization.currentLanguage,
-                          ),
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue.shade800,
-                      ),
+                if (websiteUri != null) ...[
+                  const SizedBox(width: 12),
+                  ExcludeSemantics(
+                    child: Icon(
+                      Icons.open_in_new_rounded,
+                      color: colorScheme.onPrimaryContainer,
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      customDescription ??
-                          partner.getDescriptionInLanguage(
-                            localization.currentLanguage,
-                          ),
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.blue.shade700,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-
-              // Bouton CTA
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.blue.shade600,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  localization.tr('learn_more'),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
                   ),
-                ),
-              ),
-            ],
+                ],
+              ],
+            ),
           ),
         ),
       ),
@@ -395,218 +240,120 @@ class WixPartnerPromoBanner extends StatelessWidget {
   }
 }
 
-/// Widget liste complète de partenaires
 class WixPartnerListCard extends StatelessWidget {
-  final WixPartner partner;
-
   const WixPartnerListCard({super.key, required this.partner});
 
+  final WixPartner partner;
+
   @override
   Widget build(BuildContext context) {
     final localization = LocalizationService();
+    final language = localization.currentLanguage;
+    final title = partner.getTitleInLanguage(language);
+    final description = partner.getDescriptionInLanguage(language);
+    final category =
+        PartnerCategory.getCategoryById(partner.category)
+            ?.getNameInLanguage(language) ??
+        partner.category;
+    final websiteUri = _parsePartnerWebsite(partner.website);
+    final actionLabel = '${localization.tr('visit_website')}: $title';
+    final colorScheme = Theme.of(context).colorScheme;
+    final onOpen = _websiteAction(context, websiteUri);
 
-    return Card(
-      elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () async {
-          // Redirection directe vers le site web du partenaire
-          if (partner.website.isNotEmpty) {
-            final url = partner.website.startsWith('http')
-                ? partner.website
-                : 'https://${partner.website}';
-            try {
-              if (await canLaunchUrl(Uri.parse(url))) {
-                await launchUrl(
-                  Uri.parse(url),
-                  mode: LaunchMode.externalApplication,
-                );
-              }
-            } catch (e) {
-              // En cas d'erreur, ne rien faire (silencieux)
-            }
-          }
-        },
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              // Logo du partenaire
-              Container(
-                width: 60,
-                height: 60,
-                decoration: BoxDecoration(
-                  color: Colors.grey[100],
-                  borderRadius: BorderRadius.circular(8),
+    return Semantics(
+      container: true,
+      link: websiteUri != null,
+      label: websiteUri == null
+          ? '$title. $description'
+          : '$actionLabel. $description',
+      onTap: onOpen,
+      child: Card(
+        elevation: 0,
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: colorScheme.outlineVariant),
+        ),
+        child: InkWell(
+          excludeFromSemantics: true,
+          onTap: onOpen,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _PartnerLogo(partner: partner, size: 64),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                      if (partner.isFeatured || partner.isOfficial) ...[
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            if (partner.isFeatured)
+                              _PartnerBadge(
+                                icon: Icons.star_rounded,
+                                label: localization.tr('featured_badge'),
+                                foreground: colorScheme.onTertiaryContainer,
+                                background: colorScheme.tertiaryContainer,
+                              ),
+                            if (partner.isOfficial)
+                              _PartnerBadge(
+                                icon: Icons.verified_rounded,
+                                label: localization.tr('official_partner'),
+                                foreground: colorScheme.onPrimaryContainer,
+                                background: colorScheme.primaryContainer,
+                              ),
+                          ],
+                        ),
+                      ],
+                      if (description.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          description,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(color: colorScheme.onSurfaceVariant),
+                        ),
+                      ],
+                      if (category.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          category,
+                          style: Theme.of(context).textTheme.labelMedium
+                              ?.copyWith(
+                                color: colorScheme.primary,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: FastImageWidget(
-                    imageUrl: getValidImageUrl(partner.logo),
-                    width: 60,
-                    height: 60,
-                    fit: BoxFit.contain,
-                    placeholder: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.grey[200],
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Icon(
-                        Icons.business,
-                        color: Colors.grey,
-                        size: 30,
-                      ),
-                    ),
-                    errorWidget: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.grey[200],
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Icon(
-                        Icons.business,
-                        color: Colors.grey,
-                        size: 30,
+                if (websiteUri != null) ...[
+                  const SizedBox(width: 8),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 20),
+                    child: ExcludeSemantics(
+                      child: Icon(
+                        Icons.open_in_new_rounded,
+                        color: colorScheme.primary,
                       ),
                     ),
                   ),
-                ),
-              ),
-              const SizedBox(width: 16),
-
-              // Informations du partenaire
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Nom et badges
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            partner.getTitleInLanguage(
-                              localization.currentLanguage,
-                            ),
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.black87,
-                            ),
-                          ),
-                        ),
-                        if (partner.isFeatured)
-                          Container(
-                            margin: const EdgeInsets.only(left: 8),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.orange,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.star,
-                                  color: Colors.white,
-                                  size: 12,
-                                ),
-                                const SizedBox(width: 2),
-                                Text(
-                                  localization.tr('featured_badge'),
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        if (partner.isOfficial)
-                          Container(
-                            margin: const EdgeInsets.only(left: 4),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.blue.shade100,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.verified,
-                                  color: Colors.blue.shade600,
-                                  size: 12,
-                                ),
-                                const SizedBox(width: 2),
-                                Text(
-                                  localization.tr('partner'),
-                                  style: TextStyle(
-                                    color: Colors.blue.shade600,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-
-                    // Description
-                    Text(
-                      partner.getDescriptionInLanguage(
-                        localization.currentLanguage,
-                      ),
-                      style: const TextStyle(
-                        fontSize: 14,
-                        color: Colors.black54,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-
-                    // Catégorie
-                    if (partner.category.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade200,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          PartnerCategory.getCategoryById(
-                                partner.category,
-                              )?.getNameInLanguage(
-                                localization.currentLanguage,
-                              ) ??
-                              partner.category,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Colors.black54,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-
-              // Icône de navigation
-              const Icon(Icons.arrow_forward_ios, color: Colors.grey, size: 16),
-            ],
+                ],
+              ],
+            ),
           ),
         ),
       ),
@@ -614,14 +361,97 @@ class WixPartnerListCard extends StatelessWidget {
   }
 }
 
-/// Widget carte de partenaire public pour utilisation externe
 class WixPartnerCard extends StatelessWidget {
-  final WixPartner partner;
-
   const WixPartnerCard({super.key, required this.partner});
+
+  final WixPartner partner;
 
   @override
   Widget build(BuildContext context) {
     return _WixPartnerCard(partner: partner);
+  }
+}
+
+class _PartnerLogo extends StatelessWidget {
+  const _PartnerLogo({required this.partner, required this.size});
+
+  final WixPartner partner;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final fallback = ColoredBox(
+      color: colorScheme.surfaceContainerHighest,
+      child: Icon(
+        Icons.business_rounded,
+        color: colorScheme.onSurfaceVariant,
+        size: size * 0.45,
+      ),
+    );
+
+    return ExcludeSemantics(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: SizedBox.square(
+          dimension: size,
+          child: FastImageWidget(
+            imageUrl: getValidImageUrl(partner.logo),
+            width: size,
+            height: size,
+            fit: BoxFit.contain,
+            placeholder: ColoredBox(
+              color: colorScheme.surfaceContainerHighest,
+              child: const Center(
+                child: SizedBox.square(
+                  dimension: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            ),
+            errorWidget: fallback,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PartnerBadge extends StatelessWidget {
+  const _PartnerBadge({
+    required this.icon,
+    required this.label,
+    required this.foreground,
+    required this.background,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color foreground;
+  final Color background;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: foreground),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.labelSmall
+                  ?.copyWith(color: foreground, fontWeight: FontWeight.w800),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

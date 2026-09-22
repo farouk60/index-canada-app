@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+
 import 'dart:async';
+
 import '../models.dart';
 import '../data_service.dart';
 import '../utils.dart';
@@ -39,12 +41,13 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
   List<Professionnel> _allProfessionnels = [];
   List<Professionnel> _filteredProfessionnels = [];
   bool _isLoading = true;
-  String? _error;
-  Timer? _refreshTimer;
+  String? _errorKey;
   Set<String> _favoriteIds = {}; // Pour stocker les IDs des favoris
+  int _professionalsLoadGeneration = 0;
+  int _favoritesLoadGeneration = 0;
+  Future<void> _favoriteWriteQueue = Future<void>.value();
   List<String> _availableCities = []; // Liste des villes disponibles
-  SortOption _currentSortOption = SortOption
-      .defaultOrder; // Option de tri actuelle - Tri par défaut avec en vedette en premier
+  SortOption _currentSortOption = SortOption.defaultOrder; // Option de tri actuelle - Tri par défaut avec en vedette en premier
 
   @override
   void initState() {
@@ -53,7 +56,6 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
     _loadProfessionnels(
       forceRefresh: true,
     ); // Toujours forcer le refresh au démarrage
-    _startPeriodicRefresh();
     _loadFavorites(); // Charger les favoris
     _setScreenName();
   }
@@ -61,7 +63,6 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _refreshTimer?.cancel();
     _searchTrackingTimer?.cancel();
     super.dispose();
   }
@@ -74,32 +75,24 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
     }
   }
 
-  // Timer pour refresh automatique toutes les 3 minutes
-  void _startPeriodicRefresh() {
-    _refreshTimer = Timer.periodic(const Duration(minutes: 3), (timer) {
-      if (mounted) {
-        _loadProfessionnels(forceRefresh: true);
-      }
-    });
-  }
-
   Future<void> _loadProfessionnels({bool forceRefresh = false}) async {
+    if (!mounted) return;
+
+    final loadGeneration = ++_professionalsLoadGeneration;
     try {
       setState(() {
         _isLoading = true;
-        _error = null;
+        _errorKey = null;
       });
 
       final wixApi = DataService();
 
-      print('🔍 DIAGNOSTIC PROFESSIONNELS PAGE');
-      print('📂 Sous-catégorie recherchée: "${widget.sousCategorie.id}"');
-      print('📝 Titre de la sous-catégorie: "${widget.sousCategorie.title}"');
-
       // Si c'est un refresh forcé, vider le cache ET forcer la sync Wix
       if (forceRefresh) {
-        print('🔄 Forçage de la synchronisation avec Wix...');
         await wixApi.forceSyncWithWix();
+        if (!mounted || loadGeneration != _professionalsLoadGeneration) {
+          return;
+        }
       }
 
       // Utiliser la méthode standard pour récupérer les professionnels
@@ -107,15 +100,11 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
         sousCategorie: widget.sousCategorie.id,
       );
 
-      print(
-        '🎯 RÉSULTAT FINAL: ${professionnels.length} professionnels trouvés pour "${widget.sousCategorie.id}"',
-      );
-
-      if (mounted) {
+      if (mounted && loadGeneration == _professionalsLoadGeneration) {
         setState(() {
           _allProfessionnels = professionnels;
           _isLoading = false;
-          _error = null;
+          _errorKey = null;
 
           // Extraire les villes disponibles et les trier
           _availableCities =
@@ -125,23 +114,17 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                   .toSet()
                   .toList()
                 ..sort();
+
+          _applyFilters();
         });
-
-        // Appliquer les filtres et le tri après avoir mis à jour les données
-        _applyFilters();
-
-        print(
-          '✅ ${professionnels.length} professionnels chargés et synchronisés',
-        );
 
         // Précharger les images des premiers professionnels pour améliorer la performance
         _preloadVisibleImages();
       }
-    } catch (e) {
-      print('❌ Erreur lors du chargement des professionnels: $e');
-      if (mounted) {
+    } on Exception {
+      if (mounted && loadGeneration == _professionalsLoadGeneration) {
         setState(() {
-          _error = e.toString();
+          _errorKey = 'loading_error';
           _isLoading = false;
         });
       }
@@ -164,8 +147,8 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
         try {
           // Précharger l'image en arrière-plan
           precacheImage(NetworkImage(imageUrl), context);
-        } catch (e) {
-          print('Erreur préchargement image: $e');
+        } catch (_) {
+          // Le préchargement est une optimisation non bloquante.
         }
       }
     }
@@ -173,9 +156,10 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
 
   // Charger les favoris depuis le stockage local
   Future<void> _loadFavorites() async {
+    final loadGeneration = ++_favoritesLoadGeneration;
     final favoriteService = FavoriteService.instance;
     final favorites = await favoriteService.getFavorites();
-    if (mounted) {
+    if (mounted && loadGeneration == _favoritesLoadGeneration) {
       setState(() {
         _favoriteIds = favorites.toSet();
       });
@@ -183,7 +167,18 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
   }
 
   // Basculer l'état d'un favori
-  Future<void> _toggleFavorite(String professionnelId) async {
+  Future<void> _toggleFavorite(String professionnelId) {
+    // Invalider tout chargement antérieur et sérialiser les écritures afin que
+    // deux interactions rapides ne s'écrasent pas dans le stockage local.
+    ++_favoritesLoadGeneration;
+    final operation = _favoriteWriteQueue.then<void>((_) async {
+      await _performFavoriteToggle(professionnelId);
+    });
+    _favoriteWriteQueue = operation;
+    return operation;
+  }
+
+  Future<void> _performFavoriteToggle(String professionnelId) async {
     try {
       final favoriteService = FavoriteService.instance;
       final newFavoriteStatus = await favoriteService.toggleFavorite(
@@ -202,19 +197,23 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              newFavoriteStatus ? 'Ajouté aux favoris' : 'Supprimé des favoris',
+              _localizationService.tr(
+                newFavoriteStatus
+                    ? 'added_to_favorites'
+                    : 'removed_from_favorites',
+              ),
             ),
             duration: const Duration(seconds: 2),
             backgroundColor: newFavoriteStatus ? Colors.green : Colors.orange,
           ),
         );
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Erreur lors de la sauvegarde'),
-            duration: Duration(seconds: 2),
+          SnackBar(
+            content: Text(_localizationService.tr('favorite_save_error')),
+            duration: const Duration(seconds: 2),
             backgroundColor: Colors.red,
           ),
         );
@@ -265,20 +264,9 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
 
     // Filtrer par recherche générale avec recherche intelligente
     if (_searchQuery.isNotEmpty) {
-      print('🔍 RECHERCHE ACTIVE: "${_searchQuery}"');
-      print('📊 Nombre total de professionnels: ${_allProfessionnels.length}');
-
       filtered = filtered.where((prof) {
-        final matches = _smartSearch(prof, _searchQuery);
-        if (!matches) {
-          // Log silencieux des non-matches pour le debug si nécessaire
-          // print('❌ Pas de match: ${prof.title}');
-        }
-        return matches;
+        return _smartSearch(prof, _searchQuery);
       }).toList();
-
-      print('📊 Nombre de résultats: ${filtered.length}');
-      print('---');
     }
 
     // Filtrer par ville spécifique
@@ -356,23 +344,22 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
         list.sort((a, b) {
           if (a.sponsor && !b.sponsor) return -1;
           if (!a.sponsor && b.sponsor) return 1;
-          return normalizeForSorting(
-            a.title,
-          ).compareTo(normalizeForSorting(b.title));
+          return normalizeForSorting(a.title)
+              .compareTo(normalizeForSorting(b.title));
         });
         break;
       case SortOption.alphabeticalAZ:
         list.sort(
-          (a, b) => normalizeForSorting(
-            a.title,
-          ).compareTo(normalizeForSorting(b.title)),
+          (a, b) =>
+              normalizeForSorting(a.title)
+                  .compareTo(normalizeForSorting(b.title)),
         );
         break;
       case SortOption.alphabeticalZA:
         list.sort(
-          (a, b) => normalizeForSorting(
-            b.title,
-          ).compareTo(normalizeForSorting(a.title)),
+          (a, b) =>
+              normalizeForSorting(b.title)
+                  .compareTo(normalizeForSorting(a.title)),
         );
         break;
       case SortOption.bestRated:
@@ -394,10 +381,6 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
 
     // Si on sélectionne "mieux noté", forcer une synchronisation pour avoir les données de rating à jour
     if (newOption == SortOption.bestRated) {
-      print(
-        '🏆 Tri "mieux noté" sélectionné - synchronisation des données de rating...',
-      );
-
       // Forcer un refresh complet pour avoir les données de rating les plus récentes
       await _forceCompleteRefresh();
     } else {
@@ -504,19 +487,19 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
 
       if (!success && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Impossible d\'ouvrir l\'application Maps'),
-            duration: Duration(seconds: 2),
+          SnackBar(
+            content: Text(_localizationService.tr('error_opening_maps')),
+            duration: const Duration(seconds: 2),
             backgroundColor: Colors.red,
           ),
         );
       }
-    } catch (e) {
+    } on Exception {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Erreur lors de l\'ouverture de Maps'),
-            duration: Duration(seconds: 2),
+          SnackBar(
+            content: Text(_localizationService.tr('error_opening_maps')),
+            duration: const Duration(seconds: 2),
             backgroundColor: Colors.red,
           ),
         );
@@ -624,13 +607,11 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
         context: context,
         showMessages: true,
       );
+      if (!mounted) return;
 
-      // Recharger les données spécifiques à cette page
-      await _loadProfessionnels(forceRefresh: true);
-
-      print('✅ Rafraîchissement complet ProfessionnelsPage terminé');
-    } catch (e) {
-      print('❌ Erreur lors du rafraîchissement complet ProfessionnelsPage: $e');
+      // Le gestionnaire vient de synchroniser Wix; relire son instantané cache.
+      await _loadProfessionnels();
+    } catch (_) {
       // Les messages d'erreur sont gérés par le CacheManagerService
     }
   }
@@ -648,7 +629,10 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
           widget.sousCategorie.getTitleInLanguage(
             _localizationService.currentLanguage,
           ),
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+          ),
         ),
         foregroundColor: Colors.white,
         elevation: 0,
@@ -730,14 +714,17 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                             tooltip: _localizationService.tr('search_by_city'),
                           ),
                     filled: true,
-                    fillColor: Colors.white.withOpacity(0.12),
+                    fillColor: Colors.white.withValues(alpha: 0.12),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(25),
                       borderSide: BorderSide.none,
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(25),
-                      borderSide: const BorderSide(color: Colors.white, width: 2),
+                      borderSide: const BorderSide(
+                        color: Colors.white,
+                        width: 2,
+                      ),
                     ),
                   ),
                   style: const TextStyle(color: Colors.white),
@@ -752,9 +739,12 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                       vertical: 6,
                     ),
                     decoration: BoxDecoration(
-                      color: AppTheme.brandTertiary.withOpacity(0.2),
+                      color: AppTheme.brandTertiary.withValues(alpha: 0.2),
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: AppTheme.brandTertiary, width: 1),
+                      border: Border.all(
+                        color: AppTheme.brandTertiary,
+                        width: 1,
+                      ),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -794,9 +784,12 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                       vertical: 6,
                     ),
                     decoration: BoxDecoration(
-                      color: AppTheme.brandTertiary.withOpacity(0.2),
+                      color: AppTheme.brandTertiary.withValues(alpha: 0.2),
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: AppTheme.brandTertiary, width: 1),
+                      border: Border.all(
+                        color: AppTheme.brandTertiary,
+                        width: 1,
+                      ),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -837,7 +830,7 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
               onRefresh: _forceCompleteRefresh,
               child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
-                  : _error != null
+                  : _errorKey != null
                   ? SingleChildScrollView(
                       physics: const AlwaysScrollableScrollPhysics(),
                       child: SizedBox(
@@ -852,12 +845,14 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                                 color: Colors.red.shade300,
                               ),
                               const SizedBox(height: 16),
-                              Text('Erreur: $_error'),
+                              Text(_localizationService.tr(_errorKey!)),
                               const SizedBox(height: 16),
                               ElevatedButton(
                                 onPressed: () =>
                                     _loadProfessionnels(forceRefresh: true),
-                                child: const Text('Réessayer'),
+                                child: Text(
+                                  _localizationService.tr('try_again'),
+                                ),
                               ),
                             ],
                           ),
@@ -937,9 +932,10 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                   : ListView.separated(
                       padding: const EdgeInsets.all(16),
                       itemCount: _filteredProfessionnels.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 12),
+                      separatorBuilder: (_, _) => const SizedBox(height: 12),
                       itemBuilder: (context, index) {
                         final prof = _filteredProfessionnels[index];
+                        final galleryImages = prof.getAllGalleryImages();
                         return AnimatedContainer(
                           duration: Duration(milliseconds: 300 + (index * 50)),
                           curve: Curves.easeOutBack,
@@ -950,8 +946,8 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                               borderRadius: BorderRadius.circular(12),
                               child: InkWell(
                                 borderRadius: BorderRadius.circular(12),
-                                onTap: () {
-                                  Navigator.push(
+                                onTap: () async {
+                                  await Navigator.push(
                                     context,
                                     PageRouteBuilder(
                                       pageBuilder:
@@ -991,12 +987,17 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                                       ),
                                     ),
                                   );
+                                  if (!mounted) return;
+                                  await _loadFavorites();
                                 },
                                 child: Container(
                                   decoration: BoxDecoration(
                                     borderRadius: BorderRadius.circular(12),
                                     gradient: LinearGradient(
-                                      colors: [Colors.white, Colors.grey.shade50],
+                                      colors: [
+                                        Colors.white,
+                                        Colors.grey.shade50,
+                                      ],
                                       begin: Alignment.topLeft,
                                       end: Alignment.bottomRight,
                                     ),
@@ -1030,9 +1031,6 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                                                   width: 60,
                                                   height: 60,
                                                   fit: BoxFit.cover,
-                                                  timeout: const Duration(
-                                                    seconds: 8,
-                                                  ), // Timeout plus long pour les images
                                                   placeholder: Container(
                                                     width: 60,
                                                     height: 60,
@@ -1066,7 +1064,8 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                                       // Informations du professionnel
                                       Expanded(
                                         child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
                                           children: [
                                             Row(
                                               children: [
@@ -1075,27 +1074,64 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                                                     prof.title,
                                                     style: const TextStyle(
                                                       fontSize: 16,
-                                                      fontWeight: FontWeight.bold,
+                                                      fontWeight:
+                                                          FontWeight.bold,
                                                     ),
                                                   ),
                                                 ),
                                                 if (prof.sponsor)
                                                   Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                          horizontal: 6,
+                                                          vertical: 2,
+                                                        ),
                                                     decoration: BoxDecoration(
-                                                      gradient: const LinearGradient(
-                                                        colors: [AppTheme.brandSecondary, AppTheme.brandTertiary],
-                                                        begin: Alignment.topLeft,
-                                                        end: Alignment.bottomRight,
-                                                      ),
-                                                      borderRadius: BorderRadius.circular(8),
+                                                      gradient:
+                                                          const LinearGradient(
+                                                            colors: [
+                                                              AppTheme
+                                                                  .brandSecondary,
+                                                              AppTheme
+                                                                  .brandTertiary,
+                                                            ],
+                                                            begin: Alignment
+                                                                .topLeft,
+                                                            end: Alignment
+                                                                .bottomRight,
+                                                          ),
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            8,
+                                                          ),
                                                     ),
                                                     child: Row(
-                                                      mainAxisSize: MainAxisSize.min,
-                                                      children: const [
-                                                        Icon(Icons.star, color: Colors.white, size: 10),
-                                                        SizedBox(width: 2),
-                                                        Text('En vedette', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.bold)),
+                                                      mainAxisSize:
+                                                          MainAxisSize.min,
+                                                      children: [
+                                                        const Icon(
+                                                          Icons.star,
+                                                          color: Colors.white,
+                                                          size: 10,
+                                                        ),
+                                                        const SizedBox(
+                                                          width: 2,
+                                                        ),
+                                                        Text(
+                                                          _localizationService
+                                                              .tr(
+                                                                'recommended_professional',
+                                                              ),
+                                                          style:
+                                                              const TextStyle(
+                                                                color: Colors
+                                                                    .white,
+                                                                fontSize: 8,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .bold,
+                                                              ),
+                                                        ),
                                                       ],
                                                     ),
                                                   ),
@@ -1118,18 +1154,23 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                                                 children: [
                                                   ...List.generate(5, (index) {
                                                     return Icon(
-                                                      index < prof.averageRating.round() ? Icons.star : Icons.star_border,
+                                                      index <
+                                                              prof.averageRating
+                                                                  .round()
+                                                          ? Icons.star
+                                                          : Icons.star_border,
                                                       color: Colors.amber,
                                                       size: 16,
                                                     );
                                                   }),
                                                   const SizedBox(width: 4),
                                                   Text(
-                                                    '${prof.averageRating.toStringAsFixed(1)} (${prof.reviewCount} avis)',
+                                                    '${prof.averageRating.toStringAsFixed(1)} (${_localizationService.reviewCountLabel(prof.reviewCount)})',
                                                     style: TextStyle(
                                                       fontSize: 12,
                                                       color: Colors.grey[600],
-                                                      fontWeight: FontWeight.w500,
+                                                      fontWeight:
+                                                          FontWeight.w500,
                                                     ),
                                                   ),
                                                 ],
@@ -1138,16 +1179,20 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                                             if (prof.address.isNotEmpty) ...[
                                               const SizedBox(height: 4),
                                               GestureDetector(
-                                                onTap: () => _openMaps(prof.address),
+                                                onTap: () =>
+                                                    _openMaps(prof.address),
                                                 child: Text(
                                                   prof.address,
                                                   style: const TextStyle(
                                                     fontSize: 14,
-                                                    color: AppTheme.brandPrimary,
-                                                    decoration: TextDecoration.underline,
+                                                    color:
+                                                        AppTheme.brandPrimary,
+                                                    decoration: TextDecoration
+                                                        .underline,
                                                   ),
                                                   maxLines: 2,
-                                                  overflow: TextOverflow.ellipsis,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
                                                 ),
                                               ),
                                             ],
@@ -1155,28 +1200,39 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                                               const SizedBox(height: 8),
                                               Row(
                                                 children: [
-                                                  Icon(Icons.location_on, size: 16, color: Colors.grey[500]),
+                                                  Icon(
+                                                    Icons.location_on,
+                                                    size: 16,
+                                                    color: Colors.grey[500],
+                                                  ),
                                                   const SizedBox(width: 4),
                                                   Expanded(
                                                     child: Text(
                                                       prof.ville,
-                                                      style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-                                                      overflow: TextOverflow.ellipsis,
+                                                      style: TextStyle(
+                                                        fontSize: 12,
+                                                        color: Colors.grey[500],
+                                                      ),
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
                                                     ),
                                                   ),
                                                 ],
                                               ),
                                             ],
-                                            CouponWidget(professionnel: prof, isCompact: true),
+                                            CouponWidget(
+                                              professionnel: prof,
+                                              isCompact: true,
+                                            ),
                                           ],
                                         ),
                                       ),
 
                                       // Indicateur de galerie si le professionnel a des images
-                                      if (prof.gallery.isNotEmpty) ...[
+                                      if (galleryImages.isNotEmpty) ...[
                                         const SizedBox(width: 8),
                                         GalleryPreviewWidget(
-                                          images: prof.gallery.cast<String>(),
+                                          images: galleryImages,
                                           size: 40,
                                           onTap: () {
                                             Navigator.push(

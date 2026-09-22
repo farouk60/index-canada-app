@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
 import '../models.dart';
 import '../services/localization_service.dart';
 
@@ -261,7 +262,7 @@ class CouponWidget extends StatelessWidget {
                               Row(
                                 children: [
                                   Expanded(
-                                    child: Text(
+                                    child: SelectableText(
                                       professionnel.couponCode,
                                       style: TextStyle(
                                         color: Colors.grey.shade800,
@@ -271,21 +272,24 @@ class CouponWidget extends StatelessWidget {
                                       ),
                                     ),
                                   ),
-                                  GestureDetector(
-                                    onTap: () => _copyCouponCode(
+                                  IconButton(
+                                    onPressed: () => _copyCouponCode(
                                       context,
                                       localizationService,
                                     ),
-                                    child: Container(
-                                      padding: const EdgeInsets.all(8),
-                                      decoration: BoxDecoration(
-                                        color: Colors.blue.shade50,
-                                        borderRadius: BorderRadius.circular(6),
-                                      ),
-                                      child: Icon(
-                                        Icons.copy,
-                                        color: Colors.blue.shade600,
-                                        size: 16,
+                                    tooltip: localizationService.tr(
+                                      'copy_coupon_code',
+                                    ),
+                                    icon: Icon(
+                                      Icons.copy_rounded,
+                                      color: Colors.blue.shade700,
+                                      size: 20,
+                                    ),
+                                    style: IconButton.styleFrom(
+                                      backgroundColor: Colors.blue.shade50,
+                                      minimumSize: const Size(48, 48),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(8),
                                       ),
                                     ),
                                   ),

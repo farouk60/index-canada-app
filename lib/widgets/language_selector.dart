@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../services/localization_service.dart';
 
 class LanguageSelector extends StatefulWidget {
@@ -14,18 +15,36 @@ class _LanguageSelectorState extends State<LanguageSelector> {
   final LocalizationService _localizationService = LocalizationService();
 
   @override
+  void initState() {
+    super.initState();
+    _localizationService.addListener(_handleLanguageChanged);
+  }
+
+  @override
+  void dispose() {
+    _localizationService.removeListener(_handleLanguageChanged);
+    super.dispose();
+  }
+
+  void _handleLanguageChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return PopupMenuButton<String>(
       icon: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.language, color: Colors.white, size: 20),
+          Icon(Icons.language, color: colorScheme.onSurface, size: 20),
           const SizedBox(width: 4),
           Text(
             _localizationService.currentLanguage.toUpperCase(),
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: colorScheme.onSurface,
               fontWeight: FontWeight.bold,
             ),
           ),
@@ -33,12 +52,8 @@ class _LanguageSelectorState extends State<LanguageSelector> {
       ),
       onSelected: (String languageCode) async {
         await _localizationService.setLanguage(languageCode);
-        if (widget.onLanguageChanged != null) {
-          widget.onLanguageChanged!(languageCode);
-        }
-        if (mounted) {
-          setState(() {});
-        }
+        if (!mounted) return;
+        widget.onLanguageChanged?.call(languageCode);
       },
       itemBuilder: (BuildContext context) {
         return _localizationService.getAvailableLanguages().map((language) {
@@ -48,7 +63,21 @@ class _LanguageSelectorState extends State<LanguageSelector> {
             value: language['code'],
             child: Row(
               children: [
-                Text(language['flag']!, style: const TextStyle(fontSize: 20)),
+                CircleAvatar(
+                  radius: 16,
+                  backgroundColor: isSelected
+                      ? colorScheme.primaryContainer
+                      : colorScheme.surfaceContainerHighest,
+                  child: Text(
+                    language['flag']!,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: isSelected
+                          ? colorScheme.onPrimaryContainer
+                          : colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
                 const SizedBox(width: 12),
                 Text(
                   language['name']!,
@@ -56,12 +85,14 @@ class _LanguageSelectorState extends State<LanguageSelector> {
                     fontWeight: isSelected
                         ? FontWeight.bold
                         : FontWeight.normal,
-                    color: isSelected ? Colors.blue : Colors.black,
+                    color: isSelected
+                        ? colorScheme.primary
+                        : colorScheme.onSurface,
                   ),
                 ),
                 if (isSelected) ...[
                   const Spacer(),
-                  const Icon(Icons.check, color: Colors.blue, size: 16),
+                  Icon(Icons.check, color: colorScheme.primary, size: 18),
                 ],
               ],
             ),
@@ -86,7 +117,26 @@ class LanguageListTile extends StatefulWidget {
 class _LanguageListTileState extends State<LanguageListTile> {
   final LocalizationService _localizationService = LocalizationService();
 
+  @override
+  void initState() {
+    super.initState();
+    _localizationService.addListener(_handleLanguageChanged);
+  }
+
+  @override
+  void dispose() {
+    _localizationService.removeListener(_handleLanguageChanged);
+    super.dispose();
+  }
+
+  void _handleLanguageChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
   void _showLanguageDialog() {
+    final colorScheme = Theme.of(context).colorScheme;
     showDialog(
       context: context,
       builder: (BuildContext context) {
@@ -102,22 +152,19 @@ class _LanguageListTileState extends State<LanguageListTile> {
               return ListTile(
                 leading: Text(
                   language['flag']!,
-                  style: const TextStyle(fontSize: 24),
+                  style: Theme.of(context).textTheme.labelLarge
+                      ?.copyWith(fontWeight: FontWeight.w800),
                 ),
                 title: Text(language['name']!),
                 trailing: isSelected
-                    ? const Icon(Icons.check, color: Colors.blue)
+                    ? Icon(Icons.check, color: colorScheme.primary)
                     : null,
                 onTap: () async {
                   await _localizationService.setLanguage(language['code']!);
-                  if (widget.onLanguageChanged != null) {
-                    widget.onLanguageChanged!(language['code']!);
-                  }
-                  if (mounted) {
-                    setState(() {});
-                    if (context.mounted) {
-                      Navigator.of(context).pop();
-                    }
+                  if (!mounted) return;
+                  widget.onLanguageChanged?.call(language['code']!);
+                  if (context.mounted) {
+                    Navigator.of(context).pop();
                   }
                 },
               );

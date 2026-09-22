@@ -1,27 +1,30 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+
 import '../utils.dart';
 import '../image_cache_service.dart';
 
 // Gestionnaire de chargement d'images pour tracking
 class _ImageLoadingManager {
   static int _currentlyLoading = 0;
-  
+
   static void startLoading() => _currentlyLoading++;
-  static void stopLoading() => _currentlyLoading = _currentlyLoading > 0 ? _currentlyLoading - 1 : 0;
+  static void stopLoading() =>
+      _currentlyLoading = _currentlyLoading > 0 ? _currentlyLoading - 1 : 0;
 }
 
 /// Widget qui tente plusieurs variantes Wix si la première échoue
 class WixImageWithFallback extends StatefulWidget {
   final String image;
   final int index;
-  const WixImageWithFallback(this.image, {Key? key, required this.index}) : super(key: key);
+  const WixImageWithFallback(this.image, {super.key, required this.index});
 
   @override
   State<WixImageWithFallback> createState() => _WixImageWithFallbackState();
 }
 
-class _WixImageWithFallbackState extends State<WixImageWithFallback> with AutomaticKeepAliveClientMixin {
+class _WixImageWithFallbackState extends State<WixImageWithFallback>
+    with AutomaticKeepAliveClientMixin {
   // Not final so we can regenerate variants when the image URL changes (e.g., language switch)
   late List<String> variants;
   int current = 0;
@@ -44,21 +47,15 @@ class _WixImageWithFallbackState extends State<WixImageWithFallback> with Automa
 
   void _generateVariants() {
     if (_disposed || !mounted) return;
-    
+
     try {
       variants = getWixImageVariants(widget.image);
       _variantsGenerated = true;
-      
-      if (widget.index < 3) {
-        print('🖼️ WixImageWithFallback[${widget.index}] variants: ${variants.length}');
-        print('🖼️ Variant[0]: ${variants[0]}');
-      }
-      
+
       if (mounted) {
         setState(() {});
       }
-    } catch (e) {
-      print('🖼️ Error generating variants for index ${widget.index}: $e');
+    } catch (_) {
       if (mounted) {
         setState(() {
           variants = [];
@@ -90,9 +87,6 @@ class _WixImageWithFallbackState extends State<WixImageWithFallback> with Automa
 
   void _tryNextVariant() {
     if (!_disposed && mounted && current < variants.length - 1) {
-      if (widget.index < 3) {
-        print('🖼️ Trying next variant: ${current + 1}/${variants.length}');
-      }
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!_disposed && mounted) {
           setState(() {
@@ -106,7 +100,7 @@ class _WixImageWithFallbackState extends State<WixImageWithFallback> with Automa
   @override
   Widget build(BuildContext context) {
     super.build(context); // Requis pour AutomaticKeepAliveClientMixin
-    
+
     if (_disposed) {
       return Container(
         decoration: BoxDecoration(
@@ -158,15 +152,16 @@ class _WixImageWithFallbackState extends State<WixImageWithFallback> with Automa
       cacheManager: ImageCacheService.instance.servicesCacheManager,
       fit: BoxFit.cover,
       filterQuality: FilterQuality.low, // Qualité plus basse pour vitesse
-      fadeInDuration: const Duration(milliseconds: 200), // Animation plus rapide
-      fadeOutDuration: const Duration(milliseconds: 50), // Transition plus rapide
+      fadeInDuration: const Duration(
+        milliseconds: 200,
+      ), // Animation plus rapide
+      fadeOutDuration: const Duration(
+        milliseconds: 50,
+      ), // Transition plus rapide
       memCacheWidth: 400, // Limite la taille en mémoire pour les services
       memCacheHeight: 300,
-      placeholder: (context, url) {
+      placeholder: (_, _) {
         _ImageLoadingManager.startLoading();
-        if (!_disposed && widget.index < 3) {
-          print('🖼️ Loading image[$current]: $url');
-        }
         return Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -181,12 +176,9 @@ class _WixImageWithFallbackState extends State<WixImageWithFallback> with Automa
           ),
         );
       },
-      errorWidget: (context, url, error) {
+      errorWidget: (_, _, _) {
         _ImageLoadingManager.stopLoading();
-        if (!_disposed && widget.index < 3) {
-          print('🖼️ Error loading image[$current]: $error');
-        }
-        
+
         // Essayer la variante suivante si disponible
         if (!_disposed && current < variants.length - 1) {
           _tryNextVariant();
@@ -204,11 +196,8 @@ class _WixImageWithFallbackState extends State<WixImageWithFallback> with Automa
             ),
           );
         }
-        
+
         // Toutes les variantes ont échoué
-        if (!_disposed && widget.index < 3) {
-          print('🖼️ All variants failed for image ${widget.index}');
-        }
         return Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -220,17 +209,11 @@ class _WixImageWithFallbackState extends State<WixImageWithFallback> with Automa
           ),
         );
       },
-      imageBuilder: (context, imageProvider) {
+      imageBuilder: (_, imageProvider) {
         _ImageLoadingManager.stopLoading();
-        if (!_disposed && widget.index < 3) {
-          print('🖼️ ✅ Image loaded successfully for index ${widget.index}');
-        }
         return Container(
           decoration: BoxDecoration(
-            image: DecorationImage(
-              image: imageProvider,
-              fit: BoxFit.cover,
-            ),
+            image: DecorationImage(image: imageProvider, fit: BoxFit.cover),
           ),
         );
       },

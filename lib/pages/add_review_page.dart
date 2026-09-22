@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'dart:async';
+
 import '../data_service.dart';
-import '../services/review_verification_service.dart';
 import '../services/localization_service.dart';
+import '../services/review_verification_service.dart';
 import '../widgets/language_selector.dart';
 
 class AddReviewPage extends StatefulWidget {
@@ -22,44 +22,13 @@ class _AddReviewPageState extends State<AddReviewPage> {
   final _messageController = TextEditingController();
   int _selectedRating = 0;
   bool _isSubmitting = false;
-  String? _cooldownMessage;
-  Timer? _cooldownTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    _checkCooldownStatus();
-  }
 
   @override
   void dispose() {
     _nameController.dispose();
     _titleController.dispose();
     _messageController.dispose();
-    _cooldownTimer?.cancel();
     super.dispose();
-  }
-
-  Future<void> _checkCooldownStatus() async {
-    final verificationService = ReviewVerificationService();
-    final result = await verificationService.canPostReview(
-      widget.professionnelId,
-      'temp',
-      'temp message',
-      'temp title',
-    );
-
-    if (!result.canPost && result.reason.contains('attendre')) {
-      if (mounted) {
-        setState(() {
-          _cooldownMessage = result.reason;
-        });
-
-        _cooldownTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
-          _checkCooldownStatus();
-        });
-      }
-    }
   }
 
   Future<void> _submitReview() async {
@@ -104,7 +73,7 @@ class _AddReviewPageState extends State<AddReviewPage> {
 
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(verificationResult.reason),
+              content: Text(_verificationMessage(verificationResult)),
               backgroundColor: backgroundColor,
               duration: const Duration(seconds: 4),
             ),
@@ -137,11 +106,11 @@ class _AddReviewPageState extends State<AddReviewPage> {
         );
         Navigator.pop(context, true);
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${_localizationService.tr('review_error')}: $e'),
+            content: Text(_localizationService.tr('review_error')),
             backgroundColor: Colors.red,
           ),
         );
@@ -155,20 +124,42 @@ class _AddReviewPageState extends State<AddReviewPage> {
     }
   }
 
+  String _verificationMessage(ReviewVerificationResult result) {
+    final key = switch (result.code) {
+      ReviewVerificationCode.cooldown => 'review_cooldown',
+      ReviewVerificationCode.suspiciousContent => 'review_suspicious_content',
+      ReviewVerificationCode.excessiveRepetition =>
+        'review_excessive_repetition',
+      ReviewVerificationCode.allCaps => 'review_all_caps',
+      ReviewVerificationCode.tooShort => 'review_minimum',
+      ReviewVerificationCode.tooFewWords => 'review_too_few_words',
+      ReviewVerificationCode.lowQuality => 'review_low_quality',
+      ReviewVerificationCode.duplicateProfessional =>
+        'review_duplicate_professional',
+      ReviewVerificationCode.duplicateContent => 'review_duplicate_content',
+      ReviewVerificationCode.allowed => 'review_success',
+    };
+    return _localizationService
+        .tr(key)
+        .replaceAll('{minutes}', '${result.remainingMinutes ?? 0}');
+  }
+
   Widget _buildStarRating() {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: List.generate(5, (index) {
         final starIndex = index + 1;
-        return GestureDetector(
-          onTap: () {
-            setState(() {
-              _selectedRating = starIndex;
-            });
-          },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Icon(
+        final selected = starIndex <= _selectedRating;
+        final label = _localizationService.currentLanguage == 'en'
+            ? '$starIndex out of 5 stars'
+            : '$starIndex étoile${starIndex > 1 ? 's' : ''} sur 5';
+        return Semantics(
+          selected: selected,
+          child: IconButton(
+            onPressed: () => setState(() => _selectedRating = starIndex),
+            tooltip: label,
+            constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+            icon: Icon(
               starIndex <= _selectedRating ? Icons.star : Icons.star_outline,
               color: starIndex <= _selectedRating ? Colors.amber : Colors.grey,
               size: 32,
@@ -201,51 +192,6 @@ class _AddReviewPageState extends State<AddReviewPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Avertissement de cooldown
-              if (_cooldownMessage != null)
-                Container(
-                  margin: const EdgeInsets.only(bottom: 16),
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.orange.shade200),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.access_time,
-                        color: Colors.orange.shade600,
-                        size: 24,
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _localizationService.tr('temporal_limitation'),
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.orange.shade800,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              _cooldownMessage!,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.orange.shade700,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
               // Introduction
               Card(
                 child: Padding(
@@ -366,40 +312,11 @@ class _AddReviewPageState extends State<AddReviewPage> {
               ),
               const SizedBox(height: 24),
 
-              // Message de cooldown au niveau du bouton
-              if (_cooldownMessage != null)
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  margin: const EdgeInsets.only(bottom: 16),
-                  decoration: BoxDecoration(
-                    color: Colors.red.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.red.shade200),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.timer, color: Colors.red.shade600, size: 20),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          _cooldownMessage!,
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.red.shade800,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
               // Bouton de soumission
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: _isSubmitting || _cooldownMessage != null
-                      ? null
-                      : _submitReview,
+                  onPressed: _isSubmitting ? null : _submitReview,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.blue.shade600,
                     foregroundColor: Colors.white,

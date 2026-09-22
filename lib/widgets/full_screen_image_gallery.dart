@@ -1,9 +1,11 @@
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+
 import '../models.dart';
-import '../utils.dart';
 import '../services/data_saver_service.dart';
+import '../services/localization_service.dart';
+import '../utils.dart';
 
 /// Widget pour afficher une galerie d'images en plein écran
 /// Permet de naviguer entre les images comme un album photo
@@ -13,24 +15,23 @@ class FullScreenImageGallery extends StatefulWidget {
   final int initialIndex;
 
   const FullScreenImageGallery({
-    Key? key,
+    super.key,
     required this.professionnel,
     this.initialIndex = 0,
-  }) : images = null,
-       super(key: key);
+  }) : images = null;
 
   const FullScreenImageGallery.withImages({
-    Key? key,
+    super.key,
     required this.images,
     this.initialIndex = 0,
-  }) : professionnel = null,
-       super(key: key);
+  }) : professionnel = null;
 
   @override
   State<FullScreenImageGallery> createState() => _FullScreenImageGalleryState();
 }
 
 class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
+  final LocalizationService _localizationService = LocalizationService();
   late PageController _pageController;
   late int _currentIndex;
   late List<String> _images;
@@ -49,10 +50,10 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
       _images = [];
     }
 
-  // Empêcher une borne supérieure négative quand la liste est vide
-  final maxIndex = _images.isEmpty ? 0 : _images.length - 1;
-  _currentIndex = widget.initialIndex.clamp(0, maxIndex);
-  _pageController = PageController(initialPage: _currentIndex);
+    // Empêcher une borne supérieure négative quand la liste est vide
+    final maxIndex = _images.isEmpty ? 0 : _images.length - 1;
+    _currentIndex = widget.initialIndex.clamp(0, maxIndex).toInt();
+    _pageController = PageController(initialPage: _currentIndex);
   }
 
   @override
@@ -71,18 +72,23 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
           elevation: 0,
           leading: IconButton(
             icon: const Icon(Icons.close, color: Colors.white),
+            tooltip: _localizationService.tr('close'),
             onPressed: () => Navigator.of(context).pop(),
           ),
         ),
-        body: const Center(
+        body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.image_not_supported, size: 64, color: Colors.grey),
-              SizedBox(height: 16),
+              const Icon(
+                Icons.image_not_supported,
+                size: 64,
+                color: Colors.grey,
+              ),
+              const SizedBox(height: 16),
               Text(
-                'Aucune image disponible',
-                style: TextStyle(color: Colors.grey, fontSize: 18),
+                _localizationService.tr('gallery_no_images'),
+                style: const TextStyle(color: Colors.grey, fontSize: 18),
               ),
             ],
           ),
@@ -152,6 +158,7 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
                               color: Colors.white,
                               size: 28,
                             ),
+                            tooltip: _localizationService.tr('close'),
                             onPressed: () => Navigator.of(context).pop(),
                           ),
                           Text(
@@ -179,7 +186,7 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
                       vertical: 12,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.3),
+                      color: Colors.black.withValues(alpha: 0.3),
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Row(
@@ -194,7 +201,7 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
                           decoration: BoxDecoration(
                             color: index == _currentIndex
                                 ? Colors.white
-                                : Colors.white.withOpacity(0.4),
+                                : Colors.white.withValues(alpha: 0.4),
                             borderRadius: BorderRadius.circular(4),
                           ),
                         ),
@@ -217,7 +224,7 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
                   duration: const Duration(milliseconds: 200),
                   child: Container(
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.3),
+                      color: Colors.black.withValues(alpha: 0.3),
                       shape: BoxShape.circle,
                     ),
                     child: IconButton(
@@ -226,6 +233,7 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
                         color: Colors.white,
                         size: 48,
                       ),
+                      tooltip: _localizationService.tr('previous_image'),
                       onPressed: _currentIndex > 0 ? _previousImage : null,
                     ),
                   ),
@@ -243,7 +251,7 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
                   duration: const Duration(milliseconds: 200),
                   child: Container(
                     decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.3),
+                      color: Colors.black.withValues(alpha: 0.3),
                       shape: BoxShape.circle,
                     ),
                     child: IconButton(
@@ -252,6 +260,7 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
                         color: Colors.white,
                         size: 48,
                       ),
+                      tooltip: _localizationService.tr('next_image'),
                       onPressed: _currentIndex < _images.length - 1
                           ? _nextImage
                           : null,
@@ -290,7 +299,7 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
                   width: double.infinity,
                   height: double.infinity,
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.1),
+                    color: Colors.white.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Padding(
@@ -314,7 +323,9 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'Chargement image ${_currentIndex + 1}...',
+                    _localizationService
+                        .tr('loading_image')
+                        .replaceAll('{number}', '${_currentIndex + 1}'),
                     style: const TextStyle(color: Colors.white70),
                   ),
                 ],
@@ -335,11 +346,18 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
   Widget _buildHighQualityImage(String imageUrl) {
     // Utiliser des dimensions adaptées à l'écran pour limiter le poids
     final mq = MediaQuery.of(context);
-    final maxSide = (mq.size.shortestSide * mq.devicePixelRatio).clamp(720.0, 1920.0).round();
+    final maxSide = (mq.size.shortestSide * mq.devicePixelRatio)
+        .clamp(720.0, 1920.0)
+        .round();
 
     String fittedUrl;
     if (imageUrl.startsWith('wix:image://')) {
-      fittedUrl = getWixFittedUrl(imageUrl, targetW: maxSide, targetH: maxSide, quality: 85);
+      fittedUrl = getWixFittedUrl(
+        imageUrl,
+        targetW: maxSide,
+        targetH: maxSide,
+        quality: 85,
+      );
     } else {
       fittedUrl = getHighQualityImageUrl(imageUrl);
     }
@@ -356,13 +374,13 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
           bytes,
           fit: BoxFit.contain,
           errorBuilder: (context, error, stackTrace) {
-            return _buildErrorWidget(
-              'Erreur: Image trop lourde ou inaccessible',
-            );
+            return _buildErrorWidget();
           },
         );
-      } catch (e) {
-        return _buildErrorWidget('Erreur: Format base64 invalide');
+      } on FormatException {
+        return _buildErrorWidget();
+      } on RangeError {
+        return _buildErrorWidget();
       }
     } else if (validImageUrl.startsWith('http://') ||
         validImageUrl.startsWith('https://')) {
@@ -376,7 +394,7 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
             if (validImageUrl.toLowerCase().contains('.png')) {
               return Container(
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.1),
+                  color: Colors.white.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: child,
@@ -395,19 +413,14 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
             ),
           );
         },
-        errorBuilder: (context, error, stackTrace) {
-          return _buildErrorWidget('Erreur réseau: ${error.toString()}');
-        },
+        errorBuilder: (context, error, stackTrace) => _buildErrorWidget(),
       );
     } else {
-      // Format d'URL non reconnu
-      return _buildErrorWidget(
-        'Format d\'URL non reconnu: ${validImageUrl.substring(0, 30)}...',
-      );
+      return _buildErrorWidget();
     }
   }
 
-  Widget _buildErrorWidget([String? debugInfo]) {
+  Widget _buildErrorWidget() {
     return Container(
       width: double.infinity,
       height: 300,
@@ -417,23 +430,10 @@ class _FullScreenImageGalleryState extends State<FullScreenImageGallery> {
         children: [
           const Icon(Icons.broken_image, size: 64, color: Colors.grey),
           const SizedBox(height: 16),
-          const Text(
-            'Image indisponible',
-            style: TextStyle(color: Colors.grey, fontSize: 18),
+          Text(
+            _localizationService.tr('image_unavailable'),
+            style: const TextStyle(color: Colors.grey, fontSize: 18),
           ),
-          if (debugInfo != null) ...[
-            const SizedBox(height: 8),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Text(
-                debugInfo,
-                style: const TextStyle(color: Colors.grey, fontSize: 12),
-                textAlign: TextAlign.center,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
         ],
       ),
     );

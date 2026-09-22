@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
-import '../models.dart';
+
 import '../data_service.dart';
+import '../image_cache_service.dart';
+import '../models.dart';
 import '../services/favorite_service.dart';
 import '../services/localization_service.dart';
 import '../widgets/gallery_preview_widget.dart';
 import '../widgets/language_selector.dart';
-import '../image_cache_service.dart';
 import 'professionnel_detail_page.dart';
 
 class FavoritesPage extends StatefulWidget {
@@ -21,7 +22,8 @@ class _FavoritesPageState extends State<FavoritesPage> {
   List<SousCategorie> _sousCategories = [];
   Map<String, List<Professionnel>> _favoritesByService = {};
   bool _isLoading = true;
-  String? _error;
+  String? _errorKey;
+  int _loadEpoch = 0;
 
   @override
   void initState() {
@@ -30,14 +32,17 @@ class _FavoritesPageState extends State<FavoritesPage> {
   }
 
   Future<void> _loadFavorites() async {
+    final loadEpoch = ++_loadEpoch;
+
     try {
       setState(() {
         _isLoading = true;
-        _error = null;
+        _errorKey = null;
       });
 
       final favoriteService = FavoriteService.instance;
       final favoriteIds = await favoriteService.getFavorites();
+      if (!mounted || loadEpoch != _loadEpoch) return;
 
       if (favoriteIds.isEmpty) {
         setState(() {
@@ -52,27 +57,29 @@ class _FavoritesPageState extends State<FavoritesPage> {
 
       // Charger les professionnels favoris et les sous-catégories
       final futures = await Future.wait([
-        dataService.fetchProfessionnels(),
+        dataService.fetchProfessionnelsByIds(favoriteIds),
         dataService.fetchSousCategories(),
       ]);
+      if (!mounted || loadEpoch != _loadEpoch) return;
 
-      final allProfessionnels = futures[0] as List<Professionnel>;
-      _sousCategories = futures[1] as List<SousCategorie>;
-
-      final favoriteProfessionnels = allProfessionnels
-          .where((prof) => favoriteIds.contains(prof.id))
-          .toList();
+      final favoriteProfessionnels = futures[0] as List<Professionnel>;
+      final sousCategories = futures[1] as List<SousCategorie>;
 
       // Grouper les favoris par service
-      _favoritesByService = _groupFavoritesByService(favoriteProfessionnels);
+      final favoritesByService = _groupFavoritesByService(
+        favoriteProfessionnels,
+      );
 
       setState(() {
+        _sousCategories = sousCategories;
+        _favoritesByService = favoritesByService;
         _favoriteProfessionnels = favoriteProfessionnels;
         _isLoading = false;
       });
-    } catch (e) {
+    } catch (_) {
+      if (!mounted || loadEpoch != _loadEpoch) return;
       setState(() {
-        _error = e.toString();
+        _errorKey = 'error_loading_favorites';
         _isLoading = false;
       });
     }
@@ -139,7 +146,8 @@ class _FavoritesPageState extends State<FavoritesPage> {
                 Expanded(
                   child: Container(
                     height: 1,
-                    color: Theme.of(context).primaryColor.withOpacity(0.3),
+                    color: Theme.of(context).primaryColor
+                        .withValues(alpha: 0.3),
                   ),
                 ),
               ],
@@ -154,6 +162,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
 
   /// Construit une carte de professionnel
   Widget _buildProfessionnelCard(Professionnel prof) {
+    final galleryImages = prof.getAllGalleryImages();
     return Card(
       elevation: 4,
       margin: const EdgeInsets.only(bottom: 12),
@@ -206,9 +215,9 @@ class _FavoritesPageState extends State<FavoritesPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             // Galerie si disponible
-            if (prof.gallery.isNotEmpty) ...[
+            if (galleryImages.isNotEmpty) ...[
               GalleryPreviewWidget(
-                images: prof.gallery.cast<String>(),
+                images: galleryImages,
                 size: 40,
                 onTap: () {
                   Navigator.push(
@@ -282,18 +291,18 @@ class _FavoritesPageState extends State<FavoritesPage> {
         onRefresh: _loadFavorites,
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
-            : _error != null
+            : _errorKey != null
             ? Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(Icons.error, size: 64, color: Colors.red.shade300),
                     const SizedBox(height: 16),
-                    Text('${_localizationService.tr('error')}: $_error'),
+                    Text(_localizationService.tr(_errorKey!)),
                     const SizedBox(height: 16),
                     ElevatedButton(
                       onPressed: _loadFavorites,
-                      child: const Text('Réessayer'),
+                      child: Text(_localizationService.tr('try_again')),
                     ),
                   ],
                 ),

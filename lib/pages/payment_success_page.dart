@@ -1,626 +1,281 @@
 import 'package:flutter/material.dart';
+
 import '../services/localization_service.dart';
-import '../services/confirmation_email_service.dart';
-import '../data_service.dart';
-import '../models.dart';
-import 'professionnel_detail_page.dart';
-import 'services_page.dart';
+import '../services/main_navigation_controller.dart';
+import '../services/stripe_native_payment_service.dart';
 
-class PaymentSuccessPage extends StatefulWidget {
-  final String professionalId;
-  final String planType;
-  final String businessName;
-  final double amountPaid;
-  final String paymentId;
-  final String? professionalEmail;
-  final String? categoryId;
-  final String? categoryName;
-  final String? categoryNameEn;
-
+/// Écran de résultat en lecture seule. Le paiement et la confirmation de
+/// l’inscription sont déjà terminés lors de son ouverture.
+class PaymentSuccessPage extends StatelessWidget {
   const PaymentSuccessPage({
-    Key? key,
+    super.key,
     required this.professionalId,
     required this.planType,
     required this.businessName,
     required this.amountPaid,
     required this.paymentId,
+    this.currency = 'CAD',
     this.professionalEmail,
     this.categoryId,
     this.categoryName,
     this.categoryNameEn,
-  }) : super(key: key);
+    this.confirmation,
+    this.onViewProfile,
+  });
 
-  @override
-  State<PaymentSuccessPage> createState() => _PaymentSuccessPageState();
-}
+  final String professionalId;
+  final String planType;
+  final String businessName;
+  final double amountPaid;
+  final String paymentId;
+  final String currency;
+  final String? professionalEmail;
+  final String? categoryId;
+  final String? categoryName;
+  final String? categoryNameEn;
+  final PaymentConfirmation? confirmation;
+  final VoidCallback? onViewProfile;
 
-class _PaymentSuccessPageState extends State<PaymentSuccessPage>
-    with TickerProviderStateMixin {
-  final LocalizationService _localizationService = LocalizationService();
+  bool get _isActive =>
+      confirmation?.isActive ?? planType.toLowerCase() != 'basic';
 
-  late AnimationController _spinnerController;
-  late AnimationController _successController;
-  late Animation<double> _scaleAnimation;
-
-  bool _isProcessing = true;
-  bool _isPaymentConfirmed = false;
-  bool _hasError = false;
-  String _errorMessage = '';
-  Professionnel? _professional;
-
-  @override
-  void initState() {
-    super.initState();
-
-    // Animation pour le spinner
-    _spinnerController = AnimationController(
-      duration: const Duration(seconds: 1),
-      vsync: this,
-    )..repeat();
-
-    // Animation pour le succès
-    _successController = AnimationController(
-      duration: const Duration(milliseconds: 800),
-      vsync: this,
-    );
-
-    _scaleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _successController, curve: Curves.elasticOut),
-    );
-
-    // Démarrer le processus de confirmation automatiquement
-    _confirmPaymentAutomatically();
-  }
-
-  @override
-  void dispose() {
-    _spinnerController.dispose();
-    _successController.dispose();
-    super.dispose();
-  }
+  bool get _isPendingReview =>
+      confirmation?.status == 'pending_review' || !_isActive;
 
   @override
   Widget build(BuildContext context) {
-    final isEnglish = _localizationService.currentLanguage == 'en';
+    final isEnglish = LocalizationService().currentLanguage == 'en';
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final statusColor = _isPendingReview ? colors.tertiary : colors.primary;
 
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
+        automaticallyImplyLeading: false,
         title: Text(
-          isEnglish ? 'Registration Processing' : "Traitement de l'inscription",
-          style: const TextStyle(color: Colors.white),
+          _isPendingReview
+              ? (isEnglish ? 'Registration received' : 'Inscription reçue')
+              : (isEnglish
+                    ? 'Registration confirmed'
+                    : 'Inscription confirmée'),
         ),
-        backgroundColor: Colors.blue[700],
-        iconTheme: const IconThemeData(color: Colors.white),
-        automaticallyImplyLeading:
-            false, // Désactiver le bouton retour pendant le traitement
       ),
-      body: Center(
-        child: Padding(
+      body: SafeArea(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
-          child: _buildCurrentView(),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCurrentView() {
-    if (_isProcessing) {
-      return _buildLoadingView();
-    } else if (_hasError) {
-      return _buildErrorView();
-    } else if (_isPaymentConfirmed) {
-      return _buildSuccessView();
-    } else {
-      return _buildLoadingView();
-    }
-  }
-
-  Widget _buildLoadingView() {
-    final isEnglish = _localizationService.currentLanguage == 'en';
-
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        // Spinner animé
-        RotationTransition(
-          turns: _spinnerController,
-          child: Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.blue[700]!, width: 6),
-            ),
-            child: const CircularProgressIndicator(
-              strokeWidth: 6,
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 32),
-
-        Text(
-          isEnglish ? 'Processing Registration...' : "Traitement de l'inscription...",
-          style: const TextStyle(
-            fontSize: 24,
-            fontWeight: FontWeight.bold,
-            color: Colors.black87,
-          ),
-          textAlign: TextAlign.center,
-        ),
-
-        const SizedBox(height: 16),
-
-        Text(
-          isEnglish
-              ? 'Please wait while we confirm your registration and activate your professional profile.'
-              : 'Veuillez patienter pendant que nous confirmons votre inscription et activons votre profil professionnel.',
-          style: const TextStyle(
-            fontSize: 16,
-            color: Color(0xFF757575), // Couleur grise fixe
-          ),
-          textAlign: TextAlign.center,
-        ),
-
-        const SizedBox(height: 24),
-
-        // Informations du paiement
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.grey[50],
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.grey[200]!),
-          ),
-          child: Column(
-            children: [
-              _buildPaymentInfo(
-                isEnglish ? 'Business' : 'Entreprise',
-                widget.businessName,
-              ),
-              const SizedBox(height: 8),
-              _buildPaymentInfo(
-                isEnglish ? 'Plan' : 'Plan',
-                _getPlanName(widget.planType, isEnglish),
-              ),
-              const SizedBox(height: 8),
-              _buildPaymentInfo(
-                isEnglish ? 'Amount' : 'Montant',
-                '\$${widget.amountPaid.toStringAsFixed(2)} CAD',
-              ),
-              const SizedBox(height: 8),
-              _buildPaymentInfo(
-                isEnglish ? 'Payment ID' : 'ID de paiement',
-                widget.paymentId,
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSuccessView() {
-    final isEnglish = _localizationService.currentLanguage == 'en';
-
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        // Animation de succès
-        ScaleTransition(
-          scale: _scaleAnimation,
-          child: Container(
-            width: 120,
-            height: 120,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Colors.green[700],
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.green.withOpacity(0.3),
-                  blurRadius: 20,
-                  spreadRadius: 5,
-                ),
-              ],
-            ),
-            child: const Icon(Icons.check, color: Colors.white, size: 60),
-          ),
-        ),
-
-        const SizedBox(height: 32),
-
-        Text(
-          isEnglish ? 'Registration Successful!' : 'Inscription réussie !',
-          style: TextStyle(
-            fontSize: 28,
-            fontWeight: FontWeight.bold,
-            color: Colors.green[700],
-          ),
-          textAlign: TextAlign.center,
-        ),
-
-        const SizedBox(height: 16),
-
-        Text(
-          isEnglish
-              ? 'Your professional profile has been activated successfully!'
-              : 'Votre profil professionnel a été activé avec succès !',
-          style: const TextStyle(fontSize: 18, color: Colors.black87),
-          textAlign: TextAlign.center,
-        ),
-
-        const SizedBox(height: 8),
-
-        // 📧 AMÉLIORÉ: Message plus détaillé sur l'email de confirmation
-        Container(
-          padding: const EdgeInsets.all(16),
-          margin: const EdgeInsets.symmetric(horizontal: 16),
-          decoration: BoxDecoration(
-            color: Colors.blue[50],
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.blue[200]!),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.email, color: Colors.blue[700], size: 24),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      isEnglish
-                          ? 'Confirmation Email'
-                          : 'Email de confirmation',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue[700],
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 640),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const SizedBox(height: 24),
+                  Align(
+                    child: Container(
+                      width: 104,
+                      height: 104,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: statusColor.withValues(alpha: 0.12),
+                      ),
+                      child: Icon(
+                        _isPendingReview
+                            ? Icons.fact_check_outlined
+                            : Icons.check_circle_outline,
+                        color: statusColor,
+                        size: 58,
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      widget.professionalEmail != null
-                          ? (isEnglish
-                                ? 'A confirmation email has been sent to ${widget.professionalEmail}'
-                                : 'Un email de confirmation a été envoyé à ${widget.professionalEmail}')
-                          : (isEnglish
-                                ? 'You will receive a confirmation email shortly.'
-                                : 'Vous recevrez un email de confirmation sous peu.'),
-                      style: TextStyle(fontSize: 14, color: Colors.blue[600]),
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    _isPendingReview
+                        ? (isEnglish
+                              ? 'Your request is under review'
+                              : 'Votre demande est en révision')
+                        : (isEnglish
+                              ? 'Your profile is active'
+                              : 'Votre profil est actif'),
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      color: statusColor,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    _isPendingReview
+                        ? (isEnglish
+                              ? 'Your registration was received successfully. The profile will remain hidden until the review is complete.'
+                              : 'Votre inscription a bien été reçue. Le profil restera masqué jusqu’à la fin de la révision.')
+                        : (isEnglish
+                              ? 'Your registration was confirmed and your professional profile is now active.'
+                              : 'Votre inscription est confirmée et votre profil professionnel est maintenant actif.'),
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 28),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            isEnglish ? 'Receipt' : 'Reçu',
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          _ReceiptRow(
+                            label: isEnglish ? 'Business' : 'Entreprise',
+                            value: businessName,
+                          ),
+                          const SizedBox(height: 10),
+                          _ReceiptRow(
+                            label: isEnglish ? 'Plan' : 'Forfait',
+                            value: _planName(planType, isEnglish),
+                          ),
+                          const SizedBox(height: 10),
+                          _ReceiptRow(
+                            label: isEnglish ? 'Amount' : 'Montant',
+                            value:
+                                '\$${amountPaid.toStringAsFixed(2)} ${currency.toUpperCase()}',
+                          ),
+                          const SizedBox(height: 10),
+                          _ReceiptRow(
+                            label: isEnglish ? 'Status' : 'Statut',
+                            value: _isPendingReview
+                                ? (isEnglish ? 'Under review' : 'En révision')
+                                : (isEnglish ? 'Active' : 'Actif'),
+                          ),
+                          const SizedBox(height: 10),
+                          _ReceiptRow(
+                            label: isEnglish ? 'Reference' : 'Référence',
+                            value: _shortReference(
+                              confirmation?.checkoutId ?? paymentId,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (_isPendingReview) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: colors.tertiaryContainer,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.visibility_off_outlined,
+                            color: colors.onTertiaryContainer,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              isEnglish
+                                  ? 'The “View my profile” action will become available after approval.'
+                                  : 'L’action « Voir mon profil » sera disponible après l’approbation.',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: colors.onTertiaryContainer,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
-                ),
+                  const SizedBox(height: 28),
+                  if (_isActive && onViewProfile != null) ...[
+                    FilledButton.icon(
+                      onPressed: onViewProfile,
+                      icon: const Icon(Icons.person_outline),
+                      label: Text(
+                        isEnglish ? 'View my profile' : 'Voir mon profil',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  OutlinedButton.icon(
+                    key: const Key('payment_success_view_services'),
+                    onPressed: () => _openServices(context),
+                    icon: const Icon(Icons.home_outlined),
+                    label: Text(
+                      isEnglish ? 'View services' : 'Voir les services',
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                ],
               ),
-            ],
+            ),
           ),
         ),
-
-        const SizedBox(height: 40),
-
-        // Boutons d'action
-        Column(
-          children: [
-            // Bouton "Voir mon profil"
-            SizedBox(
-              width: double.infinity,
-              height: 56,
-              child: ElevatedButton.icon(
-                onPressed: _goToProfessionalProfile,
-                icon: const Icon(Icons.person, size: 24),
-                label: Text(
-                  isEnglish ? 'View My Profile' : 'Voir mon profil',
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue[700],
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  elevation: 4,
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            // Bouton "Parfait" (retour à l'accueil)
-            SizedBox(
-              width: double.infinity,
-              height: 56,
-              child: OutlinedButton.icon(
-                onPressed: _returnToHome,
-                icon: const Icon(Icons.home, size: 24),
-                label: Text(
-                  isEnglish ? 'View Services' : 'Voir les Services',
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.blue[700],
-                  side: BorderSide(color: Colors.blue[700]!, width: 2),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ],
+      ),
     );
   }
 
-  Widget _buildErrorView() {
-    final isEnglish = _localizationService.currentLanguage == 'en';
-
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(Icons.error_outline, color: Colors.red[700], size: 80),
-
-        const SizedBox(height: 24),
-
-        Text(
-          isEnglish ? 'Payment Error' : 'Erreur de paiement',
-          style: TextStyle(
-            fontSize: 24,
-            fontWeight: FontWeight.bold,
-            color: Colors.red[700],
-          ),
-          textAlign: TextAlign.center,
-        ),
-
-        const SizedBox(height: 16),
-
-        Text(
-          _errorMessage.isNotEmpty
-              ? _errorMessage
-              : (isEnglish
-                    ? 'Unable to confirm your payment. Please contact support.'
-                    : 'Impossible de confirmer votre paiement. Veuillez contacter le support.'),
-          style: const TextStyle(fontSize: 16),
-          textAlign: TextAlign.center,
-        ),
-
-        const SizedBox(height: 32),
-
-        Row(
-          children: [
-            Expanded(
-              child: ElevatedButton(
-                onPressed: _retryPaymentConfirmation,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue[700],
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                ),
-                child: Text(
-                  isEnglish ? 'Retry' : 'Réessayer',
-                  style: const TextStyle(fontSize: 16),
-                ),
-              ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: OutlinedButton(
-                onPressed: _returnToHome,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: const Color(0xFF757575), // Gris fixe
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                ),
-                child: Text(
-                  isEnglish ? 'View Services' : 'Voir les Services',
-                  style: const TextStyle(fontSize: 16),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
+  static String _shortReference(String value) {
+    final normalized = value.trim();
+    if (normalized.length <= 16) return normalized;
+    return '${normalized.substring(0, 8)}…${normalized.substring(normalized.length - 4)}';
   }
 
-  Widget _buildPaymentInfo(String label, String value) {
+  static String _planName(String planType, bool isEnglish) {
+    return switch (planType.toLowerCase()) {
+      'basic' => isEnglish ? 'Basic Plan' : 'Plan Basique',
+      'premium' => isEnglish ? 'Premium Plan' : 'Plan Premium',
+      'professional' => isEnglish ? 'Professional Plan' : 'Plan Professionnel',
+      _ => planType,
+    };
+  }
+
+  static void _openServices(BuildContext context) {
+    MainNavigationController.instance.requestDestination(
+      MainNavigationController.servicesDestination,
+    );
+    Navigator.of(context).popUntil((route) => route.isFirst);
+  }
+}
+
+class _ReceiptRow extends StatelessWidget {
+  const _ReceiptRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 14,
-            color: Color(0xFF757575), // Gris fixe
-            fontWeight: FontWeight.w500,
+        Expanded(
+          child: Text(
+            label,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
         ),
+        const SizedBox(width: 16),
         Expanded(
           child: Text(
             value,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-            textAlign: TextAlign.right,
-            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+            textAlign: TextAlign.end,
           ),
         ),
       ],
     );
-  }
-
-  Future<void> _confirmPaymentAutomatically() async {
-    try {
-      // Attendre un peu pour l'effet visuel du spinner
-      await Future.delayed(const Duration(seconds: 2));
-
-      // NOTE: Le paiement est déjà confirmé via le système Stripe natif
-      // Plus besoin d'appeler updateProfessionalPlan car ConfirmPayment s'en charge
-      /* 
-      final success = await WixPaymentService.updateProfessionalPlan(
-        professionalId: widget.professionalId,
-        planType: widget.planType,
-        paymentId: widget.paymentId,
-        amountPaid: widget.amountPaid,
-      );
-      */
-
-      final success = true; // Le paiement est déjà confirmé
-
-      if (success) {
-        // Charger les informations du professionnel
-        await _loadProfessionalData();
-
-        // 📧 NOUVEAU: Vérifier et envoyer l'email de confirmation
-        if (_professional != null && widget.professionalEmail != null) {
-          print('📧 Vérification email de confirmation...');
-
-          try {
-            await ConfirmationEmailService.checkAndResendIfNeeded(
-              professionalId: widget.professionalId,
-              email: widget.professionalEmail!,
-              businessName: widget.businessName,
-            );
-
-            // Informer l'utilisateur qu'un email de confirmation sera envoyé
-            await ConfirmationEmailService.showPostRegistrationEmailInfo(
-              businessName: widget.businessName,
-              email: widget.professionalEmail!,
-              planName: _getPlanName(
-                widget.planType,
-                _localizationService.currentLanguage == 'en',
-              ),
-            );
-
-            print('✅ Processus email de confirmation terminé');
-          } catch (emailError) {
-            print('⚠️ Erreur email de confirmation: $emailError');
-            // Ne pas faire échouer la confirmation de paiement pour un problème d'email
-          }
-        }
-
-        setState(() {
-          _isProcessing = false;
-          _isPaymentConfirmed = true;
-        });
-
-        // Démarrer l'animation de succès
-        _successController.forward();
-      }
-    } catch (e) {
-      print('Erreur lors de la confirmation automatique: $e');
-      setState(() {
-        _isProcessing = false;
-        _hasError = true;
-        _errorMessage = _localizationService.currentLanguage == 'en'
-            ? 'Network error. Please check your connection and try again.'
-            : 'Erreur réseau. Veuillez vérifier votre connexion et réessayer.';
-      });
-    }
-  }
-
-  Future<void> _loadProfessionalData() async {
-    try {
-      final dataService = DataService();
-      final professionals = await dataService.fetchProfessionnels(
-        forceRefresh: true,
-      );
-
-      if (professionals.isNotEmpty) {
-        // D'abord essayer de trouver par l'ID exact (qui pourrait être l'ID réel maintenant)
-        _professional = professionals.firstWhere(
-          (prof) => prof.id == widget.professionalId,
-          orElse: () {
-            // Si pas trouvé, chercher par nom d'entreprise (businessName)
-            return professionals.firstWhere(
-              (prof) => prof.title == widget.businessName,
-              orElse: () {
-                // En dernier recours, chercher par email
-                return professionals.firstWhere(
-                  (prof) => prof.email == widget.professionalEmail,
-                  orElse: () {
-                    print(
-                      '⚠️ Professionnel non trouvé, utilisation du premier disponible',
-                    );
-                    return professionals.first;
-                  },
-                );
-              },
-            );
-          },
-        );
-
-        print(
-          '✅ Professionnel chargé: ${_professional?.title} (ID: ${_professional?.id})',
-        );
-      }
-    } catch (e) {
-      print('Erreur lors du chargement des données du professionnel: $e');
-    }
-  }
-
-  void _retryPaymentConfirmation() {
-    setState(() {
-      _isProcessing = true;
-      _hasError = false;
-      _errorMessage = '';
-    });
-    _confirmPaymentAutomatically();
-  }
-
-  void _goToProfessionalProfile() async {
-    if (_professional != null) {
-      // Navigation directe vers le profil avec stack personnalisé
-      if (widget.categoryId != null && widget.categoryName != null) {
-        // Nettoyer la pile et aller directement au profil
-        // Quand l'utilisateur appuiera sur retour, il ira vers la catégorie
-        Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(
-            builder: (context) =>
-                ProfessionnelDetailPage(professionnel: _professional!),
-          ),
-          (route) => route.isFirst, // Garder seulement la HomePage comme base
-        );
-      } else {
-        // Pas de catégorie spécifique, navigation directe vers le profil
-        Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(
-            builder: (context) =>
-                ProfessionnelDetailPage(professionnel: _professional!),
-          ),
-          (route) => route.isFirst, // Garder seulement la HomePage comme base
-        );
-      }
-    } else {
-      // Fallback - retourner à l'accueil si pas de professionnel trouvé
-      _returnToHome();
-    }
-  }
-
-  void _returnToHome() {
-    // Toujours naviguer vers ServicesPage (page des catégories)
-    // Cela permet à l'utilisateur de facilement accéder à sa catégorie
-    Navigator.of(context).popUntil((route) => route.isFirst);
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const ServicesPage()),
-    );
-  }
-
-  String _getPlanName(String planType, bool isEnglish) {
-    switch (planType.toLowerCase()) {
-      case 'basic':
-        return isEnglish ? 'Basic Plan' : 'Plan Basique';
-      case 'premium':
-        return isEnglish ? 'Premium Plan' : 'Plan Premium';
-      case 'professional':
-        return isEnglish ? 'Professional Plan' : 'Plan Professionnel';
-      default:
-        return planType;
-    }
   }
 }

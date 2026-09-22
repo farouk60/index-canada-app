@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
+
 import 'dart:async';
+
 import '../models.dart';
 import '../models/wix_partner_models.dart';
 import '../models/wix_offer_models.dart';
@@ -8,21 +9,23 @@ import '../data_service.dart';
 import '../image_cache_service.dart';
 import '../services/localization_service.dart';
 import '../services/firebase_analytics_service.dart';
-import '../services/payment_status_service.dart';
 import '../services/cache_manager_service.dart';
 import '../widgets/language_selector.dart';
+import '../widgets/home_discovery_hero.dart';
 import '../widgets/wix_partner_widgets.dart';
 import '../widgets/wix_offers_widgets.dart';
 import 'services_page.dart';
 import 'professionnels_page.dart';
 import 'professionnel_detail_page.dart';
 import 'favorites_page.dart';
-import 'review_admin_page.dart';
 import 'professional_registration_page.dart';
 import '../utils.dart'; // Importer utils.dart pour getValidImageUrl
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  const HomePage({super.key, this.onExploreServices, this.onOpenFavorites});
+
+  final VoidCallback? onExploreServices;
+  final VoidCallback? onOpenFavorites;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -40,13 +43,42 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   List<SousCategorie> _sousCategories =
       []; // Pour afficher les noms des catégories
   bool _isLoadingPartners = false;
-  bool _isLoadingOffers = false;
   bool _isLoadingSousCategories = false;
-  Timer? _timer;
-  Timer? _partnersTimer; // Timer pour carrousel partenaires
-  Timer? _refreshTimer; // Timer pour refresh automatique
-  int _adminTapCount = 0;
-  Timer? _adminTapTimer;
+  bool _isLoadingHome = true;
+  bool _hasLoadError = false;
+  int _homeLoadGeneration = 0;
+
+  Future<void> _openServices() async {
+    final selectServices = widget.onExploreServices;
+    if (selectServices != null) {
+      selectServices();
+      return;
+    }
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ServicesPage()),
+    );
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _openFavorites() async {
+    final selectFavorites = widget.onOpenFavorites;
+    if (selectFavorites != null) {
+      selectFavorites();
+      return;
+    }
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const FavoritesPage()),
+    );
+    if (mounted) {
+      setState(() {});
+    }
+  }
 
   // Petit helper pour un pictogramme moderne (icône dans un cercle en dégradé)
   Widget _sectionIcon(IconData icon, List<Color> gradientColors) {
@@ -62,7 +94,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ),
         boxShadow: [
           BoxShadow(
-            color: gradientColors.first.withOpacity(0.25),
+            color: gradientColors.first.withValues(alpha: 0.25),
             blurRadius: 8,
             offset: const Offset(0, 3),
           ),
@@ -81,43 +113,54 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _initializeData();
 
     _setScreenName();
-    _checkPaymentStatus();
   }
 
   // Initialisation optimisée: chargements parallèles et un seul setState
   Future<void> _initializeData() async {
     await _loadAllData(forceRefresh: false);
-    if (mounted) {
-      _startOffersAutoRefresh();
-      _startPeriodicRefresh();
-    }
   }
 
   // Charge toutes les sections en parallèle et applique l'état une seule fois
   Future<void> _loadAllData({bool forceRefresh = false}) async {
+    if (!mounted) return;
+
+    final loadGeneration = ++_homeLoadGeneration;
+    setState(() {
+      _isLoadingHome = true;
+      _hasLoadError = false;
+    });
+
     try {
       final ds = _dataService;
+      if (forceRefresh) {
+        await ds.forceSyncWithWix();
+        if (!mounted || loadGeneration != _homeLoadGeneration) return;
+      }
+
+      // Toutes les sections lisent ensuite le même instantané mis en cache.
       final futures = await Future.wait([
         ds.fetchSousCategories(),
-        ds.fetchSponsoredProfessionnels(forceRefresh: forceRefresh),
-        ds.fetchPartners(forceRefresh: forceRefresh),
-        ds
-            .fetchExclusiveOffers()
-            .timeout(const Duration(seconds: 8), onTimeout: () => <WixOffer>[]),
+        ds.fetchSponsoredProfessionnels(),
+        ds.fetchPartners(),
+        ds.fetchExclusiveOffers().timeout(
+          const Duration(seconds: 8),
+          onTimeout: () => <WixOffer>[],
+        ),
       ], eagerError: false);
 
-      if (!mounted) return;
+      if (!mounted || loadGeneration != _homeLoadGeneration) return;
 
       final sousCategories = futures[0] as List<SousCategorie>;
       final featured = futures[1] as List<Professionnel>;
       final partners = futures[2] as List<WixPartner>;
       final offers = futures[3] as List<WixOffer>;
 
-  setState(() {
+      setState(() {
         _sousCategories = sousCategories;
         _featured = featured;
         _partners = partners;
         _offers = offers;
+        _isLoadingHome = false;
       });
 
       // Préchargement images après setState pour éviter les saccades
@@ -133,30 +176,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           if (mounted) _preloadPartnerAndOfferImages(partners, offers);
         });
       }
-
-      // (Re)définir l'auto-scroll pour les sections
-      // 1) Featured: démarrer uniquement si > 1 élément
-      _timer?.cancel();
-      if (featured.length > 1) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _startAutoScroll();
-        });
-      }
-
-      // 2) Démarrer le carrousel partenaires si nécessaire
-      if (partners.isNotEmpty) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _startPartnersAutoScroll();
-        });
-      }
-    } catch (e) {
-      // En cas d'erreur, préserver une UI stable
-      if (mounted) {
+    } on Exception {
+      if (mounted && loadGeneration == _homeLoadGeneration) {
         setState(() {
-          _offers = _offers; // pas de changement
-          _partners = _partners;
-          _featured = _featured;
-          _sousCategories = _sousCategories;
+          _isLoadingHome = false;
+          _hasLoadError = true;
         });
       }
     }
@@ -178,22 +202,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
 
-    // Annuler tous les timers de manière explicite
-    _timer?.cancel();
-    _timer = null;
-
-    _partnersTimer?.cancel();
-    _partnersTimer = null;
-
-    _refreshTimer?.cancel();
-    _refreshTimer = null;
-
-    _adminTapTimer?.cancel();
-    _adminTapTimer = null;
-
-    // Arrêter le rafraîchissement automatique des offres
-    _stopOffersAutoRefresh();
-
     // Disposer les contrôleurs
     _pageController.dispose();
     _partnersPageController.dispose();
@@ -206,74 +214,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _loadAllData(forceRefresh: true);
-      _checkPaymentStatus();
     }
-  }
-
-  // Vérifier le statut des paiements en attente
-  Future<void> _checkPaymentStatus() async {
-    try {
-      final paymentSuccess =
-          await PaymentStatusService.checkAndShowPaymentSuccess();
-      if (paymentSuccess && mounted) {
-        _showPaymentSuccessDialog();
-      }
-    } catch (e) {
-      print('Erreur vérification paiement: $e');
-    }
-  }
-
-  // Afficher dialog de succès de paiement
-  void _showPaymentSuccessDialog() {
-    final isEnglish = _localizationService.currentLanguage == 'en';
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(Icons.check_circle, color: Colors.green[700], size: 32),
-            const SizedBox(width: 12),
-            Text(
-              isEnglish ? 'Payment Successful!' : 'Paiement réussi !',
-              style: TextStyle(color: Colors.green[700]),
-            ),
-          ],
-        ),
-        content: Text(
-          isEnglish
-              ? 'Your professional plan has been activated successfully. Welcome aboard!'
-              : 'Votre plan professionnel a été activé avec succès. Bienvenue à bord !',
-        ),
-        actions: [
-          ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green[700],
-              foregroundColor: Colors.white,
-            ),
-            child: Text(isEnglish ? 'Great!' : 'Parfait !'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // Timer pour refresh automatique toutes les 5 minutes (moins fréquent)
-  void _startPeriodicRefresh() {
-    _refreshTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
-      if (mounted) {
-        _loadAllData(forceRefresh: true);
-      }
-    });
   }
 
   Future<void> _loadFeatured({bool forceRefresh = false}) async {
     try {
       final dataService = DataService();
-      final featured = await dataService.fetchSponsoredProfessionnels(
-        forceRefresh: forceRefresh,
-      );
+      if (forceRefresh) {
+        await dataService.forceSyncWithWix();
+      }
+      final featured = await dataService.fetchSponsoredProfessionnels();
 
       if (!mounted) return;
 
@@ -287,21 +237,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       // Précharger les images des professionnels en vedette pour améliorer les performances
       if (featured.isNotEmpty) {
         _preloadFeaturedImages(featured);
-
-        // Démarrer le défilement automatique après un délai, mais seulement si on a plus d'1 professionnel
-        if (featured.length > 1) {
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted && _featured.isNotEmpty && _featured.length > 1) {
-              _startAutoScroll();
-            }
-          });
-        }
-      } else {
-        // Si pas de professionnels en vedette, arrêter le timer existant
-        _timer?.cancel();
-        _timer = null;
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         setState(() {
           _featured = [];
@@ -314,31 +251,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _loadSousCategories() async {
     // Éviter les appels multiples simultanés
     if (_isLoadingSousCategories) {
-      print('🏠 HomePage: Chargement des sous-catégories déjà en cours...');
       return;
     }
 
     _isLoadingSousCategories = true;
     try {
-      print('🏠 HomePage: Chargement des sous-catégories...');
       final sousCategories = await _dataService.fetchSousCategories();
-      print('🏠 HomePage: Reçu ${sousCategories.length} sous-catégories');
       if (mounted) {
         setState(() {
           _sousCategories = sousCategories;
         });
-        print('🏠 HomePage: Sous-catégories mises à jour dans l\'état');
-        
+
         // Forcer un nouveau rebuild pour mettre à jour les noms de catégories
         if (_featured.isNotEmpty) {
-          print('🏠 HomePage: Déclenchement setState pour mise à jour des noms de catégories');
           setState(() {
             // Force rebuild des cartes professionnels avec les noms de catégories
           });
         }
       }
-    } catch (e) {
-      print('❌ Erreur chargement sous-catégories: $e');
+    } catch (_) {
+      // Conserver silencieusement les données déjà affichées.
     } finally {
       _isLoadingSousCategories = false;
     }
@@ -346,11 +278,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   /// Effectue un rafraîchissement complet en vidant tous les caches
   Future<void> _performCompleteRefresh() async {
+    if (!mounted) return;
+
     try {
       // Réinitialiser d'abord les listes locales pour éviter l'affichage de données obsolètes
       setState(() {
         _sousCategories = []; // Vider la liste des sous-catégories
-        _featured = [];       // Vider temporairement la liste des professionnels en vedette
+        _featured =
+            []; // Vider temporairement la liste des professionnels en vedette
       });
 
       // Utiliser le service global de gestion de cache
@@ -359,16 +294,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         context: context,
         showMessages: true,
       );
+      if (!mounted) return;
 
-      // Recharger toutes les données spécifiques à cette page
-      // L'ordre est important : d'abord les sous-catégories, puis les professionnels
-      await _loadSousCategories();
-      await _loadFeatured(forceRefresh: true);
-      await _loadPartners(forceRefresh: true);
-
-      print('✅ Rafraîchissement complet HomePage terminé');
-    } catch (e) {
-      print('❌ Erreur lors du rafraîchissement complet HomePage: $e');
+      // Un seul rechargement cohérent évite que des réponses concurrentes
+      // remplacent partiellement les données les plus récentes.
+      await _loadAllData();
+    } catch (_) {
       // Les messages d'erreur sont gérés par le CacheManagerService
     }
   }
@@ -378,7 +309,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     try {
       // Si les sous-catégories ne sont pas encore chargées, retourner un placeholder
       if (_sousCategories.isEmpty) {
-        print('🏠 HomePage: Sous-catégories vides pour ID: $sousCategorieId');
         // Déclencher le rechargement des sous-catégories si elles sont vides
         Future.microtask(() => _loadSousCategories());
         return '...'; // Placeholder au lieu de l'ID brut
@@ -390,10 +320,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       final title = sousCategorie.getTitleInLanguage(
         _localizationService.currentLanguage,
       );
-      print('🏠 HomePage: Trouvé catégorie "$title" pour ID: $sousCategorieId');
       return title;
-    } catch (e) {
-      print('🏠 HomePage: Catégorie non trouvée pour ID: $sousCategorieId (${_sousCategories.length} catégories disponibles)');
+    } catch (_) {
       // Si pas trouvé, essayer de recharger les sous-catégories et retourner un texte générique
       Future.microtask(() => _loadSousCategories());
       return _localizationService.currentLanguage == 'fr'
@@ -432,8 +360,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           transitionDuration: const Duration(milliseconds: 500),
         ),
       );
-    } catch (e) {
-      print('Erreur navigation vers catégorie: $e');
+    } catch (_) {
       // Fallback : naviguer vers la page services générale
       Navigator.push(
         context,
@@ -455,7 +382,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   // Précharger les images des partenaires et des offres
-  void _preloadPartnerAndOfferImages(List<WixPartner> partners, List<WixOffer> offers) {
+  void _preloadPartnerAndOfferImages(
+    List<WixPartner> partners,
+    List<WixOffer> offers,
+  ) {
     final imageService = ImageCacheService();
 
     final partnerUrls = partners
@@ -468,95 +398,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         .where((u) => u.isNotEmpty)
         .toList();
 
-    final all = <String>[]
-      ..addAll(partnerUrls)
-      ..addAll(offerUrls);
+    final all = <String>[...partnerUrls, ...offerUrls];
 
     if (all.isNotEmpty) {
       imageService.preloadImages(all, context);
-    }
-  }
-
-  void _startAutoScroll() {
-    // Annuler le timer existant avant d'en créer un nouveau
-    _timer?.cancel();
-
-    // Ne démarrer le timer que si on a des professionnels en vedette
-  if (_featured.length < 2) return; // au moins 2 pour faire un carrousel
-
-    // CORRECTION: Augmenter l'intervalle à 10 secondes pour réduire le scroll automatique
-    // Vous pouvez également commenter cette section pour désactiver complètement le scroll automatique
-    _timer = Timer.periodic(const Duration(seconds: 10), (timer) {
-      // Vérifications supplémentaires pour éviter le scroll infini
-      if (!mounted || _featured.length < 2 || !_pageController.hasClients) {
-        timer.cancel();
-        return;
-      }
-
-      try {
-        int currentPage = _pageController.page?.round() ?? 0;
-        int nextPage = currentPage + 1;
-
-        if (nextPage >= _featured.length) {
-          nextPage = 0;
-        }
-
-        _pageController.animateToPage(
-          nextPage,
-          duration: const Duration(milliseconds: 500),
-          curve: Curves.easeInOut,
-        );
-      } catch (e) {
-        // En cas d'erreur, arrêter le timer
-        timer.cancel();
-      }
-    });
-  }
-
-  void _startPartnersAutoScroll() {
-    // Annuler le timer existant avant d'en créer un nouveau
-    _partnersTimer?.cancel();
-
-    if (_partners.isNotEmpty) {
-      _partnersTimer = Timer.periodic(const Duration(seconds: 4), (timer) {
-        if (_partnersPageController.hasClients && _partners.isNotEmpty) {
-          int totalPages = (_partners.length / 3).ceil();
-          int nextPage = (_partnersPageController.page?.round() ?? 0) + 1;
-          if (nextPage >= totalPages) {
-            nextPage = 0;
-          }
-          _partnersPageController.animateToPage(
-            nextPage,
-            duration: const Duration(milliseconds: 400),
-            curve: Curves.easeInOut,
-          );
-        }
-      });
-    }
-  }
-
-  void _onLogoTap() async {
-    _adminTapCount++;
-
-    // Démarrer/réinitialiser le timer
-    _adminTapTimer?.cancel();
-    _adminTapTimer = Timer(const Duration(seconds: 2), () {
-      _adminTapCount = 0;
-    });
-
-    // Si 7 taps en 2 secondes, ouvrir la page d'admin
-    if (_adminTapCount >= 7) {
-      _adminTapCount = 0;
-      _adminTapTimer?.cancel();
-
-      await Navigator.push(
-        context,
-        MaterialPageRoute(builder: (context) => const ReviewAdminPage()),
-      );
-      // Forcer la mise à jour de la page d'accueil quand on revient
-      if (mounted) {
-        setState(() {});
-      }
     }
   }
 
@@ -593,61 +438,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _isLoadingPartners = true;
       });
 
-      final partners = await _dataService.fetchPartners(
-        forceRefresh: forceRefresh,
-      );
+      if (forceRefresh) {
+        await _dataService.forceSyncWithWix();
+        if (!mounted) return;
+      }
+      final partners = await _dataService.fetchPartners();
 
       if (mounted) {
         setState(() {
           _partners = partners;
           _isLoadingPartners = false;
         });
-
-        // Démarrer le carrousel automatique des partenaires
-        if (_partners.isNotEmpty) {
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted) {
-              _startPartnersAutoScroll();
-            }
-          });
-        }
       }
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         setState(() {
           _isLoadingPartners = false;
           _partners = [];
-        });
-      }
-    }
-  }
-
-  // Charger les offres exclusives depuis Wix
-  Future<void> _loadOffers() async {
-    if (!mounted) return;
-
-    try {
-      setState(() {
-        _isLoadingOffers = true;
-      });
-
-      // Timeout pour éviter les blocages
-      final offers = await _dataService.fetchExclusiveOffers().timeout(
-        const Duration(seconds: 8),
-        onTimeout: () => <WixOffer>[],
-      );
-
-      if (mounted) {
-        setState(() {
-          _offers = offers;
-          _isLoadingOffers = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _offers = [];
-          _isLoadingOffers = false;
         });
       }
     }
@@ -667,11 +474,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               Expanded(
                 child: Text(
                   LocalizationService().tr('our_partners'),
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
-                  ),
+                  style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
               IconButton(
@@ -696,8 +499,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   child: Padding(
                     padding: const EdgeInsets.all(32.0),
                     child: Text(
-                      'Aucun partenaire disponible',
-                      style: TextStyle(color: Colors.grey[600], fontSize: 16),
+                      _localizationService.tr('no_partners_available'),
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
                 )
@@ -710,10 +515,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     itemBuilder: (context, pageIndex) {
                       // Calculer les indices pour cette page
                       int startIndex = pageIndex * 3;
-                      int endIndex = (startIndex + 3).clamp(
-                        0,
-                        _partners.length,
-                      );
+                      int endIndex = (startIndex + 3)
+                          .clamp(0, _partners.length)
+                          .toInt();
 
                       return Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 8.0),
@@ -721,9 +525,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                           children: [
                             for (int i = startIndex; i < endIndex; i++)
-                              Container(
-                                width:
-                                    110, // Réduire légèrement pour éviter débordement
+                              SizedBox(
+                                width: 110, // Réduire légèrement pour éviter débordement
                                 height: 110, // Garder proportionnel
                                 child: WixPartnerCard(partner: _partners[i]),
                               ),
@@ -748,16 +551,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           // Titre de la section avec emoji "cible"
           Row(
             children: [
-              _sectionIcon(Icons.local_offer_rounded, [Colors.orange, Colors.redAccent]),
+              _sectionIcon(Icons.local_offer_rounded, [
+                Colors.orange,
+                Colors.redAccent,
+              ]),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   _localizationService.tr('exclusive_offers'),
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
-                  ),
+                  style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
             ],
@@ -765,8 +567,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           const SizedBox(height: 12),
 
           // Contenu de la section
-          _isLoadingOffers
-              ? Container(
+          _isLoadingHome && _offers.isEmpty
+              ? SizedBox(
                   height: 120,
                   child: const Center(child: CircularProgressIndicator()),
                 )
@@ -775,12 +577,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   offers: _offers,
                   title: '', // Pas de titre ici car déjà affiché au-dessus
                 )
-              : Container(
+              : SizedBox(
                   height: 80,
                   child: Center(
                     child: Text(
                       _localizationService.tr('no_offers_available'),
-                      style: TextStyle(color: Colors.grey[600], fontSize: 16),
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
                 ),
@@ -793,30 +597,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Index'),
-        backgroundColor: Colors.blue.shade600,
-        foregroundColor: Colors.white,
+        title: const Text('Index Canada'),
         actions: [
           // Debug actions removed
           // Sélecteur de langue
           LanguageSelector(
             onLanguageChanged: (String languageCode) {
-              setState(() {}); // Reconstruire la page avec la nouvelle langue
+              if (mounted) {
+                setState(() {});
+              }
             },
           ),
           // Bouton Favoris
           IconButton(
             icon: const Icon(Icons.favorite),
-            onPressed: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const FavoritesPage()),
-              );
-              // Forcer la mise à jour de la page d'accueil quand on revient
-              if (mounted) {
-                setState(() {});
-              }
-            },
+            onPressed: _openFavorites,
             tooltip: _localizationService.tr('favorites'),
           ),
           // Icône pour refresh manuel
@@ -835,93 +630,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           await _performCompleteRefresh();
         },
         child: SingleChildScrollView(
-          physics:
-              const AlwaysScrollableScrollPhysics(), // Permet le pull-to-refresh même si le contenu ne scroll pas
+          physics: const AlwaysScrollableScrollPhysics(), // Permet le pull-to-refresh même si le contenu ne scroll pas
           child: Padding(
-            padding: const EdgeInsets.all(24.0),
+            padding: EdgeInsets.symmetric(
+              horizontal: MediaQuery.sizeOf(context).width < 600 ? 16 : 32,
+              vertical: 24,
+            ),
             child: Column(
               children: [
-                const SizedBox(height: 20), // Réduit de 40 à 20
-                GestureDetector(
-                  onTap: _onLogoTap,
-                  child: Container(
-                    height: 100, // Réduit de 120 à 100
-                    width: 100, // Réduit de 120 à 100
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.transparent,
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(
-                        50,
-                      ), // Ajusté pour la nouvelle taille
-                      child: ColorFiltered(
-                        colorFilter: const ColorFilter.mode(
-                          Colors.white,
-                          BlendMode.multiply,
-                        ),
-                        child: Image.asset(
-                          'assets/images/store.png',
-                          height: 100, // Réduit de 120 à 100
-                          width: 100, // Réduit de 120 à 100
-                          fit: BoxFit.cover,
-                          key: const ValueKey('store_logo_updated'),
-                        ),
-                      ),
+                HomeDiscoveryHero(onExplore: _openServices),
+                if (_isLoadingHome)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 16),
+                    child: LinearProgressIndicator(),
+                  ),
+                if (_hasLoadError)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: HomeLoadErrorBanner(
+                      onRetry: () =>
+                          unawaited(_loadAllData(forceRefresh: true)),
                     ),
                   ),
-                ),
-                const SizedBox(height: 16), // Réduit de 32 à 16
-                Text(
-                  _localizationService.tr('welcome_title'),
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 12), // Réduit de 16 à 12
-                Text(
-                  _localizationService.tr('welcome_subtitle'),
-                  style: const TextStyle(fontSize: 16),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 24), // Réduit de 40 à 24
-                Hero(
-                  tag: 'explore_button',
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 300),
-                    curve: Curves.easeInOut,
-                    child: ElevatedButton.icon(
-                      icon: const Icon(Icons.business_center),
-                      label: Text(_localizationService.tr('explore_services')),
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 32,
-                          vertical: 16,
-                        ),
-                        textStyle: const TextStyle(fontSize: 18),
-                        elevation: 8,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(30),
-                        ),
-                      ),
-                      onPressed: () async {
-                        await Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const ServicesPage(),
-                          ),
-                        );
-                        // Forcer la mise à jour de la page d'accueil quand on revient
-                        if (mounted) {
-                          setState(() {});
-                        }
-                      },
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 20), // Réduit de 40 à 20
+                const SizedBox(height: 24),
                 // Section des professionnels en vedette
                 AnimatedOpacity(
                   opacity: _featured.isNotEmpty ? 1.0 : 0.0,
@@ -942,9 +673,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     ],
                   ),
                 ),
-        // Section des professionnels en vedette avec gestion d'état propre
-        _featured.isNotEmpty
-          ? Column(
+                // Section des professionnels en vedette avec gestion d'état propre
+                _featured.isNotEmpty
+                    ? Column(
                         children: [
                           SizedBox(
                             height: 200,
@@ -974,6 +705,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                               clickType: 'carousel',
                                               sourceScreen: 'home_page',
                                             );
+                                            if (!context.mounted) return;
 
                                             await Navigator.push(
                                               context,
@@ -1061,30 +793,49 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                                       const SizedBox(height: 4),
                                                       // Badge moderne cliquable pour le service (catégorie)
                                                       InkWell(
-                                                        onTap: () => _navigateToCategory(
-                                                          pro.sousCategorie,
-                                                        ),
-                                                        borderRadius: BorderRadius.circular(16),
+                                                        onTap: () =>
+                                                            _navigateToCategory(
+                                                              pro.sousCategorie,
+                                                            ),
+                                                        borderRadius:
+                                                            BorderRadius.circular(
+                                                              16,
+                                                            ),
                                                         child: Container(
-                                                          padding: const EdgeInsets.symmetric(
-                                                            horizontal: 10,
-                                                            vertical: 6,
-                                                          ),
+                                                          padding:
+                                                              const EdgeInsets.symmetric(
+                                                                horizontal: 10,
+                                                                vertical: 6,
+                                                              ),
                                                           decoration: BoxDecoration(
                                                             gradient: LinearGradient(
                                                               colors: [
                                                                 Colors.teal,
                                                                 Colors.cyan,
                                                               ],
-                                                              begin: Alignment.topLeft,
-                                                              end: Alignment.bottomRight,
+                                                              begin: Alignment
+                                                                  .topLeft,
+                                                              end: Alignment
+                                                                  .bottomRight,
                                                             ),
-                                                            borderRadius: BorderRadius.circular(16),
+                                                            borderRadius:
+                                                                BorderRadius.circular(
+                                                                  16,
+                                                                ),
                                                             boxShadow: [
                                                               BoxShadow(
-                                                                color: Colors.teal.withOpacity(0.25),
+                                                                color: Colors
+                                                                    .teal
+                                                                    .withValues(
+                                                                      alpha:
+                                                                          0.25,
+                                                                    ),
                                                                 blurRadius: 6,
-                                                                offset: const Offset(0, 2),
+                                                                offset:
+                                                                    const Offset(
+                                                                      0,
+                                                                      2,
+                                                                    ),
                                                               ),
                                                             ],
                                                           ),
@@ -1092,13 +843,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                                             _getSousCategorieTitle(
                                                               pro.sousCategorie,
                                                             ),
-                                                            style: const TextStyle(
-                                                              color: Colors.white,
-                                                              fontSize: 12,
-                                                              fontWeight: FontWeight.w600,
-                                                            ),
+                                                            style:
+                                                                const TextStyle(
+                                                                  color: Colors
+                                                                      .white,
+                                                                  fontSize: 12,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w600,
+                                                                ),
                                                             maxLines: 1,
-                                                            overflow: TextOverflow.ellipsis,
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
                                                           ),
                                                         ),
                                                       ),
@@ -1110,10 +867,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                                           height: 6,
                                                         ),
                                                         Container(
-                                                          padding: const EdgeInsets.symmetric(
-                                                            horizontal: 8,
-                                                            vertical: 4,
-                                                          ),
+                                                          padding:
+                                                              const EdgeInsets.symmetric(
+                                                                horizontal: 8,
+                                                                vertical: 4,
+                                                              ),
                                                           decoration: BoxDecoration(
                                                             gradient: LinearGradient(
                                                               colors: [
@@ -1315,7 +1073,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                   height: 8,
                                   decoration: BoxDecoration(
                                     shape: BoxShape.circle,
-                                    color: Colors.blue.withValues(alpha: 0.3),
+                                    color: Theme.of(context).colorScheme.primary
+                                        .withValues(alpha: 0.3),
                                   ),
                                 ),
                               ),
@@ -1327,28 +1086,32 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                         width: double.infinity,
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
-                          color: Colors.grey[100],
+                          color: Theme.of(context).colorScheme.surfaceContainer,
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Column(
                           children: [
-                            Icon(Icons.info_outline, color: Colors.grey[600]),
+                            Icon(
+                              Icons.info_outline,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                            ),
                             const SizedBox(height: 8),
                             Text(
-                              _localizationService.currentLanguage == 'en'
-                                  ? 'No featured professionals for now.'
-                                  : 'Aucun professionnel en vedette pour le moment.',
-                              style: TextStyle(color: Colors.grey[700]),
+                              _localizationService.tr('no_sponsored'),
+                              style: TextStyle(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
                             ),
                             const SizedBox(height: 8),
                             TextButton.icon(
-                              onPressed: () => _loadFeatured(forceRefresh: true),
+                              onPressed: () =>
+                                  _loadFeatured(forceRefresh: true),
                               icon: const Icon(Icons.refresh),
-                              label: Text(
-                                _localizationService.currentLanguage == 'en'
-                                    ? 'Refresh'
-                                    : 'Rafraîchir',
-                              ),
+                              label: Text(_localizationService.tr('refresh')),
                             ),
                           ],
                         ),
@@ -1367,17 +1130,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   width: double.infinity,
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [Colors.green.shade400, Colors.green.shade600],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
+                    color: Theme.of(context).colorScheme.secondaryContainer,
                     borderRadius: BorderRadius.circular(16),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.green.shade200,
-                        blurRadius: 8,
-                        offset: const Offset(0, 4),
+                        color: Theme.of(context).colorScheme.shadow
+                            .withValues(alpha: 0.12),
+                        blurRadius: 16,
+                        offset: const Offset(0, 8),
                       ),
                     ],
                   ),
@@ -1386,28 +1146,30 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                       Icon(
                         Icons.business_center,
                         size: 40,
-                        color: Colors.white,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSecondaryContainer,
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        _localizationService.currentLanguage == 'fr'
-                            ? 'Vous êtes un professionnel ?'
-                            : 'Are you a professional?',
-                        style: const TextStyle(
+                        _localizationService.tr('are_you_professional'),
+                        style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
-                          color: Colors.white,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSecondaryContainer,
                         ),
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        _localizationService.currentLanguage == 'fr'
-                            ? 'Rejoignez notre annuaire et développez votre clientèle'
-                            : 'Join our directory and grow your business',
-                        style: const TextStyle(
+                        _localizationService.tr('grow_your_business'),
+                        style: TextStyle(
                           fontSize: 14,
-                          color: Colors.white70,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSecondaryContainer,
                         ),
                         textAlign: TextAlign.center,
                       ),
@@ -1427,8 +1189,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           }
                         },
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          foregroundColor: Colors.green.shade600,
+                          backgroundColor: Theme.of(context)
+                              .colorScheme
+                              .onSecondaryContainer,
+                          foregroundColor: Theme.of(context)
+                              .colorScheme
+                              .secondaryContainer,
                           padding: const EdgeInsets.symmetric(
                             horizontal: 24,
                             vertical: 12,
@@ -1438,9 +1204,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           ),
                         ),
                         child: Text(
-                          _localizationService.currentLanguage == 'fr'
-                              ? 'S\'inscrire maintenant'
-                              : 'Join Now',
+                          _localizationService.tr('register_here'),
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
                       ),
@@ -1454,33 +1218,5 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ),
       ),
     );
-  }
-
-  // Démarrer le rafraîchissement automatique des offres
-  void _startOffersAutoRefresh() {
-    print(
-      'HomePage: Démarrage du rafraîchissement automatique des offres (1 minute)',
-    );
-
-    // Annuler le timer existant s'il y en a un
-    _refreshTimer?.cancel();
-
-    // Créer un nouveau timer qui se répète toutes les 1 minute
-    _refreshTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
-      if (mounted) {
-        print('HomePage: Rafraîchissement automatique des offres...');
-        _loadOffers(); // Recharger les offres
-      } else {
-        // Si le widget n'est plus monté, annuler le timer
-        timer.cancel();
-      }
-    });
-  }
-
-  // Arrêter le rafraîchissement automatique
-  void _stopOffersAutoRefresh() {
-    _refreshTimer?.cancel();
-    _refreshTimer = null;
-    print('HomePage: Rafraîchissement automatique des offres arrêté');
   }
 }

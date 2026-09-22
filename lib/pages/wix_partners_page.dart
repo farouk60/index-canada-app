@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+
+import '../data_service.dart';
 import '../models/wix_partner_models.dart';
-import '../services/wix_partner_service.dart';
 import '../services/localization_service.dart';
 import '../widgets/language_selector.dart';
 import '../widgets/wix_partner_widgets.dart';
@@ -13,47 +16,108 @@ class WixPartnersPage extends StatefulWidget {
 }
 
 class _WixPartnersPageState extends State<WixPartnersPage> {
+  final DataService _dataService = DataService();
   final LocalizationService _localizationService = LocalizationService();
-  final WixPartnerService _partnerService = WixPartnerService();
 
-  List<WixPartner> _partners = [];
-  List<String> _categories = [];
+  List<WixPartner> _partners = const [];
+  List<String> _categories = const [];
   String? _selectedCategory;
   bool _isLoading = true;
-  String? _error;
+  bool _hasLoadError = false;
+  int _loadGeneration = 0;
 
   @override
   void initState() {
     super.initState();
-    _loadData();
+    _localizationService.addListener(_handleLanguageChanged);
+    unawaited(_loadData());
   }
 
-  Future<void> _loadData() async {
+  @override
+  void dispose() {
+    _localizationService.removeListener(_handleLanguageChanged);
+    super.dispose();
+  }
+
+  void _handleLanguageChanged() {
+    if (!mounted) return;
+
+    setState(() {
+      _categories = _sortedCategories(_categories);
+    });
+  }
+
+  Future<void> _loadData({bool forceRefresh = false}) async {
+    if (!mounted) return;
+
+    final loadGeneration = ++_loadGeneration;
+    final hadPartners = _partners.isNotEmpty;
+    setState(() {
+      _isLoading = !hadPartners;
+      _hasLoadError = false;
+    });
+
     try {
-      setState(() {
-        _isLoading = true;
-        _error = null;
-      });
+      final partners = await _dataService.fetchPartners(
+        forceRefresh: forceRefresh,
+      );
+      final categories = _sortedCategories(
+        partners
+            .map((partner) => partner.category.trim())
+            .where((category) => category.isNotEmpty)
+            .toSet(),
+      );
 
-      final partners = await _partnerService.fetchPartners(forceRefresh: true);
-      final categories = await _partnerService.getAvailableCategories();
+      if (!mounted || loadGeneration != _loadGeneration) return;
 
       setState(() {
-        _partners = partners;
-        _categories = categories;
+        _partners = List.unmodifiable(partners);
+        _categories = List.unmodifiable(categories);
+        if (_selectedCategory != null &&
+            !_categories.contains(_selectedCategory)) {
+          _selectedCategory = null;
+        }
         _isLoading = false;
       });
-    } catch (e) {
+    } on Exception {
+      if (!mounted || loadGeneration != _loadGeneration) return;
+
       setState(() {
-        _error = e.toString();
         _isLoading = false;
+        _hasLoadError = !hadPartners;
       });
+
+      if (hadPartners) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(
+            content: Text(_localizationService.tr('error_loading_partners')),
+          ),
+        );
+      }
     }
   }
 
+  List<String> _sortedCategories(Iterable<String> categories) {
+    final sorted = categories.toList();
+    sorted.sort(
+      (first, second) =>
+          _categoryLabel(first).compareTo(_categoryLabel(second)),
+    );
+    return sorted;
+  }
+
+  String _categoryLabel(String category) {
+    return PartnerCategory.getCategoryById(category)
+            ?.getNameInLanguage(_localizationService.currentLanguage) ??
+        category;
+  }
+
   List<WixPartner> get _filteredPartners {
-    if (_selectedCategory == null) return _partners;
-    return _partners.where((p) => p.category == _selectedCategory).toList();
+    final category = _selectedCategory;
+    if (category == null) return _partners;
+    return _partners
+        .where((partner) => partner.category == category)
+        .toList(growable: false);
   }
 
   @override
@@ -62,39 +126,120 @@ class _WixPartnersPageState extends State<WixPartnersPage> {
       appBar: AppBar(
         title: Row(
           children: [
-            const Text('🤝', style: TextStyle(fontSize: 24)),
+            const ExcludeSemantics(
+              child: Text('🤝', style: TextStyle(fontSize: 24)),
+            ),
             const SizedBox(width: 8),
             Text(_localizationService.tr('our_partners')),
           ],
         ),
-        backgroundColor: Colors.blue.shade600,
-        foregroundColor: Colors.white,
-        elevation: 0,
-        actions: [
-          LanguageSelector(
-            onLanguageChanged: (String languageCode) {
-              setState(() {}); // Reconstruire la page avec la nouvelle langue
-            },
-          ),
-        ],
+        actions: const [LanguageSelector()],
       ),
       body: Column(
         children: [
-          // Statistiques en en-tête
-          _buildStatsHeader(),
-
-          // Filtre par catégorie
+          if (_partners.isNotEmpty) _buildStatsHeader(),
           if (_categories.isNotEmpty) _buildCategoryFilter(),
+          Expanded(child: _buildContent()),
+        ],
+      ),
+    );
+  }
 
-          // Contenu principal
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _error != null
-                ? _buildErrorWidget()
-                : _filteredPartners.isEmpty
-                ? _buildEmptyWidget()
-                : _buildPartnersList(),
+  Widget _buildContent() {
+    if (_isLoading) {
+      return Semantics(
+        liveRegion: true,
+        label: _localizationService.tr('loading'),
+        child: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_hasLoadError) {
+      return _buildRefreshableState(
+        icon: Icons.cloud_off_outlined,
+        message: _localizationService.tr('error_loading_partners'),
+        actionLabel: _localizationService.tr('retry'),
+        onAction: () => unawaited(_loadData(forceRefresh: true)),
+      );
+    }
+
+    final filteredPartners = _filteredPartners;
+    if (filteredPartners.isEmpty) {
+      return _buildRefreshableState(
+        icon: Icons.business_outlined,
+        message: _selectedCategory != null
+            ? _localizationService.tr('no_partners_in_category')
+            : _localizationService.tr('no_partners_available'),
+        actionLabel: _selectedCategory == null
+            ? null
+            : _localizationService.tr('show_all_partners'),
+        onAction: _selectedCategory == null
+            ? null
+            : () {
+                setState(() {
+                  _selectedCategory = null;
+                });
+              },
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: () => _loadData(forceRefresh: true),
+      child: ListView.separated(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        itemCount: filteredPartners.length,
+        separatorBuilder: (_, _) => const SizedBox(height: 16),
+        itemBuilder: (context, index) {
+          final partner = filteredPartners[index];
+          return WixPartnerListCard(
+            key: ValueKey(partner.id),
+            partner: partner,
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildRefreshableState({
+    required IconData icon,
+    required String message,
+    String? actionLabel,
+    VoidCallback? onAction,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return RefreshIndicator(
+      onRefresh: () => _loadData(forceRefresh: true),
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(icon, size: 64, color: colorScheme.outline),
+                    const SizedBox(height: 16),
+                    Text(
+                      message,
+                      style: Theme.of(context).textTheme.bodyLarge,
+                      textAlign: TextAlign.center,
+                    ),
+                    if (actionLabel != null && onAction != null) ...[
+                      const SizedBox(height: 20),
+                      FilledButton.tonal(
+                        onPressed: onAction,
+                        child: Text(actionLabel),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
           ),
         ],
       ),
@@ -102,90 +247,60 @@ class _WixPartnersPageState extends State<WixPartnersPage> {
   }
 
   Widget _buildStatsHeader() {
-    if (_partners.isEmpty) return const SizedBox.shrink();
+    final featuredCount = _partners
+        .where((partner) => partner.isFeatured)
+        .length;
+    final officialCount = _partners
+        .where((partner) => partner.isOfficial)
+        .length;
+    final colorScheme = Theme.of(context).colorScheme;
 
-    final featuredCount = _partners.where((p) => p.isFeatured).length;
-    final officialCount = _partners.where((p) => p.isOfficial).length;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.blue.shade600,
-        borderRadius: const BorderRadius.only(
-          bottomLeft: Radius.circular(20),
-          bottomRight: Radius.circular(20),
+    return DecoratedBox(
+      decoration: BoxDecoration(color: colorScheme.primary),
+      child: SafeArea(
+        top: false,
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+          child: Row(
+            children: [
+              _PartnerStat(
+                icon: Icons.business_outlined,
+                count: _partners.length,
+                label: _localizationService.tr('partners'),
+              ),
+              _PartnerStat(
+                icon: Icons.star_outline_rounded,
+                count: featuredCount,
+                label: _localizationService.tr('featured'),
+              ),
+              _PartnerStat(
+                icon: Icons.verified_outlined,
+                count: officialCount,
+                label: _localizationService.tr('official'),
+              ),
+            ],
+          ),
         ),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          _buildStatItem(
-            icon: Icons.business,
-            count: _partners.length,
-            label: _localizationService.tr('partners'),
-          ),
-          _buildStatItem(
-            icon: Icons.star,
-            count: featuredCount,
-            label: _localizationService.tr('featured'),
-          ),
-          _buildStatItem(
-            icon: Icons.verified,
-            count: officialCount,
-            label: _localizationService.tr('official'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatItem({
-    required IconData icon,
-    required int count,
-    required String label,
-  }) {
-    return Column(
-      children: [
-        Icon(icon, color: Colors.white, size: 24),
-        const SizedBox(height: 4),
-        Text(
-          count.toString(),
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        Text(
-          label,
-          style: const TextStyle(color: Colors.white70, fontSize: 12),
-        ),
-      ],
     );
   }
 
   Widget _buildCategoryFilter() {
-    return Container(
-      height: 60,
-      padding: const EdgeInsets.symmetric(vertical: 8),
+    return SizedBox(
+      height: 64,
       child: ListView(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         children: [
-          // Filtre "Tous"
           _buildCategoryChip(null, _localizationService.tr('all_categories')),
-
-          // Filtres par catégorie
           ..._categories.map((category) {
             final categoryInfo = PartnerCategory.getCategoryById(category);
             final icon = categoryInfo?.icon ?? '📋';
-            final name =
-                categoryInfo?.getNameInLanguage(
-                  _localizationService.currentLanguage,
-                ) ??
-                category;
-            return _buildCategoryChip(category, '$icon $name');
+            return _buildCategoryChip(
+              category,
+              '$icon ${_categoryLabel(category)}',
+            );
           }),
         ],
       ),
@@ -195,102 +310,64 @@ class _WixPartnersPageState extends State<WixPartnersPage> {
   Widget _buildCategoryChip(String? category, String label) {
     final isSelected = _selectedCategory == category;
 
-    return Container(
-      margin: const EdgeInsets.only(right: 8),
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
       child: FilterChip(
         label: Text(label),
         selected: isSelected,
+        showCheckmark: true,
         onSelected: (selected) {
           setState(() {
             _selectedCategory = selected ? category : null;
           });
         },
-        backgroundColor: Colors.grey.shade100,
-        selectedColor: Colors.blue.shade100,
-        labelStyle: TextStyle(
-          color: isSelected ? Colors.blue.shade800 : Colors.black87,
-          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-        ),
-        side: BorderSide(
-          color: isSelected ? Colors.blue.shade300 : Colors.grey.shade300,
-        ),
       ),
     );
   }
+}
 
-  Widget _buildPartnersList() {
-    return RefreshIndicator(
-      onRefresh: _loadData,
-      child: ListView.separated(
-        padding: const EdgeInsets.all(16),
-        itemCount: _filteredPartners.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 16),
-        itemBuilder: (context, index) {
-          final partner = _filteredPartners[index];
-          return WixPartnerListCard(partner: partner);
-        },
-      ),
-    );
-  }
+class _PartnerStat extends StatelessWidget {
+  const _PartnerStat({
+    required this.icon,
+    required this.count,
+    required this.label,
+  });
 
-  Widget _buildErrorWidget() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.error_outline, size: 64, color: Colors.red.shade300),
-          const SizedBox(height: 16),
-          Text(
-            _localizationService.tr('error_loading_partners'),
-            style: const TextStyle(fontSize: 16),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 8),
-          if (_error != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(
-                _error!,
-                style: const TextStyle(fontSize: 12, color: Colors.grey),
-                textAlign: TextAlign.center,
+  final IconData icon;
+  final int count;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Expanded(
+      child: Semantics(
+        label: '$count $label',
+        child: ExcludeSemantics(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: colorScheme.onPrimary, size: 24),
+              const SizedBox(height: 4),
+              Text(
+                '$count',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: colorScheme.onPrimary,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
-            ),
-          const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: _loadData,
-            child: Text(_localizationService.tr('retry')),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: colorScheme.onPrimary.withValues(alpha: 0.82),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildEmptyWidget() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.business_outlined, size: 64, color: Colors.grey[400]),
-          const SizedBox(height: 16),
-          Text(
-            _selectedCategory != null
-                ? _localizationService.tr('no_partners_in_category')
-                : _localizationService.tr('no_partners_available'),
-            style: const TextStyle(fontSize: 16),
-            textAlign: TextAlign.center,
-          ),
-          if (_selectedCategory != null) ...[
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: () {
-                setState(() {
-                  _selectedCategory = null;
-                });
-              },
-              child: Text(_localizationService.tr('show_all_partners')),
-            ),
-          ],
-        ],
+        ),
       ),
     );
   }
