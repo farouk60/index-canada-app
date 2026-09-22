@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 
 /// Service simple pour décider si on doit précharger (prefetch) des images.

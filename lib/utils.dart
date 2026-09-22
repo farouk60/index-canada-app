@@ -47,14 +47,17 @@ String getValidImageUrl(String imageUrl) {
           final oh = int.tryParse(heightMatch.group(1) ?? '0') ?? 0;
           if (ow > 0 && oh > 0) {
             // Conserver l'aspect tout en plafonnant à 512
-            final scale = (ow > oh ? 512 / ow : 512 / oh).clamp(0.0, 1.0);
-            targetW = (ow * scale).round().clamp(64, 1024);
-            targetH = (oh * scale).round().clamp(64, 1024);
+            final scale = (ow > oh ? 512 / ow : 512 / oh)
+                .clamp(0.0, 1.0)
+                .toDouble();
+            targetW = (ow * scale).round().clamp(64, 1024).toInt();
+            targetH = (oh * scale).round().clamp(64, 1024).toInt();
           }
         }
       }
 
-  result = 'https://static.wixstatic.com/media/$wixId/v1/fit/w_${targetW},h_${targetH},q_85/$safeFileName';
+      result =
+          'https://static.wixstatic.com/media/$wixId/v1/fit/w_$targetW,h_$targetH,q_85/$safeFileName';
     } else {
       // Fallback vers l'ancienne méthode (sans nom de fichier)
       final basicRegex = RegExp(r'wix:image://v1/([^/]+)');
@@ -82,27 +85,17 @@ String getValidImageUrl(String imageUrl) {
 }
 
 String getHighQualityImageUrl(String imageUrl) {
-  print(
-    '🔍 getHighQualityImageUrl -> Input: ${imageUrl.substring(0, imageUrl.length.clamp(0, 100))}...',
-  );
-
   if (imageUrl.isEmpty) {
-    print('❌ getHighQualityImageUrl -> URL vide');
     return '';
   }
 
   // Gérer les data URLs (base64)
   if (imageUrl.startsWith('data:image/')) {
-    print(
-      '✅ getHighQualityImageUrl -> Data URL détectée: ${imageUrl.substring(0, 50)}...',
-    );
     return imageUrl;
   }
 
   // Gérer les URLs Wix avec qualité MAXIMALE pour plein écran
   if (imageUrl.startsWith('wix:image://')) {
-    print('🔄 getHighQualityImageUrl -> URL Wix détectée');
-
     // Nouvelle regex pour capturer l'ID, le nom du fichier et les paramètres
     final regex = RegExp(r'wix:image://v1/([^/]+)/([^#]+)(?:#(.+))?');
     final match = regex.firstMatch(imageUrl);
@@ -136,13 +129,8 @@ String getHighQualityImageUrl(String imageUrl) {
               ? maxAllowedHeight
               : height;
 
-          print(
-            '🎯 Dimensions: original=${width}x$height, limitées=${limitedWidth}x$limitedHeight',
-          );
-
           // Pour les très grosses images (>3000px), utiliser l'URL originale
           if (width > 3000 || height > 3000) {
-            print('⚠️ Image très large détectée, utilisation URL originale');
             return convertedUrl;
           }
 
@@ -154,13 +142,9 @@ String getHighQualityImageUrl(String imageUrl) {
         }
       } else {
         // Fallback original sans traitement
-        print(
-          '🎯 getHighQualityImageUrl -> Utilisation originale sans traitement',
-        );
         return convertedUrl;
       }
 
-      print('✅ getHighQualityImageUrl -> URL Wix haute qualité: $convertedUrl');
       return convertedUrl;
     }
 
@@ -170,26 +154,18 @@ String getHighQualityImageUrl(String imageUrl) {
     if (basicMatch != null) {
       final wixId = basicMatch.group(1);
       final convertedUrl = 'https://static.wixstatic.com/media/$wixId';
-      print(
-        '✅ getHighQualityImageUrl -> URL Wix convertie (basique): $convertedUrl',
-      );
       return convertedUrl;
     }
 
-    print('❌ getHighQualityImageUrl -> URL Wix invalide');
     return '';
   }
 
   // Gérer les URLs web normales
   if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
-    print('✅ getHighQualityImageUrl -> URL web normale: $imageUrl');
     return imageUrl;
   }
 
   // Retourner l'URL telle quelle si elle ne correspond à aucun pattern connu
-  print(
-    '⚠️ getHighQualityImageUrl -> URL inconnue, retournée telle quelle: $imageUrl',
-  );
   return imageUrl;
 }
 
@@ -210,10 +186,10 @@ List<String> getWixImageVariants(String imageUrl) {
     final baseUrl = 'https://static.wixstatic.com/media/$wixId';
 
     // Stratégie optimisée : commencer par les petites tailles pour un chargement rapide
-    
+
     // Variante 1: Très petite taille pour aperçu instantané
     variants.add('$baseUrl/v1/fit/w_400,h_300,q_70/$fileName');
-    
+
     // Variante 2: Petite taille optimisée pour mobile
     variants.add('$baseUrl/v1/fit/w_600,h_450,q_75/$fileName');
 
@@ -222,11 +198,6 @@ List<String> getWixImageVariants(String imageUrl) {
 
     // Variante 4: URL originale sans traitement (fallback final)
     variants.add(baseUrl);
-
-    // Réduire les logs pour éviter de surcharger le système
-    if (fileName != null && (fileName.contains('Entretien') || fileName.contains('Agence') || fileName.contains('Agent'))) {
-      print('🔄 Variantes optimisées pour $fileName: ${variants.length}');
-    }
   }
 
   return variants;
@@ -234,7 +205,12 @@ List<String> getWixImageVariants(String imageUrl) {
 
 /// Construit une URL Wix redimensionnée aux dimensions cibles (fit) avec qualité donnée.
 /// Si l'URL n'est pas Wix, retourne getValidImageUrl(imageUrl).
-String getWixFittedUrl(String imageUrl, {required int targetW, required int targetH, int quality = 80}) {
+String getWixFittedUrl(
+  String imageUrl, {
+  required int targetW,
+  required int targetH,
+  int quality = 80,
+}) {
   if (!imageUrl.startsWith('wix:image://')) {
     return getValidImageUrl(imageUrl);
   }
@@ -256,9 +232,9 @@ String getWixFittedUrl(String imageUrl, {required int targetW, required int targ
   }
 
   // Clamp raisonnable pour éviter des images trop lourdes
-  final w = targetW.clamp(64, 2000);
-  final h = targetH.clamp(64, 2000);
-  final q = quality.clamp(50, 95);
+  final w = targetW.clamp(64, 2000).toInt();
+  final h = targetH.clamp(64, 2000).toInt();
+  final q = quality.clamp(50, 95).toInt();
 
-  return 'https://static.wixstatic.com/media/$wixId/v1/fit/w_${w},h_${h},q_${q}/$safeFileName';
+  return 'https://static.wixstatic.com/media/$wixId/v1/fit/w_$w,h_$h,q_$q/$safeFileName';
 }

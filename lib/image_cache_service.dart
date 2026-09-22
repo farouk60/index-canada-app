@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+
 import 'dart:convert';
+
 import 'utils.dart';
 
 class ImageCacheService {
@@ -51,7 +53,7 @@ class ImageCacheService {
         CachedNetworkImageProvider(validUrl, cacheManager: _cacheManager),
         context,
       );
-    } catch (e) {
+    } catch (_) {
       // Ignorer les erreurs de préchargement
     }
   }
@@ -91,7 +93,7 @@ class ImageCacheService {
         ),
         context,
       );
-    } catch (e) {
+    } catch (_) {
       // Erreur silencieuse pour ne pas ralentir l'interface
     }
   }
@@ -108,7 +110,7 @@ class ImageCacheService {
     for (int i = 0; i < serviceImageUrls.length; i += batchSize) {
       if (!context.mounted) break;
 
-      final end = (i + batchSize).clamp(0, serviceImageUrls.length);
+      final end = (i + batchSize).clamp(0, serviceImageUrls.length).toInt();
       final batch = serviceImageUrls.sublist(i, end);
 
       // Précharger le groupe actuel
@@ -237,8 +239,7 @@ class ImageCacheService {
               );
         },
       );
-    } catch (e) {
-      print('❌ Erreur lors du décodage de la data URL: $e');
+    } catch (_) {
       return errorWidget ??
           Container(
             width: width,

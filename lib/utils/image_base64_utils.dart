@@ -1,5 +1,5 @@
-import 'dart:async';
 import 'dart:convert';
+
 import 'package:image/image.dart' as img;
 
 /// Rough byte size estimation from a Base64 string (without data URL header)
@@ -16,8 +16,8 @@ int _base64SizeBytes(String base64) {
   final padding = pure.endsWith('==')
       ? 2
       : pure.endsWith('=')
-          ? 1
-          : 0;
+      ? 1
+      : 0;
   return ((len * 3) / 4).floor() - padding;
 }
 
@@ -65,7 +65,7 @@ Future<String> compressBase64(
 
     // Decrease quality until we meet size, but not below minQuality
     int attempts = 0;
-  while ((jpeg.length / 1024) > maxKB && q > minQuality && attempts < 6) {
+    while ((jpeg.length / 1024) > maxKB && q > minQuality && attempts < 6) {
       q -= 5;
       jpeg = img.encodeJpg(processed, quality: q);
       attempts++;
@@ -90,12 +90,14 @@ Future<List<String>> compressGallery(
   final items = gallery.take(limit).toList();
   final List<String> out = [];
   for (final b64 in items) {
-    out.add(await compressBase64(
-      b64,
-      maxWidth: maxWidth,
-      maxHeight: maxHeight,
-      maxKB: maxKB,
-    ));
+    out.add(
+      await compressBase64(
+        b64,
+        maxWidth: maxWidth,
+        maxHeight: maxHeight,
+        maxKB: maxKB,
+      ),
+    );
   }
   return out;
 }

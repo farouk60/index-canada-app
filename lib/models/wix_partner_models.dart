@@ -1,23 +1,46 @@
-/// Modèle Partner adapté à la structure Wix
 import 'partner_models.dart';
 
-class WixPartner {
-  final String id;
-  final String title; // Nom de la compagnie
-  final String titleEn; // Nom anglais
-  final String description; // Description
-  final String descriptionEn; // Description anglaise
-  final String logo; // Logo (Image)
-  final String category; // Catégorie partenaire
-  final String website; // Lien vers site web
-  final String banner; // Image promotionnelle
-  final bool isOfficial; // Est partenaire officiel ?
-  final bool isFeatured; // En vedette ?
-  final int displayOrder; // Ordre d'affichage
-  final bool isActive; // Actif ?
-  final DateTime? createdAt; // Date d'ajout
+String _stringValue(Object? value) {
+  if (value == null) return '';
+  return value.toString().trim();
+}
 
-  WixPartner({
+String _mediaValue(Object? value) {
+  if (value is Map<String, dynamic>) {
+    for (final key in const ['url', 'src', 'fileUrl']) {
+      final candidate = _stringValue(value[key]);
+      if (candidate.isNotEmpty) return candidate;
+    }
+    return '';
+  }
+  return _stringValue(value);
+}
+
+bool _boolValue(Object? value, {required bool fallback}) {
+  if (value is bool) return value;
+  if (value is num) return value != 0;
+  if (value is String) {
+    switch (value.trim().toLowerCase()) {
+      case 'true':
+      case '1':
+        return true;
+      case 'false':
+      case '0':
+        return false;
+    }
+  }
+  return fallback;
+}
+
+int _intValue(Object? value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  return int.tryParse(_stringValue(value)) ?? 0;
+}
+
+/// Partenaire tel qu'exposé par la collection Wix publique.
+class WixPartner {
+  const WixPartner({
     required this.id,
     required this.title,
     required this.titleEn,
@@ -35,25 +58,43 @@ class WixPartner {
   });
 
   factory WixPartner.fromJson(Map<String, dynamic> json) {
+    final title = _stringValue(json['title']);
+    final description = _stringValue(json['description']);
+    final titleEn = _stringValue(json['titleEn']);
+    final descriptionEn = _stringValue(json['descriptionEn']);
+
     return WixPartner(
-      id: json['_id'] ?? json['id'] ?? '',
-      title: json['title'] ?? '',
-      titleEn: json['titleEn'] ?? json['title'] ?? '',
-      description: json['description'] ?? '',
-      descriptionEn: json['descriptionEn'] ?? json['description'] ?? '',
-      logo: json['logo'] ?? '',
-      category: json['category'] ?? '',
-      website: json['website'] ?? '',
-      banner: json['banner'] ?? '',
-      isOfficial: json['isOfficial'] ?? true,
-      isFeatured: json['isFeatured'] ?? false,
-      displayOrder: json['displayOrder'] ?? 0,
-      isActive: json['isActive'] ?? true,
-      createdAt: json['createdAt'] != null
-          ? DateTime.tryParse(json['createdAt'].toString())
-          : null,
+      id: _stringValue(json['_id'] ?? json['id']),
+      title: title,
+      titleEn: titleEn.isEmpty ? title : titleEn,
+      description: description,
+      descriptionEn: descriptionEn.isEmpty ? description : descriptionEn,
+      logo: _mediaValue(json['logo']),
+      category: _stringValue(json['category']),
+      website: _stringValue(json['website']),
+      banner: _mediaValue(json['banner']),
+      isOfficial: _boolValue(json['isOfficial'], fallback: true),
+      isFeatured: _boolValue(json['isFeatured'], fallback: false),
+      displayOrder: _intValue(json['displayOrder']),
+      isActive: _boolValue(json['isActive'], fallback: true),
+      createdAt: DateTime.tryParse(_stringValue(json['createdAt'])),
     );
   }
+
+  final String id;
+  final String title;
+  final String titleEn;
+  final String description;
+  final String descriptionEn;
+  final String logo;
+  final String category;
+  final String website;
+  final String banner;
+  final bool isOfficial;
+  final bool isFeatured;
+  final int displayOrder;
+  final bool isActive;
+  final DateTime? createdAt;
 
   Map<String, dynamic> toJson() {
     return {
@@ -75,23 +116,22 @@ class WixPartner {
   }
 
   String getTitleInLanguage(String language) {
-    return language == 'en' ? titleEn : title;
+    return language == 'en' && titleEn.isNotEmpty ? titleEn : title;
   }
 
   String getDescriptionInLanguage(String language) {
-    return language == 'en' ? descriptionEn : description;
+    return language == 'en' && descriptionEn.isNotEmpty
+        ? descriptionEn
+        : description;
   }
 
-  /// Détermine si le partenaire doit être affiché
   bool get shouldDisplay => isActive && isOfficial;
 
-  /// Détermine si le partenaire est en vedette et actif
-  bool get isActiveFeatured => isActive && isOfficial && isFeatured;
+  bool get isActiveFeatured => shouldDisplay && isFeatured;
 
-  /// Retourne l'URL de l'image à utiliser (logo par défaut, banner si disponible)
   String get primaryImageUrl => banner.isNotEmpty ? banner : logo;
 
-  /// Convertit en Partner pour compatibilité avec le code existant
+  /// Adaptateur maintenu pour les consommateurs historiques du modèle Partner.
   Partner toPartner() {
     return Partner(
       id: id,
@@ -102,27 +142,26 @@ class WixPartner {
       logo: logo,
       category: category,
       website: website,
-      phone: '', // Pas de téléphone dans la structure Wix
+      phone: '',
       isActive: isActive,
       priority: displayOrder,
-      offers: [], // Pas d'offres dans la structure Wix pour l'instant
+      offers: const [],
     );
   }
 }
 
-/// Classe pour les catégories de partenaires avec traductions
 class PartnerCategory {
-  final String id;
-  final String nameFr;
-  final String nameEn;
-  final String icon;
-
   const PartnerCategory({
     required this.id,
     required this.nameFr,
     required this.nameEn,
     required this.icon,
   });
+
+  final String id;
+  final String nameFr;
+  final String nameEn;
+  final String icon;
 
   String getNameInLanguage(String language) {
     return language == 'en' ? nameEn : nameFr;
@@ -192,10 +231,10 @@ class PartnerCategory {
   ];
 
   static PartnerCategory? getCategoryById(String id) {
-    try {
-      return predefinedCategories.firstWhere((cat) => cat.id == id);
-    } catch (e) {
-      return null;
+    final normalizedId = id.trim().toLowerCase();
+    for (final category in predefinedCategories) {
+      if (category.id == normalizedId) return category;
     }
+    return null;
   }
 }

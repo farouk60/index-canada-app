@@ -1,4 +1,4 @@
-/// Utilitaires pour la manipulation de chaînes de caractères
+// Utilitaires pour la manipulation de chaînes de caractères.
 
 /// Fonction pour normaliser les chaînes pour un tri alphabétique correct avec les accents français
 /// Cette fonction supprime les accents et convertit en minuscules pour permettre
@@ -51,13 +51,46 @@ String normalizeForSearch(String text) {
 /// Liste de mots vides FR/EN courants à ignorer pendant la recherche
 const Set<String> defaultStopWords = {
   // FR
-  'de', 'du', 'des', 'le', 'la', 'les', 'un', 'une', 'et', 'ou', 'a', 'au', 'aux', 'd', 'l', 'en', 'sur', 'pour', 'avec', 'par', 'chez',
+  'de',
+  'du',
+  'des',
+  'le',
+  'la',
+  'les',
+  'un',
+  'une',
+  'et',
+  'ou',
+  'a',
+  'au',
+  'aux',
+  'd',
+  'l',
+  'en',
+  'sur',
+  'pour',
+  'avec',
+  'par',
+  'chez',
   // EN
-  'the', /*'a',*/ 'an', 'and', 'or', 'of', 'in', 'on', 'at', 'for', 'with', 'by'
+  'the',
+  /*'a',*/ 'an',
+  'and',
+  'or',
+  'of',
+  'in',
+  'on',
+  'at',
+  'for',
+  'with',
+  'by',
 };
 
 /// Découpe une chaîne normalisée en tokens, en retirant les mots vides
-List<String> tokenizeWithoutStopWords(String normalized, {Set<String> stopWords = defaultStopWords}) {
+List<String> tokenizeWithoutStopWords(
+  String normalized, {
+  Set<String> stopWords = defaultStopWords,
+}) {
   if (normalized.isEmpty) return const [];
   final parts = normalized.split(RegExp(r"[\s\-_.;,/:|]+"));
   return parts.where((p) => p.isNotEmpty && !stopWords.contains(p)).toList();
@@ -109,4 +142,3 @@ bool fuzzyTokenMatch(String token, String query) {
   final threshold = token.length >= 5 || query.length >= 5 ? 2 : 1;
   return levenshteinDistance(token, query, maxDistance: threshold) <= threshold;
 }
-

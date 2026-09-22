@@ -1,4 +1,3 @@
-
 // Liste des villes du Canada pour l'autocomplétion
 // Cette liste contient les principales villes et municipalités du Canada
 
@@ -23,7 +22,7 @@ const List<String> kCanadianCities = [
   "Spruce Grove, AB",
   "St. Albert, AB",
   "Wetaskiwin, AB",
-  
+
   // Colombie-Britannique
   "Abbotsford, BC",
   "Armstrong, BC",
@@ -117,7 +116,7 @@ const List<String> kCanadianCities = [
   "Glace Bay, NS",
   "Kentville, NS",
   "Dartmouth, NS",
-  
+
   // Nunavut
   "Iqaluit, NU",
 
@@ -403,5 +402,5 @@ const List<String> kCanadianCities = [
   "Yorkton, SK",
 
   // Yukon
-  "Whitehorse, YT"
+  "Whitehorse, YT",
 ];

@@ -1,8 +1,12 @@
 import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:math';
+
 import 'package:crypto/crypto.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ReviewVerificationService {
+  static const String _installationSaltKey = 'review_verification_salt_v1';
+
   static final ReviewVerificationService _instance =
       ReviewVerificationService._internal();
   factory ReviewVerificationService() => _instance;
@@ -49,7 +53,7 @@ class ReviewVerificationService {
     final cooldownResult = await _checkCooldown(professionalId, authorName);
     if (!cooldownResult.canPost) {
       await _recordBlockedAttempt(
-        cooldownResult.reason,
+        cooldownResult.code.name,
         professionalId,
         authorName,
       );
@@ -60,7 +64,7 @@ class ReviewVerificationService {
     final spamResult = _checkForSpam(message, title, authorName);
     if (!spamResult.canPost) {
       await _recordBlockedAttempt(
-        spamResult.reason,
+        spamResult.code.name,
         professionalId,
         authorName,
       );
@@ -68,10 +72,10 @@ class ReviewVerificationService {
     }
 
     // 3. Vérifier la qualité du contenu
-    final qualityResult = _checkContentQuality(message, title);
+    final qualityResult = _checkContentQuality(message);
     if (!qualityResult.canPost) {
       await _recordBlockedAttempt(
-        qualityResult.reason,
+        qualityResult.code.name,
         professionalId,
         authorName,
       );
@@ -86,18 +90,14 @@ class ReviewVerificationService {
     );
     if (!duplicateResult.canPost) {
       await _recordBlockedAttempt(
-        duplicateResult.reason,
+        duplicateResult.code.name,
         professionalId,
         authorName,
       );
       return duplicateResult;
     }
 
-    return ReviewVerificationResult(
-      canPost: true,
-      reason: 'Avis valide',
-      severity: VerificationSeverity.success,
-    );
+    return const ReviewVerificationResult.allowed();
   }
 
   /// Enregistre qu'un avis a été posté
@@ -110,7 +110,7 @@ class ReviewVerificationService {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
 
     // Créer une clé unique pour cet utilisateur et ce professionnel
-    final userKey = _createUserKey(authorName);
+    final userKey = await _createUserKey(authorName);
     final reviewKey = 'review_${userKey}_${professionalId}_$timestamp';
 
     await prefs.setString(
@@ -118,7 +118,6 @@ class ReviewVerificationService {
       jsonEncode({
         'timestamp': timestamp,
         'professionalId': professionalId,
-        'authorName': authorName,
         'messageHash': _hashString(message),
       }),
     );
@@ -133,7 +132,7 @@ class ReviewVerificationService {
     String authorName,
   ) async {
     final prefs = await SharedPreferences.getInstance();
-    final userKey = _createUserKey(authorName);
+    final userKey = await _createUserKey(authorName);
     final currentTime = DateTime.now().millisecondsSinceEpoch;
 
     // Vérifier tous les avis récents de cet utilisateur
@@ -150,8 +149,8 @@ class ReviewVerificationService {
             final remainingMinutes = (cooldownMinutes - minutesAgo).ceil();
             return ReviewVerificationResult(
               canPost: false,
-              reason:
-                  'Vous devez attendre $remainingMinutes minutes avant de pouvoir poster un nouvel avis.',
+              code: ReviewVerificationCode.cooldown,
+              remainingMinutes: remainingMinutes,
               severity: VerificationSeverity.warning,
             );
           }
@@ -159,7 +158,7 @@ class ReviewVerificationService {
       }
     }
 
-    return ReviewVerificationResult(canPost: true, reason: 'Cooldown OK');
+    return const ReviewVerificationResult.allowed();
   }
 
   /// Vérifie le contenu pour détecter le spam
@@ -175,8 +174,7 @@ class ReviewVerificationService {
       if (fullText.contains(keyword.toLowerCase())) {
         return ReviewVerificationResult(
           canPost: false,
-          reason:
-              'Contenu suspect détecté. Veuillez éviter les liens et informations de contact.',
+          code: ReviewVerificationCode.suspiciousContent,
           severity: VerificationSeverity.error,
         );
       }
@@ -186,7 +184,7 @@ class ReviewVerificationService {
     if (_hasExcessiveRepetition(fullText)) {
       return ReviewVerificationResult(
         canPost: false,
-        reason: 'Contenu suspect : répétition excessive de caractères.',
+        code: ReviewVerificationCode.excessiveRepetition,
         severity: VerificationSeverity.error,
       );
     }
@@ -195,21 +193,21 @@ class ReviewVerificationService {
     if (message.length > 20 && message == message.toUpperCase()) {
       return ReviewVerificationResult(
         canPost: false,
-        reason: 'Veuillez éviter d\'écrire entièrement en majuscules.',
+        code: ReviewVerificationCode.allCaps,
         severity: VerificationSeverity.warning,
       );
     }
 
-    return ReviewVerificationResult(canPost: true, reason: 'Contenu valide');
+    return const ReviewVerificationResult.allowed();
   }
 
   /// Vérifie la qualité du contenu
-  ReviewVerificationResult _checkContentQuality(String message, String title) {
+  ReviewVerificationResult _checkContentQuality(String message) {
     // Vérifier la longueur minimale
     if (message.trim().length < 10) {
       return ReviewVerificationResult(
         canPost: false,
-        reason: 'Votre commentaire doit contenir au moins 10 caractères.',
+        code: ReviewVerificationCode.tooShort,
         severity: VerificationSeverity.error,
       );
     }
@@ -219,7 +217,7 @@ class ReviewVerificationService {
     if (words.length < 3) {
       return ReviewVerificationResult(
         canPost: false,
-        reason: 'Votre commentaire doit contenir au moins 3 mots.',
+        code: ReviewVerificationCode.tooFewWords,
         severity: VerificationSeverity.error,
       );
     }
@@ -228,12 +226,12 @@ class ReviewVerificationService {
     if (_isJustRepeatedCharacters(message)) {
       return ReviewVerificationResult(
         canPost: false,
-        reason: 'Veuillez écrire un commentaire constructif.',
+        code: ReviewVerificationCode.lowQuality,
         severity: VerificationSeverity.error,
       );
     }
 
-    return ReviewVerificationResult(canPost: true, reason: 'Qualité OK');
+    return const ReviewVerificationResult.allowed();
   }
 
   /// Vérifie les doublons
@@ -243,7 +241,7 @@ class ReviewVerificationService {
     String authorName,
   ) async {
     final prefs = await SharedPreferences.getInstance();
-    final userKey = _createUserKey(authorName);
+    final userKey = await _createUserKey(authorName);
     final messageHash = _hashString(message);
 
     // Vérifier les avis récents de cet utilisateur
@@ -258,7 +256,7 @@ class ReviewVerificationService {
           if (data['professionalId'] == professionalId) {
             return ReviewVerificationResult(
               canPost: false,
-              reason: 'Vous avez déjà posté un avis pour ce professionnel.',
+              code: ReviewVerificationCode.duplicateProfessional,
               severity: VerificationSeverity.error,
             );
           }
@@ -267,7 +265,7 @@ class ReviewVerificationService {
           if (data['messageHash'] == messageHash) {
             return ReviewVerificationResult(
               canPost: false,
-              reason: 'Vous avez déjà posté un avis similaire.',
+              code: ReviewVerificationCode.duplicateContent,
               severity: VerificationSeverity.error,
             );
           }
@@ -275,12 +273,23 @@ class ReviewVerificationService {
       }
     }
 
-    return ReviewVerificationResult(canPost: true, reason: 'Pas de doublon');
+    return const ReviewVerificationResult.allowed();
   }
 
   /// Crée une clé unique pour un utilisateur
-  String _createUserKey(String authorName) {
-    return _hashString(authorName.toLowerCase().trim());
+  Future<String> _createUserKey(String authorName) async {
+    final prefs = await SharedPreferences.getInstance();
+    var installationSalt = prefs.getString(_installationSaltKey);
+    if (installationSalt == null || installationSalt.isEmpty) {
+      final random = Random.secure();
+      installationSalt = base64UrlEncode(
+        List<int>.generate(32, (_) => random.nextInt(256)),
+      );
+      await prefs.setString(_installationSaltKey, installationSalt);
+    }
+
+    final normalizedName = authorName.toLowerCase().trim();
+    return _hashString('$installationSalt|$normalizedName');
   }
 
   /// Crée un hash d'une chaîne
@@ -341,16 +350,25 @@ class ReviewVerificationService {
     final keysToRemove = <String>[];
 
     for (String key in allKeys) {
-      if (key.startsWith('review_')) {
+      final isReviewEntry =
+          key.startsWith('review_') && key != _installationSaltKey;
+      if (isReviewEntry || key.startsWith('blocked_review_')) {
         final reviewData = prefs.getString(key);
         if (reviewData != null) {
           try {
-            final data = jsonDecode(reviewData);
+            final decoded = jsonDecode(reviewData);
+            if (decoded is! Map<String, dynamic>) {
+              keysToRemove.add(key);
+              continue;
+            }
+            final data = Map<String, dynamic>.from(decoded);
             final timestamp = data['timestamp'] as int;
             if (currentTime - timestamp > maxAge) {
               keysToRemove.add(key);
+            } else if (data.remove('authorName') != null) {
+              await prefs.setString(key, jsonEncode(data));
             }
-          } catch (e) {
+          } on Object {
             // Supprimer les entrées corrompues
             keysToRemove.add(key);
           }
@@ -372,32 +390,54 @@ class ReviewVerificationService {
     final prefs = await SharedPreferences.getInstance();
     final timestamp = DateTime.now().millisecondsSinceEpoch;
 
-    final blockedKey =
-        'blocked_review_${timestamp}_${_createUserKey(authorName)}';
+    final userKey = await _createUserKey(authorName);
+    final blockedKey = 'blocked_review_${timestamp}_$userKey';
     await prefs.setString(
       blockedKey,
       jsonEncode({
         'timestamp': timestamp,
         'reason': reason,
         'professionalId': professionalId,
-        'authorName': authorName,
       }),
     );
+    await _cleanupOldEntries();
   }
 }
 
 /// Résultat de la vérification d'un avis
 class ReviewVerificationResult {
-  final bool canPost;
-  final String reason;
-  final VerificationSeverity severity;
-
-  ReviewVerificationResult({
+  const ReviewVerificationResult({
     required this.canPost,
-    required this.reason,
+    required this.code,
     this.severity = VerificationSeverity.info,
+    this.remainingMinutes,
   });
+
+  const ReviewVerificationResult.allowed()
+    : canPost = true,
+      code = ReviewVerificationCode.allowed,
+      severity = VerificationSeverity.success,
+      remainingMinutes = null;
+
+  final bool canPost;
+  final ReviewVerificationCode code;
+  final VerificationSeverity severity;
+  final int? remainingMinutes;
 }
 
 /// Niveau de sévérité de la vérification
 enum VerificationSeverity { success, info, warning, error }
+
+/// Codes métier indépendants de la langue affichée.
+enum ReviewVerificationCode {
+  allowed,
+  cooldown,
+  suspiciousContent,
+  excessiveRepetition,
+  allCaps,
+  tooShort,
+  tooFewWords,
+  lowQuality,
+  duplicateProfessional,
+  duplicateContent,
+}

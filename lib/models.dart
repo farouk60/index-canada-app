@@ -2,15 +2,15 @@ class SousCategorie {
   final String id;
   final String title;
   final String titleEn; // Nouvelle propriété pour la traduction anglaise
-  final String image;   // Image par défaut (FR)
+  final String image; // Image par défaut (FR)
   final String imageEn; // Image anglais (si fournie)
 
   SousCategorie({
     required this.id,
     required this.title,
     required this.titleEn,
-  required this.image,
-  this.imageEn = '',
+    required this.image,
+    this.imageEn = '',
   });
 
   factory SousCategorie.fromJson(Map<String, dynamic> json) {
@@ -18,7 +18,7 @@ class SousCategorie {
       // L'image peut être une String ou un objet Wix { src/url/... }
       String imageValueFr = '';
       dynamic rawImage = json['image'];
-      
+
       if (rawImage == null || (rawImage is String && rawImage.isEmpty)) {
         // Fallback: certaines collections peuvent utiliser 'icon'
         rawImage = json['icon'];
@@ -28,7 +28,8 @@ class SousCategorie {
         imageValueFr = rawImage;
       } else if (rawImage is Map<String, dynamic>) {
         // Essayer plusieurs clés possibles pour Wix
-        imageValueFr = rawImage['src'] ??
+        imageValueFr =
+            rawImage['src'] ??
             rawImage['url'] ??
             rawImage['image'] ??
             rawImage['fileUrl'] ??
@@ -36,7 +37,7 @@ class SousCategorie {
             rawImage['filename'] ??
             rawImage['alt'] ??
             '';
-            
+
         // Si on n'a toujours rien, essayer d'extraire depuis un objet imbriqué
         if (imageValueFr.isEmpty && rawImage.containsKey('media')) {
           final media = rawImage['media'];
@@ -68,11 +69,23 @@ class SousCategorie {
 
       // Image anglaise (si disponible)
       String imageValueEn = '';
-      dynamic rawImageEn = json['imageEn'] ?? json['imageEN'] ?? json['image_en'] ?? json['iconEn'] ?? json['iconEN'] ?? json['icon_en'];
+      dynamic rawImageEn =
+          json['imageEn'] ??
+          json['imageEN'] ??
+          json['image_en'] ??
+          json['iconEn'] ??
+          json['iconEN'] ??
+          json['icon_en'];
       if (rawImageEn is String) {
         imageValueEn = rawImageEn;
       } else if (rawImageEn is Map<String, dynamic>) {
-        imageValueEn = rawImageEn['src'] ?? rawImageEn['url'] ?? rawImageEn['image'] ?? rawImageEn['fileUrl'] ?? rawImageEn['mediaUrl'] ?? '';
+        imageValueEn =
+            rawImageEn['src'] ??
+            rawImageEn['url'] ??
+            rawImageEn['image'] ??
+            rawImageEn['fileUrl'] ??
+            rawImageEn['mediaUrl'] ??
+            '';
       }
 
       return SousCategorie(
@@ -82,8 +95,7 @@ class SousCategorie {
         image: imageValueFr,
         imageEn: imageValueEn,
       );
-    } catch (e) {
-      print('Erreur lors de la création de SousCategorie depuis JSON: $e');
+    } catch (_) {
       return SousCategorie(
         id: '',
         title: 'Erreur de chargement',
@@ -119,7 +131,8 @@ class Professionnel {
   final String address;
   final String numroDeTlphone;
   final String image;
-  final List<dynamic> gallery; // Nouvelle propriété pour la galerie (objets Wix ou strings)
+  final List<dynamic>
+  gallery; // Nouvelle propriété pour la galerie (objets Wix ou strings)
   final String sousCategorie;
   final String plan; // Plan du professionnel (remplace sponsor)
   final double averageRating; // Note moyenne des avis
@@ -203,7 +216,10 @@ class Professionnel {
       if (json['sousCatgorie'] is String) {
         sousCategorieStr = json['sousCatgorie'] ?? '';
       } else if (json['sousCatgorie'] is Map) {
-        sousCategorieStr = (json['sousCatgorie'] as Map<String, dynamic>?)?['_id']?.toString() ?? '';
+        sousCategorieStr =
+            (json['sousCatgorie'] as Map<String, dynamic>?)?['_id']
+                ?.toString() ??
+            '';
       }
 
       // address peut être un String ou un Map complexe
@@ -216,168 +232,169 @@ class Professionnel {
         if (addressMap != null) {
           addressStr =
               addressMap['formatted']?.toString() ??
-              addressMap['streetAddress']?['formattedAddressLine']?.toString() ??
+              addressMap['streetAddress']?['formattedAddressLine']
+                  ?.toString() ??
               '';
         }
       }
 
-    // Traiter la galerie d'images (deux stratégies: ancienne avec mediagallery et nouvelle avec champs individuels)
-    List<dynamic> galleryList = [];
+      // Traiter la galerie d'images (deux stratégies: ancienne avec mediagallery et nouvelle avec champs individuels)
+      List<dynamic> galleryList = [];
 
-    // STRATÉGIE 1: Chercher dans les nouveaux champs individuels
-    final List<String> individualFields = [
-      'galerieImage1',
-      'galerieImage2',
-      'galerieImage3',
-      'galerieImage4',
-      'galerieImage5',
-    ];
+      // STRATÉGIE 1: Chercher dans les nouveaux champs individuels
+      final List<String> individualFields = [
+        'galerieImage1',
+        'galerieImage2',
+        'galerieImage3',
+        'galerieImage4',
+        'galerieImage5',
+      ];
 
-    bool hasIndividualFields = false;
-    for (final field in individualFields) {
-      if (json[field] != null && json[field].toString().isNotEmpty) {
-        hasIndividualFields = true;
-        galleryList.add(json[field]);
+      bool hasIndividualFields = false;
+      for (final field in individualFields) {
+        if (json[field] != null && json[field].toString().isNotEmpty) {
+          hasIndividualFields = true;
+          galleryList.add(json[field]);
+        }
       }
-    }
 
-    if (!hasIndividualFields) {
-      // STRATÉGIE 2: Fallback vers mediagallery (ancienne stratégie)
-      if (json['mediagallery'] != null) {
-        final mediaGallery = json['mediagallery'];
+      if (!hasIndividualFields) {
+        // STRATÉGIE 2: Fallback vers mediagallery (ancienne stratégie)
+        if (json['mediagallery'] != null) {
+          final mediaGallery = json['mediagallery'];
 
-        if (mediaGallery is List) {
-          for (final item in mediaGallery) {
-            if (item is String && item.isNotEmpty) {
-              galleryList.add(item);
-            } else if (item is Map<String, dynamic>) {
-              final src =
-                  item['src'] ??
-                  item['url'] ??
-                  item['image'] ??
-                  item['fileUrl'] ??
-                  item['mediaUrl'] ??
-                  item['link'] ??
-                  item['href'] ??
-                  '';
-
-              if (src != null && src.isNotEmpty) {
+          if (mediaGallery is List) {
+            for (final item in mediaGallery) {
+              if (item is String && item.isNotEmpty) {
                 galleryList.add(item);
+              } else if (item is Map<String, dynamic>) {
+                final src =
+                    item['src'] ??
+                    item['url'] ??
+                    item['image'] ??
+                    item['fileUrl'] ??
+                    item['mediaUrl'] ??
+                    item['link'] ??
+                    item['href'] ??
+                    '';
+
+                if (src != null && src.isNotEmpty) {
+                  galleryList.add(item);
+                }
               }
             }
+          } else if (mediaGallery is String && mediaGallery.isNotEmpty) {
+            galleryList.add(mediaGallery);
           }
-        } else if (mediaGallery is String && mediaGallery.isNotEmpty) {
-          galleryList.add(mediaGallery);
         }
       }
-    }
 
-    // Fallback: chercher dans 'gallery'
-    if (galleryList.isEmpty && json['gallery'] is List) {
-      galleryList = (json['gallery'] as List)
-          .where((item) => item != null && item.toString().isNotEmpty)
-          .toList();
-    }
+      // Fallback: chercher dans 'gallery'
+      if (galleryList.isEmpty && json['gallery'] is List) {
+        galleryList = (json['gallery'] as List)
+            .where((item) => item != null && item.toString().isNotEmpty)
+            .toList();
+      }
 
-    // Traiter la date d'expiration du coupon
-    DateTime? couponExpiration;
-    if (json['couponExpirationDate'] != null) {
-      try {
-        // Gestion différents formats de date Wix
-        final dateValue = json['couponExpirationDate'];
-        if (dateValue is String) {
-          couponExpiration = DateTime.parse(dateValue);
-        } else if (dateValue is Map && dateValue['\$date'] != null) {
-          // Format Wix avec timestamp
-          couponExpiration = DateTime.fromMillisecondsSinceEpoch(
-            dateValue['\$date'],
-          );
+      // Traiter la date d'expiration du coupon
+      DateTime? couponExpiration;
+      if (json['couponExpirationDate'] != null) {
+        try {
+          // Gestion différents formats de date Wix
+          final dateValue = json['couponExpirationDate'];
+          if (dateValue is String) {
+            couponExpiration = DateTime.parse(dateValue);
+          } else if (dateValue is Map && dateValue['\$date'] != null) {
+            // Format Wix avec timestamp
+            couponExpiration = DateTime.fromMillisecondsSinceEpoch(
+              dateValue['\$date'],
+            );
+          }
+        } catch (_) {
+          // En cas d'erreur de parsing, ignorer la date
+          couponExpiration = null;
         }
-      } catch (e) {
-        // En cas d'erreur de parsing, ignorer la date
-        couponExpiration = null;
       }
-    }
 
-    // Traiter l'image de profil (format unifié avec mediagallery)
-    String imageUrl = '';
-    if (json['image'] != null) {
-      final imageData = json['image'];
+      // Traiter l'image de profil (format unifié avec mediagallery)
+      String imageUrl = '';
+      if (json['image'] != null) {
+        final imageData = json['image'];
 
-      if (imageData is String && imageData.isNotEmpty) {
-        // Ancien format: data URL directe
-        imageUrl = imageData;
-      } else if (imageData is Map<String, dynamic>) {
-        // Nouveau format unifié: objet avec src
-        imageUrl = imageData['src'] ?? '';
+        if (imageData is String && imageData.isNotEmpty) {
+          // Ancien format: data URL directe
+          imageUrl = imageData;
+        } else if (imageData is Map<String, dynamic>) {
+          // Nouveau format unifié: objet avec src
+          imageUrl = imageData['src'] ?? '';
+        }
       }
+
+      final professionnel = Professionnel(
+        id: json['_id'] ?? '',
+        title: json['title'] ?? '',
+        subtitle: json['subtitle'] ?? '',
+        ville: json['ville'] ?? '',
+        address: addressStr,
+        numroDeTlphone: json['numroDeTlphone'] ?? '',
+        image: imageUrl,
+        gallery: galleryList,
+        sousCategorie: sousCategorieStr,
+        plan:
+            json['plan']?.toString() ??
+            '', // Récupérer le plan du professionnel
+        averageRating: (json['averageRating'] ?? 0.0).toDouble(),
+        reviewCount: json['reviewCount'] ?? 0,
+        couponTitle: _cleanHtmlString(json['couponTitle']?.toString() ?? ''),
+        couponTitleEN: _cleanHtmlString(
+          json['couponTitleEn']?.toString() ?? '',
+        ),
+        couponCode: _safeStringFromJson(json['couponCode']),
+        couponExpirationDate: couponExpiration,
+        couponDescription: _cleanHtmlString(
+          json['couponDescription']?.toString() ?? '',
+        ),
+        couponDescriptionEN: _cleanHtmlString(
+          json['couponDescriptionEn']?.toString() ?? '',
+        ),
+        galerieImage1: _safeStringFromJson(json['galerieImage1']),
+        galerieImage2: _safeStringFromJson(json['galerieImage2']),
+        galerieImage3: _safeStringFromJson(json['galerieImage3']),
+        galerieImage4: _safeStringFromJson(json['galerieImage4']),
+        galerieImage5: _safeStringFromJson(json['galerieImage5']),
+        email: _safeStringFromJson(json['email']),
+        website: _safeStringFromJson(json['siteWeb']),
+        facebook: _safeStringFromJson(json['lienFacebook']),
+        instagram: _safeStringFromJson(json['lienInstagram']),
+        linkedin: _safeStringFromJson(json['linkedin']),
+        whatsapp: _safeStringFromJson(json['lienWhatsapp']),
+        tiktok: _safeStringFromJson(json['lienTiktok']),
+        youtube: _safeStringFromJson(json['lienYoutube']),
+        isActive: json['isActive'] ?? false,
+        paymentStatus: _safeStringFromJson(json['paymentStatus']),
+        stripeCustomerId: _safeStringFromJson(json['stripeCustomerId']),
+        stripeSubscriptionId: _safeStringFromJson(json['stripeSubscriptionId']),
+        subscriptionExpiryDate: _parseDateFromJson(
+          json['subscriptionExpiryDate'],
+        ),
+      );
+
+      return professionnel;
+    } catch (_) {
+      // Retourner un professionnel avec des valeurs par défaut
+      return Professionnel(
+        id: json['_id']?.toString() ?? '',
+        title: json['title']?.toString() ?? 'Erreur de chargement',
+        subtitle: json['subtitle']?.toString() ?? '',
+        ville: json['ville']?.toString() ?? '',
+        address: '',
+        numroDeTlphone: json['numroDeTlphone']?.toString() ?? '',
+        image: '',
+        gallery: [],
+        sousCategorie: '',
+        plan: json['plan']?.toString() ?? '',
+      );
     }
-
-    final professionnel = Professionnel(
-      id: json['_id'] ?? '',
-      title: json['title'] ?? '',
-      subtitle: json['subtitle'] ?? '',
-      ville: json['ville'] ?? '',
-      address: addressStr,
-      numroDeTlphone: json['numroDeTlphone'] ?? '',
-      image: imageUrl,
-      gallery: galleryList,
-      sousCategorie: sousCategorieStr,
-      plan:
-          json['plan']?.toString() ?? '', // Récupérer le plan du professionnel
-      averageRating: (json['averageRating'] ?? 0.0).toDouble(),
-      reviewCount: json['reviewCount'] ?? 0,
-      couponTitle: _cleanHtmlString(json['couponTitle']?.toString() ?? ''),
-      couponTitleEN: _cleanHtmlString(json['couponTitleEn']?.toString() ?? ''),
-      couponCode: _safeStringFromJson(json['couponCode']),
-      couponExpirationDate: couponExpiration,
-      couponDescription: _cleanHtmlString(
-        json['couponDescription']?.toString() ?? '',
-      ),
-      couponDescriptionEN: _cleanHtmlString(
-        json['couponDescriptionEn']?.toString() ?? '',
-      ),
-      galerieImage1: _safeStringFromJson(json['galerieImage1']),
-      galerieImage2: _safeStringFromJson(json['galerieImage2']),
-      galerieImage3: _safeStringFromJson(json['galerieImage3']),
-      galerieImage4: _safeStringFromJson(json['galerieImage4']),
-      galerieImage5: _safeStringFromJson(json['galerieImage5']),
-      email: _safeStringFromJson(json['email']),
-      website: _safeStringFromJson(json['siteWeb']),
-      facebook: _safeStringFromJson(json['lienFacebook']),
-      instagram: _safeStringFromJson(json['lienInstagram']),
-      linkedin: _safeStringFromJson(json['linkedin']),
-      whatsapp: _safeStringFromJson(json['lienWhatsapp']),
-      tiktok: _safeStringFromJson(json['lienTiktok']),
-      youtube: _safeStringFromJson(json['lienYoutube']),
-      isActive: json['isActive'] ?? false,
-      paymentStatus: _safeStringFromJson(json['paymentStatus']),
-      stripeCustomerId: _safeStringFromJson(json['stripeCustomerId']),
-      stripeSubscriptionId: _safeStringFromJson(json['stripeSubscriptionId']),
-      subscriptionExpiryDate: _parseDateFromJson(
-        json['subscriptionExpiryDate'],
-      ),
-    );
-
-    return professionnel;
-  } catch (e) {
-    print('Erreur lors de la création de Professionnel depuis JSON: $e');
-    print('JSON problématique: ${json.toString()}');
-    
-    // Retourner un professionnel avec des valeurs par défaut
-    return Professionnel(
-      id: json['_id']?.toString() ?? '',
-      title: json['title']?.toString() ?? 'Erreur de chargement',
-      subtitle: json['subtitle']?.toString() ?? '',
-      ville: json['ville']?.toString() ?? '',
-      address: '',
-      numroDeTlphone: json['numroDeTlphone']?.toString() ?? '',
-      image: '',
-      gallery: [],
-      sousCategorie: '',
-      plan: json['plan']?.toString() ?? '',
-    );
-  }
   }
 
   /// Obtenir le titre du coupon dans la langue spécifiée
@@ -489,7 +506,7 @@ class Professionnel {
     if (value is String) return value;
     try {
       return value.toString();
-    } catch (e) {
+    } catch (_) {
       return '';
     }
   }
@@ -503,7 +520,7 @@ class Professionnel {
       } else if (value is Map && value['\$date'] != null) {
         return DateTime.fromMillisecondsSinceEpoch(value['\$date']);
       }
-    } catch (e) {
+    } catch (_) {
       // En cas d'erreur de parsing, retourner null
     }
     return null;
