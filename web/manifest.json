@@ -1,12 +1,16 @@
 {
-    "name": "mon_index_app",
-    "short_name": "mon_index_app",
+    "name": "Index Canada",
+    "short_name": "Index Canada",
+    "lang": "fr-CA",
+    "dir": "ltr",
     "start_url": ".",
+    "scope": ".",
     "display": "standalone",
-    "background_color": "#ffffff",
-    "theme_color": "#ffffff",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "background_color": "#F7F7F5",
+    "theme_color": "#D93632",
+    "description": "Annuaire bilingue de professionnels, services et offres locales au Canada.",
+    "orientation": "any",
+    "categories": ["business", "lifestyle", "utilities"],
     "prefer_related_applications": false,
     "icons": [
         {

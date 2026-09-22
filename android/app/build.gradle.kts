@@ -1,5 +1,4 @@
 import java.util.Properties
-import java.io.FileInputStream
 
 plugins {
     id("com.android.application")
@@ -30,25 +29,66 @@ android {
         versionName = flutter.versionName
     }
 
-    val keystorePropertiesFile = rootProject.file("key.properties")
-    val keystoreProperties = Properties()
-    if (keystorePropertiesFile.exists()) {
-        keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+    val releaseSigningPropertiesFile = rootProject.file("key.properties")
+    val releaseSigningProperties = Properties()
+    var releaseSigningLoadError: String? = null
+
+    if (releaseSigningPropertiesFile.isFile) {
+        try {
+            releaseSigningPropertiesFile.inputStream().use {
+                releaseSigningProperties.load(it)
+            }
+        } catch (error: Exception) {
+            releaseSigningLoadError = error.message ?: error.javaClass.simpleName
+        }
     }
 
+    val requiredReleaseSigningProperties = listOf(
+        "keyAlias",
+        "keyPassword",
+        "storeFile",
+        "storePassword",
+    )
+    val missingReleaseSigningProperties = requiredReleaseSigningProperties.filter {
+        releaseSigningProperties.getProperty(it).isNullOrBlank()
+    }
+    val releaseKeystoreFile = releaseSigningProperties
+        .getProperty("storeFile")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { file(it) }
+    val releaseSigningIssue = when {
+        !releaseSigningPropertiesFile.isFile ->
+            "android/key.properties est absent."
+        releaseSigningLoadError != null ->
+            "android/key.properties est illisible : $releaseSigningLoadError"
+        missingReleaseSigningProperties.isNotEmpty() ->
+            "Propriétés manquantes dans android/key.properties : " +
+                missingReleaseSigningProperties.joinToString(", ")
+        releaseKeystoreFile == null || !releaseKeystoreFile.isFile ->
+            "Le fichier de signature Android déclaré par storeFile est introuvable."
+        else -> null
+    }
+    val allowUnsignedRelease = providers
+        .gradleProperty("indexCanada.allowUnsignedRelease")
+        .map { it.equals("true", ignoreCase = true) }
+        .getOrElse(false)
+
     signingConfigs {
-        create("release") {
-            if (keystoreProperties.containsKey("keyAlias")) {
-                keyAlias = keystoreProperties["keyAlias"] as String
-                keyPassword = keystoreProperties["keyPassword"] as String
-                storeFile = file(keystoreProperties["storeFile"] as String)
-                storePassword = keystoreProperties["storePassword"] as String
+        if (releaseSigningIssue == null) {
+            create("release") {
+                keyAlias = releaseSigningProperties.getProperty("keyAlias")
+                keyPassword = releaseSigningProperties.getProperty("keyPassword")
+                storeFile = requireNotNull(releaseKeystoreFile)
+                storePassword = releaseSigningProperties.getProperty("storePassword")
             }
         }
     }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release") // Utilise la clé de production
+            if (releaseSigningIssue == null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             // Enables code shrinking, obfuscation, and optimization for only
             // your project's release build type.
             isMinifyEnabled = true
@@ -75,14 +115,31 @@ android {
             isDebuggable = true
         }
     }
-}
 
-dependencies {
-    // Nouvelles bibliothèques Play Core compatibles avec targetSdkVersion 34
-    implementation("com.google.android.play:app-update:2.1.0")
-    implementation("com.google.android.play:app-update-ktx:2.1.0")
-    implementation("com.google.android.play:review:2.0.1")
-    implementation("com.google.android.play:review-ktx:2.0.1")
+    val validateReleaseSigning = tasks.register("validateReleaseSigning") {
+        group = "verification"
+        description = "Valide la signature Android avant une compilation release."
+
+        doLast {
+            if (releaseSigningIssue != null && !allowUnsignedRelease) {
+                throw GradleException(
+                    "$releaseSigningIssue Ajoutez une configuration de signature valide " +
+                        "ou utilisez explicitement " +
+                        "-PindexCanada.allowUnsignedRelease=true pour une vérification CI non distribuable.",
+                )
+            }
+
+            if (releaseSigningIssue != null) {
+                logger.lifecycle(
+                    "Compilation release non signée autorisée explicitement : $releaseSigningIssue",
+                )
+            }
+        }
+    }
+
+    tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+        dependsOn(validateReleaseSigning)
+    }
 }
 
 flutter {

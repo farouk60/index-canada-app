@@ -35,11 +35,15 @@
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
     <key>UISupportedInterfaceOrientations~ipad</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>
         <string>UIInterfaceOrientationPortraitUpsideDown</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
 
     <key>CADisableMinimumFrameDurationOnPhone</key>
@@ -61,16 +65,8 @@
     <!-- Permissions photos et caméra -->
     <key>NSPhotoLibraryUsageDescription</key>
     <string>Cette application a besoin d'accéder à vos photos pour vous permettre de sélectionner votre photo de profil et vos images de galerie.</string>
-    <key>NSPhotoLibraryAddUsageDescription</key>
-    <string>Cette application peut enregistrer des images dans votre bibliothèque pour sauvegarder vos photos de profil ou de galerie.</string>
     <key>NSCameraUsageDescription</key>
     <string>Cette application a besoin d'accéder à votre caméra pour prendre des photos de profil.</string>
-
-    <!-- Permission géolocalisation (simplifiée) -->
-    <key>NSLocationWhenInUseUsageDescription</key>
-    <string>Cette application utilise votre localisation pour vous aider à trouver des professionnels près de chez vous.</string>
-    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-    <string>Cette application utilise votre localisation pour vous aider à trouver des professionnels près de chez vous lorsqu'elle est active ou en arrière-plan.</string>
 
     <!-- Permission pour les appels et URLs -->
     <key>LSApplicationQueriesSchemes</key>
@@ -100,10 +96,14 @@
             <key>UIWindowSceneSessionRoleApplication</key>
             <array>
                 <dict>
+                    <key>UISceneClassName</key>
+                    <string>UIWindowScene</string>
                     <key>UISceneConfigurationName</key>
-                    <string>Default Configuration</string>
+                    <string>flutter</string>
                     <key>UISceneDelegateClassName</key>
                     <string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
+                    <key>UISceneStoryboardFile</key>
+                    <string>Main</string>
                 </dict>
             </array>
         </dict>

@@ -1,18 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- url_launcher ne nécessite plus QUERY_ALL_PACKAGES; retiré pour conformité Play -->
     
-    <!-- Permissions pour la géolocalisation -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- Réseau (requis pour appeler l'API Wix et charger des images) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="com.google.android.gms.permission.AD_ID"/>
     
-    <!-- Permissions pour l'accès aux photos et à la caméra -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <!-- La galerie passe par le sélecteur système, sans permission stockage. -->
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     
     <!-- Fonctionnalités requises -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -20,9 +14,11 @@
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     
     <application
-        android:label="Mon Index"
+        android:label="Index Canada"
         android:name="${applicationName}"
         android:icon="@mipmap/launcher_icon"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="false"
         android:enableOnBackInvokedCallback="true">
         <activity
             android:name=".MainActivity"
@@ -44,6 +40,12 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="flutterstripe" android:host="redirect" />
             </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
