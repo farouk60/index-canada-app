@@ -15,6 +15,7 @@ import '../services/localization_service.dart';
 import '../services/firebase_analytics_service.dart';
 import '../services/cache_manager_service.dart';
 import '../widgets/language_selector.dart';
+import '../widgets/engagement_visibility_tracker.dart';
 import 'professionnel_detail_page.dart';
 import '../theme/app_theme.dart';
 
@@ -23,8 +24,17 @@ enum SortOption { defaultOrder, alphabeticalAZ, alphabeticalZA, bestRated }
 
 class ProfessionnelsPage extends StatefulWidget {
   final SousCategorie sousCategorie;
+  final FirebaseAnalyticsService? analyticsService;
+  final DataService? dataService;
+  final Future<bool> Function(String address)? mapsLauncher;
 
-  const ProfessionnelsPage({super.key, required this.sousCategorie});
+  const ProfessionnelsPage({
+    super.key,
+    required this.sousCategorie,
+    this.analyticsService,
+    this.dataService,
+    this.mapsLauncher,
+  });
 
   @override
   State<ProfessionnelsPage> createState() => _ProfessionnelsPageState();
@@ -33,7 +43,9 @@ class ProfessionnelsPage extends StatefulWidget {
 class _ProfessionnelsPageState extends State<ProfessionnelsPage>
     with WidgetsBindingObserver {
   final LocalizationService _localizationService = LocalizationService();
-  final FirebaseAnalyticsService _analytics = FirebaseAnalyticsService();
+  late final FirebaseAnalyticsService _analytics;
+  late final DataService _dataService;
+  final Set<String> _recordedDirectoryImpressions = <String>{};
   Timer? _searchTrackingTimer; // Timer pour éviter trop de tracking
   String _searchQuery = '';
   String _citySearchQuery = '';
@@ -52,6 +64,8 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
   @override
   void initState() {
     super.initState();
+    _analytics = widget.analyticsService ?? FirebaseAnalyticsService();
+    _dataService = widget.dataService ?? DataService();
     WidgetsBinding.instance.addObserver(this);
     _loadProfessionnels(
       forceRefresh: true,
@@ -85,7 +99,7 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
         _errorKey = null;
       });
 
-      final wixApi = DataService();
+      final wixApi = _dataService;
 
       // Si c'est un refresh forcé, vider le cache ET forcer la sync Wix
       if (forceRefresh) {
@@ -226,12 +240,13 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
       _searchQuery = query;
       _applyFilters();
     });
+    final resultsCount = _filteredProfessionnels.length;
 
     // Tracker la recherche avec un délai pour éviter trop de calls
     _searchTrackingTimer?.cancel();
     if (query.isNotEmpty) {
       _searchTrackingTimer = Timer(const Duration(milliseconds: 500), () {
-        _trackSearch(query, 'professional');
+        _trackSearch('professional', resultsCount);
       });
     }
   }
@@ -242,20 +257,22 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
       _isSearchingByCity = city.isNotEmpty;
       _applyFilters();
     });
+    final resultsCount = _filteredProfessionnels.length;
 
     // Tracker la recherche par ville
     if (city.isNotEmpty) {
-      _trackSearch(city, 'city');
+      _trackSearch('city', resultsCount);
     }
   }
 
   // Tracker les recherches
-  void _trackSearch(String query, String type) async {
-    final resultsCount = _filteredProfessionnels.length;
-    await _analytics.trackSearch(
-      searchQuery: query,
-      searchType: type,
-      resultsCount: resultsCount,
+  void _trackSearch(String type, int resultsCount) {
+    _runAnalytics(
+      () => _analytics.trackSearch(
+        searchType: type,
+        resultsCount: resultsCount,
+        locale: _localizationService.currentLanguage,
+      ),
     );
   }
 
@@ -480,12 +497,21 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
   }
 
   // Ouvrir Google Maps avec l'adresse
-  Future<void> _openMaps(String address) async {
+  Future<void> _openMaps(Professionnel professionnel) async {
     try {
-      final mapsService = MapsService.instance;
-      final success = await mapsService.openNativeMaps(address);
+      final launcher =
+          widget.mapsLauncher ?? MapsService.instance.openNativeMaps;
+      final success = await launcher(professionnel.address);
 
-      if (!success && mounted) {
+      if (success) {
+        _runAnalytics(
+          () => _analytics.trackMapNavigation(
+            professionalId: professionnel.id,
+            placement: 'directory',
+            locale: _localizationService.currentLanguage,
+          ),
+        );
+      } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(_localizationService.tr('error_opening_maps')),
@@ -617,8 +643,29 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
   }
 
   // Définir le nom de l'écran pour Analytics
-  void _setScreenName() async {
-    await _analytics.setCurrentScreen('professionals_page');
+  void _setScreenName() {
+    _runAnalytics(() => _analytics.setCurrentScreen('professionals_page'));
+  }
+
+  void _runAnalytics(Future<void> Function() event) {
+    try {
+      unawaited(event().catchError((Object _) {}));
+    } catch (_) {
+      // La télémétrie ne doit jamais affecter le parcours principal.
+    }
+  }
+
+  void _trackDirectoryImpression(Professionnel professionnel) {
+    final impressionKey = '${professionnel.id}|directory';
+    if (!_recordedDirectoryImpressions.add(impressionKey)) return;
+
+    _runAnalytics(
+      () => _analytics.trackProfessionalImpression(
+        professionalId: professionnel.id,
+        placement: 'directory',
+        locale: _localizationService.currentLanguage,
+      ),
+    );
   }
 
   @override
@@ -957,6 +1004,9 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                                             secondaryAnimation,
                                           ) => ProfessionnelDetailPage(
                                             professionnel: prof,
+                                            sourcePlacement: 'directory',
+                                            analyticsService: _analytics,
+                                            dataService: _dataService,
                                           ),
                                       transitionsBuilder:
                                           (
@@ -1179,8 +1229,7 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                                             if (prof.address.isNotEmpty) ...[
                                               const SizedBox(height: 4),
                                               GestureDetector(
-                                                onTap: () =>
-                                                    _openMaps(prof.address),
+                                                onTap: () => _openMaps(prof),
                                                 child: Text(
                                                   prof.address,
                                                   style: const TextStyle(
@@ -1241,6 +1290,11 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                                                 builder: (_) =>
                                                     ProfessionnelDetailPage(
                                                       professionnel: prof,
+                                                      sourcePlacement:
+                                                          'directory',
+                                                      analyticsService:
+                                                          _analytics,
+                                                      dataService: _dataService,
                                                     ),
                                               ),
                                             );
@@ -1270,6 +1324,10 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                               ),
                             ),
                           ),
+                        ).trackEngagementVisibility(
+                          key: ValueKey('directory_impression_${prof.id}'),
+                          onQualifiedVisibility: () =>
+                              _trackDirectoryImpression(prof),
                         );
                       },
                     ),

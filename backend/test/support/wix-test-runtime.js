@@ -1,5 +1,6 @@
 const operationLog = [];
 let collections = new Map();
+let bulkRemoveResults = [];
 
 function clone(value) {
   return structuredClone(value);
@@ -58,6 +59,22 @@ class MemoryQuery {
     return this.derive({
       predicate: (item) => previous(item) && comparable(item?.[field]) > comparable(expected),
       operation: { method: "gt", field, value: clone(expected) },
+    });
+  }
+
+  ge(field, expected) {
+    const previous = this.predicate;
+    return this.derive({
+      predicate: (item) => previous(item) && comparable(item?.[field]) >= comparable(expected),
+      operation: { method: "ge", field, value: clone(expected) },
+    });
+  }
+
+  lt(field, expected) {
+    const previous = this.predicate;
+    return this.derive({
+      predicate: (item) => previous(item) && comparable(item?.[field]) < comparable(expected),
+      operation: { method: "lt", field, value: clone(expected) },
     });
   }
 
@@ -138,9 +155,28 @@ class MemoryQuery {
     const pageAt = (offset) => ({
       items: clone(matched.slice(offset, offset + limit)),
       hasNext: () => offset + limit < matched.length,
-      next: async () => pageAt(offset + limit),
+      next: async () => {
+        operationLog.push({
+          type: "next",
+          collection: this.collection,
+          offset: offset + limit,
+          limit,
+        });
+        return pageAt(offset + limit);
+      },
     });
     return pageAt(0);
+  }
+
+  async count(options = {}) {
+    const count = collectionItems(this.collection).filter(this.predicate).length;
+    operationLog.push({
+      type: "count",
+      collection: this.collection,
+      operations: clone(this.operations),
+      options: clone(options),
+    });
+    return count;
   }
 }
 
@@ -173,6 +209,25 @@ export const wixData = Object.freeze({
     operationLog.push({ type: "update", collection, item: clone(item), options: clone(options) });
     return clone(item);
   },
+
+  async bulkRemove(collection, itemIds, options = {}) {
+    const configuredResult = bulkRemoveResults.shift();
+    const result = configuredResult ?? { removedItemIds: clone(itemIds), errors: [] };
+    const ids = new Set(Array.isArray(result.removedItemIds) ? result.removedItemIds : []);
+    const items = collectionItems(collection);
+    collections.set(
+      collection,
+      items.filter((item) => !ids.has(item?._id)),
+    );
+    operationLog.push({
+      type: "bulkRemove",
+      collection,
+      itemIds: clone(itemIds),
+      options: clone(options),
+      result: clone(result),
+    });
+    return clone(result);
+  },
 });
 
 export const wixDataTest = Object.freeze({
@@ -181,6 +236,11 @@ export const wixDataTest = Object.freeze({
       Object.entries(seed).map(([collection, items]) => [collection, clone(items)]),
     );
     operationLog.length = 0;
+    bulkRemoveResults = [];
+  },
+
+  setBulkRemoveResults(results) {
+    bulkRemoveResults = clone(results);
   },
 
   items(collection) {
@@ -211,6 +271,18 @@ export const response = (options) => httpResponse(options.status, options);
 
 export function elevate(callback) {
   return callback;
+}
+
+export const Permissions = Object.freeze({
+  Anyone: "Anyone",
+  SiteMember: "SiteMember",
+  Admin: "Admin",
+});
+
+export function webMethod(permission, callback) {
+  const wrapped = (...args) => callback(...args);
+  Object.defineProperty(wrapped, "permission", { value: permission });
+  return wrapped;
 }
 
 export const secrets = Object.freeze({

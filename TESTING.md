@@ -39,15 +39,18 @@ assertions `node:test` sans créer de sous-processus.
 
 ## État vérifié localement
 
-Au dernier contrôle local du 18 septembre 2026 :
+Au contrôle local du 23 septembre 2026 pour le plan ROI v1 :
 
-- suite Flutter complète : 106 tests réussis sur 106;
-- 45 tests backend réussis (26 sécurité/paiement/médias, 9 pagination et
-  10 contrats HTTP Wix v2);
+- suite Flutter complète : 132 tests réussis sur 132;
+- suite backend complète : 72 tests réussis sur 72;
 - analyse Flutter stricte : aucune anomalie;
-- build Web release réussi, y compris le contrôle de compatibilité Wasm;
-- couverture de lignes Flutter : 29,6 % (1 945 lignes couvertes sur 6 571
-  dans le fichier local `coverage/lcov.info`).
+- format Dart de `lib/` et `test/` conforme.
+
+Au contrôle antérieur du 18 septembre 2026, le build Web release avait réussi,
+y compris le contrôle de compatibilité Wasm. La couverture de lignes Flutter
+était alors de 29,6 % (1 945 lignes couvertes sur 6 571 dans le fichier local
+`coverage/lcov.info`). Le build et la couverture n'ont pas été recalculés pour
+la version ROI v1 et ne doivent pas être présentés comme des résultats actuels.
 
 La couverture reste faible et ne doit pas être présentée comme une garantie
 de qualité « niveau production ». Elle mesure les lignes exercées, pas la qualité
@@ -98,10 +101,15 @@ sur appareils Android et iOS réels.
 | `test/services/data_service_test.dart` | Contrat v2 Wix, parcours des curseurs, cache/rafraîchissement, concurrence, erreurs réseau et publication des seuls avis approuvés |
 | `test/services/stripe_native_payment_service_test.dart` | Contrat HTTP, forfaits serveur, images, confirmations et refus du paiement Web |
 | `test/services/review_verification_service_test.dart` | Anonymisation locale, anti-abus et purge des traces d'avis |
+| `test/services/firebase_analytics_service_test.dart` | Contrat ROI fermé, absence de données personnelles, file bornée, reprise transitoire avec le même identifiant et non-blocage de l'interface |
+| `test/pages/*analytics*`, `test/pages/roi_impression_pages_test.dart` | Attribution accueil/annuaire/détail et déclenchement uniquement après une action réussie |
+| `test/widgets/engagement_visibility_tracker_test.dart`, `test/widgets/coupon_widget_test.dart` | Impression après visibilité continue à 50 %, défilement, cycle de vie, route masquée et copie de coupon réussie |
 | `test/widgets/` | Rendu des images, états de repli et composants sans réseau réel |
 | `backend/test/security-core.test.js` | Catalogue serveur, validation, jetons, idempotence, liaison Stripe, projections publiques et médias Wix sans Base64 persisté |
 | `backend/test/directory-pagination.test.js` | Pages Wix suivantes, curseurs opaques liés aux filtres, tailles bornées, ordre, propagation des erreurs et plafonds |
 | `backend/test/http-functions.test.js` | Contrats HTTP Wix v2, filtres actifs, projections publiques, alias historiques, codes d'erreur, OPTIONS et méthodes refusées |
+| `backend/test/engagement-report*.test.js` | Agrégats ROI, ratios par emplacement, plafond de rapport, permission administrateur et exclusion de la facturation |
+| `backend/test/engagement-maintenance.test.js` | Purges bornées, lots partiels, signalement du reliquat et nettoyage des limiteurs expirés |
 
 Les tests de widget utilisent des données locales. Ils ne doivent pas
 initialiser de service externe ni dépendre de l'état d'un site Wix.
@@ -138,6 +146,19 @@ Utiliser des données synthétiques et les clés Stripe de test :
    une approbation humaine dans Wix;
 12. valider les parcours bilingues et les largeurs mobile/desktop;
 13. vérifier que le Web refuse les forfaits payants avant tout checkout Stripe.
+14. rejouer un même événement ROI avec le même identifiant et confirmer une
+    seule écriture; réutiliser cet identifiant avec un contenu différent et
+    confirmer le refus; vérifier également le rejet de `categoryId`, de tout
+    champ inconnu et de toute donnée personnelle;
+15. vérifier qu'un membre ou visiteur ne peut pas appeler le rapport ROI
+    administrateur, puis contrôler ses ratios sur un petit jeu connu;
+16. exécuter séparément les deux tâches de purge sur une copie de données,
+    mesurer leur durée près de 25 lots et confirmer le signalement d'un reliquat;
+17. mesurer le débit public de `engagementEvent` derrière la protection edge
+    prévue et confirmer que ses données non vérifiées ne déclenchent ni
+    facturation ni promesse de résultat;
+18. simuler une erreur transitoire cliente et confirmer le même `eventId` lors
+    des deux reprises maximales, puis une erreur 4xx sans nouvelle tentative.
 
 Conserver l'identifiant de requête renvoyé par l'API pour relier un échec aux
 journaux Wix sans journaliser de contenu personnel.
@@ -170,5 +191,9 @@ secret exposé.
 - tests de charge et d'indexation des cinq routes v2 déjà utilisées, puis
   surveillance des appels résiduels à `/data` avant son retrait; `/data` reste
   un contrat de compatibilité temporaire, pas l'API cible;
+- protection edge/CDN et, si possible, attestation d'application pour réduire
+  les événements ROI distribués ou usurpés avant la production;
+- outbox analytique persistante pour conserver les derniers événements lors
+  d'une fermeture brutale de l'application;
 - hausse progressive de la couverture sur les parcours critiques avant de
   fixer un seuil bloquant.

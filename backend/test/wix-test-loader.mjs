@@ -22,6 +22,10 @@ const virtualModules = new Map([
     virtualModule(`export { elevate } from ${JSON.stringify(runtimeUrl)};`),
   ],
   [
+    "wix-web-module",
+    virtualModule(`export { Permissions, webMethod } from ${JSON.stringify(runtimeUrl)};`),
+  ],
+  [
     "wix-media-backend",
     virtualModule(`export { mediaManager } from ${JSON.stringify(runtimeUrl)};`),
   ],
@@ -37,6 +41,7 @@ const virtualModules = new Map([
 
 const backendModules = new Map([
   ["backend/directory-pagination", new URL("../directory-pagination.js", import.meta.url).href],
+  ["backend/engagement-report", new URL("../engagement-report.js", import.meta.url).href],
   ["backend/security-core", new URL("../security-core.js", import.meta.url).href],
 ]);
 

@@ -23,6 +23,7 @@ import {
 import {
   InputError,
   assertCheckoutNotExpired,
+  buildEngagementEventRecord,
   buildMediaUploadPlan,
   buildPersistedCheckoutDraft,
   buildProfessionalId,
@@ -61,6 +62,7 @@ import {
 const DATA_OPTIONS = Object.freeze({ suppressAuth: true });
 const CONSISTENT_DATA_OPTIONS = Object.freeze({ suppressAuth: true, consistentRead: true });
 const CHECKOUT_COLLECTION = "PaymentCheckouts";
+const ENGAGEMENT_COLLECTION = "EngagementEvents";
 const RATE_LIMIT_COLLECTION = "ApiRateLimits";
 const CHECKOUT_VERSION = "2";
 const STRIPE_SECRET_NAME = "STRIPE_SECRET_KEY";
@@ -74,6 +76,8 @@ const RATE_LIMITS = Object.freeze({
   review: Object.freeze({ limit: 5, windowMs: 60 * 60_000, failClosed: true }),
   checkout: Object.freeze({ limit: 10, windowMs: 15 * 60_000, failClosed: true }),
   confirmation: Object.freeze({ limit: 20, windowMs: 15 * 60_000, failClosed: true }),
+  // Défense CMS secondaire et non atomique; le limiteur edge/CDN reste requis.
+  engagement: Object.freeze({ limit: 60, windowMs: 60_000, failClosed: true }),
 });
 
 const PUBLIC_HEADERS = Object.freeze({
@@ -126,6 +130,15 @@ class RateLimitError extends Error {
     this.code = "RATE_LIMITED";
     this.status = 429;
     this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+class IdempotencyConflictError extends Error {
+  constructor(code) {
+    super(code);
+    this.name = "IdempotencyConflictError";
+    this.code = code;
+    this.status = 409;
   }
 }
 
@@ -214,6 +227,14 @@ function publicError(error, correlationId, headers = PRIVATE_HEADERS) {
     return jsonResponse(error.status, {
       success: false,
       error: message,
+      code: error.code,
+      requestId: correlationId,
+    }, headers);
+  }
+  if (error instanceof IdempotencyConflictError) {
+    return jsonResponse(409, {
+      success: false,
+      error: "Conflit d'idempotence.",
       code: error.code,
       requestId: correlationId,
     }, headers);
@@ -400,6 +421,34 @@ async function persistCheckoutDraft(draft) {
     const uncertain = new PaymentFlowError("CHECKOUT_PERSISTENCE_UNCERTAIN", 503);
     uncertain.preserveUploadedMedia = true;
     throw uncertain;
+  }
+}
+
+export async function persistEngagementEvent(record, {
+  findExisting = (id) => findById(ENGAGEMENT_COLLECTION, id, { consistentRead: true }),
+  insertRecord = (item) => wixData.insert(ENGAGEMENT_COLLECTION, item, DATA_OPTIONS),
+} = {}) {
+  const existing = await findExisting(record._id);
+  if (existing) {
+    if (existing.contentHash !== record.contentHash) {
+      throw new IdempotencyConflictError("ENGAGEMENT_EVENT_CONFLICT");
+    }
+    return { duplicate: true };
+  }
+
+  try {
+    await insertRecord(record);
+    return { duplicate: false };
+  } catch (_insertError) {
+    let raced;
+    try {
+      raced = await findExisting(record._id);
+    } catch (_readError) {
+      throw new PaymentFlowError("ENGAGEMENT_PERSISTENCE_UNCERTAIN", 503);
+    }
+    if (raced?.contentHash === record.contentHash) return { duplicate: true };
+    if (raced) throw new IdempotencyConflictError("ENGAGEMENT_EVENT_CONFLICT");
+    throw new PaymentFlowError("ENGAGEMENT_PERSISTENCE_UNCERTAIN", 503);
   }
 }
 
@@ -989,6 +1038,44 @@ export function use_review(request) {
   return preflightOrMethodNotAllowed(request, PRIVATE_HEADERS);
 }
 
+export async function post_engagementEvent(request) {
+  const correlationId = requestId();
+  try {
+    await consumeRateLimit(request, "engagement", correlationId);
+    const body = await readJsonBody(request);
+    const record = buildEngagementEventRecord(body, new Date());
+
+    if (record.professionalId) {
+      const professional = await findById(
+        "Professionnel",
+        record.professionalId,
+        { consistentRead: true },
+      );
+      if (!professional || professional.isActive !== true) {
+        return jsonResponse(404, {
+          success: false,
+          error: "Professionnel introuvable.",
+          code: "PROFESSIONAL_NOT_FOUND",
+          requestId: correlationId,
+        });
+      }
+    }
+
+    const persisted = await persistEngagementEvent(record);
+    if (persisted.duplicate) {
+      return jsonResponse(200, { success: true, duplicate: true });
+    }
+    return jsonResponse(201, { success: true, received: true });
+  } catch (error) {
+    logFailure("post_engagementEvent", error, correlationId);
+    return publicError(error, correlationId);
+  }
+}
+
+export function use_engagementEvent(request) {
+  return preflightOrMethodNotAllowed(request, PRIVATE_HEADERS);
+}
+
 function assertClientHints(body, plan) {
   if (body.amount !== undefined && Number(body.amount) !== plan.amountCents) {
     throw new InputError("PAYMENT_PARAMETER_MISMATCH");
@@ -1407,6 +1494,7 @@ export { get_partners as partners_get };
 export { get_offers as offers_get };
 export { get_paymentPlans as paymentPlans_get };
 export { post_review as review_post };
+export { post_engagementEvent as engagementEvent_post };
 export { post_createPaymentIntent as createPaymentIntent_post };
 export { post_confirmPayment as confirmPayment_post };
 export { post_stripeWebhook as stripeWebhook_post };

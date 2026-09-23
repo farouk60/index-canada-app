@@ -60,6 +60,39 @@ Base64, puis le backend :
 5. valide le `fileUrl` retourné;
 6. persiste uniquement les URL Wix et le manifeste d'empreintes.
 
+## Mesure ROI first-party
+
+La route `POST /_functions/engagementEvent` est publique parce qu'elle est
+appelée par les clients Web et mobiles, mais son contrat est fermé :
+
+- aucune chaîne libre, recherche brute, coordonnée, URL, adresse ou identité
+  d'utilisateur n'est acceptée;
+- le UUID aléatoire sert uniquement à l'idempotence, puis seul son dérivé
+  haché devient l'identifiant Wix;
+- la catégorie n'est pas acceptée depuis le client : aucun champ libre ne peut
+  servir à dissimuler une donnée personnelle;
+- les événements liés à une fiche exigent un professionnel actif;
+- la taille, les enums et les combinaisons de champs sont validés avant toute
+  écriture;
+- le rapport est un Web Method `Permissions.Admin` et ne renvoie aucun
+  événement brut;
+- la collection `EngagementEvents` reste privée et une tâche supprime les
+  événements de plus de 400 jours ainsi que les limiteurs API expirés.
+
+Le client utilise une file mémoire bornée à 100 événements et conserve le même
+UUID lors d'au plus deux reprises transitoires; les erreurs 4xx ne sont pas
+rejouées. Cette file protège l'expérience et l'idempotence, mais elle n'est pas
+une preuve de livraison ni un historique persistant : une fermeture brutale
+peut perdre les derniers événements. Une outbox locale persistante reste une
+amélioration v2.
+
+Le limiteur applicatif réduit le bruit automatisé sans constituer une preuve
+d'attribution financière. Les rapports doivent parler d'« interactions dans
+l'application », jamais de visiteurs uniques ou de ventes garanties. Jusqu'à
+l'installation d'une protection edge/CDN ou d'une attestation d'application,
+chaque événement porte `client_reported_unverified` et reste exclu de toute
+facturation ou garantie de résultat.
+
 Aucune chaîne `data:image/...;base64` ne doit être enregistrée dans
 `PaymentCheckouts` ou `Professionnel`. En cas d'échec, le backend tente un
 nettoyage compensatoire des fichiers nouvellement envoyés, sans toucher aux URL

@@ -13,7 +13,10 @@ const {
   get_reviews,
   get_search_professionals,
   get_searchProfessionals,
+  persistEngagementEvent,
+  post_engagementEvent,
   use_categories,
+  use_engagementEvent,
   use_professionals,
   use_search_professionals,
   use_searchProfessionals,
@@ -33,9 +36,19 @@ function request(query = {}, overrides = {}) {
   };
 }
 
+function engagementRequest(body, overrides = {}) {
+  return request({}, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: { json: async () => body },
+    ...overrides,
+  });
+}
+
 function seed(data = {}) {
   __wixDataTest.reset({
     ApiRateLimits: [],
+    EngagementEvents: [],
     SousCategorie: [],
     Professionnel: [],
     Reviews: [],
@@ -408,12 +421,226 @@ test("get_offers publie uniquement les offres actives avec une projection publiq
   });
 });
 
+test("post_engagementEvent enregistre un événement ROI minimal avec un horodatage serveur", async () => {
+  seed({
+    Professionnel: [{ _id: "pro_001", title: "Cabinet Alpha", isActive: true }],
+  });
+  const body = {
+    version: 1,
+    eventId: "123e4567-e89b-42d3-a456-426614174010",
+    type: "professional_view",
+    professionalId: "pro_001",
+    placement: "detail",
+    locale: "fr",
+  };
+
+  const result = await post_engagementEvent(engagementRequest(body));
+
+  assert.equal(result.status, 201);
+  assert.equal(result.body.received, true);
+  const events = __wixDataTest.items("EngagementEvents");
+  assert.equal(events.length, 1);
+  assert.match(events[0]._id, /^eng_[a-f0-9]{32}$/u);
+  assert.match(events[0].contentHash, /^[a-f0-9]{64}$/u);
+  assert.equal(events[0].professionalId, "pro_001");
+  assert.equal(events[0].type, "professional_view");
+  assert.equal(events[0].trustLevel, "client_reported_unverified");
+  assert.equal(events[0].receivedAt instanceof Date, true);
+  assert.equal(Object.hasOwn(events[0], "eventId"), false);
+  assert.equal(Object.hasOwn(events[0], "email"), false);
+
+  const insert = __wixDataTest.calls.find(
+    (call) => call.type === "insert" && call.collection === "EngagementEvents",
+  );
+  assert.deepEqual(insert.options, { suppressAuth: true });
+});
+
+test("post_engagementEvent est idempotent et refuse un même eventId au contenu différent", async () => {
+  seed({
+    Professionnel: [{ _id: "pro_001", title: "Cabinet Alpha", isActive: true }],
+  });
+  const body = {
+    version: 1,
+    eventId: "123e4567-e89b-42d3-a456-426614174011",
+    type: "professional_click",
+    professionalId: "pro_001",
+    placement: "home_featured",
+    locale: "en",
+  };
+
+  const createdResult = await post_engagementEvent(engagementRequest(body));
+  const duplicateResult = await post_engagementEvent(engagementRequest(body));
+  const conflictResult = await post_engagementEvent(engagementRequest({
+    ...body,
+    locale: "fr",
+  }));
+
+  assert.equal(createdResult.status, 201);
+  assert.equal(duplicateResult.status, 200);
+  assert.equal(duplicateResult.body.duplicate, true);
+  assert.equal(conflictResult.status, 409);
+  assert.equal(conflictResult.body.code, "ENGAGEMENT_EVENT_CONFLICT");
+  assert.equal(__wixDataTest.items("EngagementEvents").length, 1);
+});
+
+test("persistEngagementEvent relit après toute erreur d'insertion", async () => {
+  const record = {
+    _id: "eng_1234567890abcdef1234567890abcdef",
+    version: 1,
+    type: "professional_view",
+    professionalId: "pro_001",
+    placement: "detail",
+    contentHash: "a".repeat(64),
+    receivedAt: new Date("2026-09-23T14:00:00.000Z"),
+  };
+  const insertError = new Error("Wix write timeout");
+
+  let reads = 0;
+  const sameContent = await persistEngagementEvent(record, {
+    findExisting: async () => {
+      reads += 1;
+      return reads === 1 ? null : { ...record };
+    },
+    insertRecord: async () => {
+      throw insertError;
+    },
+  });
+  assert.deepEqual(sameContent, { duplicate: true });
+  assert.equal(reads, 2);
+
+  reads = 0;
+  await assert.rejects(
+    persistEngagementEvent(record, {
+      findExisting: async () => {
+        reads += 1;
+        return reads === 1 ? null : { ...record, contentHash: "b".repeat(64) };
+      },
+      insertRecord: async () => {
+        throw insertError;
+      },
+    }),
+    (error) => error?.code === "ENGAGEMENT_EVENT_CONFLICT" && error?.status === 409,
+  );
+
+  reads = 0;
+  await assert.rejects(
+    persistEngagementEvent(record, {
+      findExisting: async () => {
+        reads += 1;
+        return null;
+      },
+      insertRecord: async () => {
+        throw insertError;
+      },
+    }),
+    (error) => error?.code === "ENGAGEMENT_PERSISTENCE_UNCERTAIN" && error?.status === 503,
+  );
+  assert.equal(reads, 2);
+});
+
+test("persistEngagementEvent retourne 503 si la relecture après erreur échoue", async () => {
+  const record = {
+    _id: "eng_1234567890abcdef1234567890abcdef",
+    contentHash: "a".repeat(64),
+  };
+  let reads = 0;
+
+  await assert.rejects(
+    persistEngagementEvent(record, {
+      findExisting: async () => {
+        reads += 1;
+        if (reads === 1) return null;
+        throw new Error("Wix read timeout");
+      },
+      insertRecord: async () => {
+        throw new Error("Wix write timeout");
+      },
+    }),
+    (error) => error?.code === "ENGAGEMENT_PERSISTENCE_UNCERTAIN" && error?.status === 503,
+  );
+  assert.equal(reads, 2);
+});
+
+test("post_engagementEvent valide la fiche active et rejette les PII", async () => {
+  seed({
+    Professionnel: [{ _id: "pro_inactive", title: "Masqué", isActive: false }],
+  });
+  const base = {
+    version: 1,
+    eventId: "123e4567-e89b-42d3-a456-426614174012",
+    type: "contact",
+    placement: "detail",
+    channel: "website",
+  };
+  const absent = await post_engagementEvent(engagementRequest({
+    ...base,
+    professionalId: "pro_absent",
+  }));
+  const inactive = await post_engagementEvent(engagementRequest({
+    ...base,
+    eventId: "123e4567-e89b-42d3-a456-426614174013",
+    professionalId: "pro_inactive",
+  }));
+  const pii = await post_engagementEvent(engagementRequest({
+    ...base,
+    eventId: "123e4567-e89b-42d3-a456-426614174014",
+    professionalId: "pro_inactive",
+    email: "owner@example.ca",
+  }));
+
+  for (const result of [absent, inactive]) {
+    assert.equal(result.status, 404);
+    assert.equal(result.body.code, "PROFESSIONAL_NOT_FOUND");
+  }
+  assert.equal(pii.status, 400);
+  assert.equal(pii.body.code, "INVALID_ENGAGEMENT_EVENT");
+  assert.equal(__wixDataTest.items("EngagementEvents").length, 0);
+});
+
+test("post_engagementEvent applique son limiteur dédié", async () => {
+  seed({
+    Professionnel: [{ _id: "pro_001", title: "Cabinet Alpha", isActive: true }],
+  });
+  const first = await post_engagementEvent(engagementRequest({
+    version: 1,
+    eventId: "123e4567-e89b-42d3-a456-426614174015",
+    type: "professional_impression",
+    professionalId: "pro_001",
+    placement: "directory",
+  }));
+  assert.equal(first.status, 201);
+  assert.equal(__wixDataTest.items("ApiRateLimits")[0].limit, 60);
+
+  const saturatedLimit = {
+    ...__wixDataTest.items("ApiRateLimits")[0],
+    count: 999,
+    windowStartedAtMs: Date.now(),
+  };
+  seed({
+    ApiRateLimits: [saturatedLimit],
+    Professionnel: [{ _id: "pro_001", title: "Cabinet Alpha", isActive: true }],
+  });
+  const limited = await post_engagementEvent(engagementRequest({
+    version: 1,
+    eventId: "123e4567-e89b-42d3-a456-426614174016",
+    type: "professional_impression",
+    professionalId: "pro_001",
+    placement: "directory",
+  }));
+
+  assert.equal(limited.status, 429);
+  assert.equal(limited.body.code, "RATE_LIMITED");
+  assert.equal(__wixDataTest.items("EngagementEvents").length, 0);
+});
+
 test("les handlers use_* distinguent OPTIONS des méthodes non autorisées", () => {
   const preflight = use_categories(request({}, { method: "OPTIONS" }));
   const rejected = use_professionals(request({}, { method: "POST" }));
   const searchPreflight = use_searchProfessionals(request({}, { method: "OPTIONS" }));
   const legacySearchPreflight = use_search_professionals(request({}, { method: "OPTIONS" }));
   const rejectedSearch = use_searchProfessionals(request({}, { method: "POST" }));
+  const engagementPreflight = use_engagementEvent(request({}, { method: "OPTIONS" }));
+  const rejectedEngagement = use_engagementEvent(request({}, { method: "GET" }));
 
   assert.equal(preflight.status, 204);
   assert.equal(preflight.body, null);
@@ -425,4 +652,8 @@ test("les handlers use_* distinguent OPTIONS des méthodes non autorisées", () 
   assert.equal(legacySearchPreflight.status, 204);
   assert.equal(rejectedSearch.status, 405);
   assert.equal(rejectedSearch.body.code, "METHOD_NOT_ALLOWED");
+  assert.equal(engagementPreflight.status, 204);
+  assert.equal(engagementPreflight.headers["Access-Control-Allow-Methods"], "POST, OPTIONS");
+  assert.equal(rejectedEngagement.status, 405);
+  assert.equal(rejectedEngagement.body.code, "METHOD_NOT_ALLOWED");
 });

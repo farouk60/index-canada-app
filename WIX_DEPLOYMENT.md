@@ -26,6 +26,7 @@ directes par les visiteurs et membres :
 - `Partenaires`;
 - `OffresPartenaire`;
 - `PaymentCheckouts`;
+- `EngagementEvents`;
 - `ApiRateLimits`.
 
 Le backend accède aux collections avec ses privilèges serveur. N'assouplissez
@@ -39,8 +40,13 @@ techniques suivants sont essentiels :
 - `PaymentCheckouts` : `_id`, version, statut, forfait, montant/devise,
   inscription normalisée, `images` (URL Wix uniquement), `imageHashes`,
   empreinte, identifiants Stripe/professionnel, tentatives et dates;
-- `ApiRateLimits` : `_id`, `scope`, `keyHash`, `count`, `limit`, début et fin
-  de fenêtre;
+- `ApiRateLimits` : `_id`, `scope`, `keyHash`, `count`, `limit`, début de
+  fenêtre et `expiresAt` comme texte ISO UTC canonique indexé;
+- `EngagementEvents` : `_id`, `version`, `type`, `professionalId`,
+  `placement`, `channel`, `resultsBucket`, `searchKind`, `locale`,
+  `trustLevel`, `contentHash`, `receivedAt` et dates système Wix. Le `eventId`
+  client ne doit jamais être conservé en clair. `trustLevel` est toujours fixé
+  par le serveur à `client_reported_unverified`;
 - `Professionnel` : statut d'inscription, activation, référence checkout,
   coordonnées publiques consenties, `image` et galerie sous forme d'URL Wix.
 
@@ -124,11 +130,22 @@ les [contraintes de compatibilité des paquets npm](https://dev.wix.com/docs/dev
 
 Déployer ensemble :
 
-Déployer ensemble :
-
 - `backend/http-functions.js`;
 - `backend/security-core.js`;
-- `backend/directory-pagination.js`.
+- `backend/directory-pagination.js`;
+- `backend/engagement-report.js`;
+- `backend/engagement-report.web.js`;
+- `backend/engagement-maintenance.js`;
+- `backend/jobs.config`.
+
+Si le site possède déjà un `jobs.config`, fusionner les tâches
+`purgeExpiredEngagementEvents` et `purgeExpiredApiRateLimits` au lieu de
+remplacer les tâches existantes. Elles s'exécutent séparément chaque jour : la
+première conserve environ 13 mois d'événements bruts, la seconde supprime les
+limiteurs expirés. Chacune des deux tâches traite au maximum 25 000 éléments
+par exécution quotidienne; `hasMore` rend le résultat non sain et doit
+déclencher une surveillance. Une modification de tâche planifiée ne prend effet
+qu'après publication du site.
 
 Les routes attendues sont :
 
@@ -143,6 +160,7 @@ Les routes attendues sont :
 | `GET` | `/_functions/offers` | Offres actives v2, `limit`, `cursor` |
 | `GET` | `/_functions/paymentPlans` | Catalogue public projeté |
 | `POST` | `/_functions/review` | Avis créé en attente de modération |
+| `POST` | `/_functions/engagementEvent` | Interaction ROI anonyme et idempotente |
 | `POST` | `/_functions/createPaymentIntent` | Checkout idempotent et upload des médias |
 | `POST` | `/_functions/confirmPayment` | Confirmation gratuite signée ou Stripe |
 | `POST` | `/_functions/stripeWebhook` | Finalisation Stripe signée |
@@ -151,6 +169,15 @@ Les routes `POST` doivent répondre `no-store`; les routes de lecture peuvent
 être mises en cache selon les en-têtes du code. Restreindre les origines CORS
 au domaine Web réel avant d'activer un futur paiement Web. Les applications
 natives ne doivent pas dépendre d'un contournement de permissions de collection.
+Les nouvelles tentatives clientes de mesure ROI doivent réutiliser le même
+`eventId`; la file locale est bornée à 100 événements et ne rejoue pas les
+erreurs 4xx.
+
+Le rapport ROI n'est pas une route HTTP publique. La méthode
+`getEngagementReport` du module Web exige `Permissions.Admin` et retourne
+uniquement des agrégats. Elle décrit des interactions dans l'application, pas
+des visiteurs uniques ni des ventes attribuées. Elle refuse une période qui
+dépasse 10 000 événements et exige alors une période plus courte.
 
 ## 6. Configurer Stripe
 
@@ -216,6 +243,8 @@ prédicats réellement utilisés :
 | `Partenaires` | `isActive + isOfficial`; ordre stable par `_id` |
 | `OffresPartenaire` | `isActive`; ordre stable par `_id` |
 | `SousCategorie` | ordre stable par `_id` |
+| `EngagementEvents` | `professionalId + _createdDate`; `_createdDate` pour la purge; `_id` unique pour l'idempotence |
+| `ApiRateLimits` | `expiresAt` (texte ISO UTC canonique) pour la purge quotidienne; `_id` unique |
 
 Tant que les anciens champs `sousCategorie`, `sousCatgorie`,
 `professionnelId` ou `image` contiennent encore des associations, ajouter les
@@ -250,8 +279,8 @@ Ne pas promouvoir si un point échoue :
 - cinq routes v2 testées sur plusieurs pages avec leurs filtres, index Wix et
   curseurs opaques;
 - secrets présents, anciens secrets révoqués;
-- suite Flutter complète et 45 tests backend réussis, ou résultats ultérieurs
-  équivalents consignés pour la version candidate;
+- 132 tests Flutter et 72 tests backend réussis au 23 septembre 2026, ou
+  résultats ultérieurs équivalents consignés pour la version candidate;
 - `flutter analyze` sans anomalie;
 - builds CI Web, Android et iOS réellement verts;
 - inscriptions gratuite et payante inactives et `pending_review` jusqu'à
@@ -260,10 +289,14 @@ Ne pas promouvoir si un point échoue :
 - aucune donnée Base64 persistée;
 - paiement test, webhook, rejeu idempotent et reprise réseau validés;
 - journaux sans données personnelles ni secret;
+- événement ROI rejouable sans doublon, données interdites rejetées et rapport
+  inaccessible à un visiteur ou membre ordinaire;
+- purge de rétention testée sur une copie de données et tâche Wix publiée;
 - sauvegarde et procédure de retour arrière testées.
 
-La couverture Flutter locale de 26,0 % reste une limite acceptée
-temporairement, pas un critère suffisant de mise en production.
+La dernière couverture Flutter mesurée avant ROI v1 (29,6 % le 18 septembre
+2026) reste une limite acceptée temporairement, pas un critère suffisant de
+mise en production. Elle doit être recalculée pour toute version candidate.
 
 ## 10. Promotion et surveillance
 

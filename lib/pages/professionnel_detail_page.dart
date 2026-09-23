@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -22,8 +24,23 @@ import '../utils.dart';
 
 class ProfessionnelDetailPage extends StatefulWidget {
   final Professionnel professionnel;
+  final String sourcePlacement;
+  final FirebaseAnalyticsService? analyticsService;
+  final DataService? dataService;
+  final Future<bool> Function(String phoneNumber)? phoneLauncher;
+  final Future<bool> Function(String address)? mapsLauncher;
+  final Future<bool> Function(Uri uri)? websiteLauncher;
 
-  const ProfessionnelDetailPage({super.key, required this.professionnel});
+  const ProfessionnelDetailPage({
+    super.key,
+    required this.professionnel,
+    this.sourcePlacement = 'detail',
+    this.analyticsService,
+    this.dataService,
+    this.phoneLauncher,
+    this.mapsLauncher,
+    this.websiteLauncher,
+  });
 
   @override
   State<ProfessionnelDetailPage> createState() =>
@@ -32,7 +49,8 @@ class ProfessionnelDetailPage extends StatefulWidget {
 
 class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
   final LocalizationService _localizationService = LocalizationService();
-  final FirebaseAnalyticsService _analytics = FirebaseAnalyticsService();
+  late final FirebaseAnalyticsService _analytics;
+  late final DataService _dataService;
   List<Review> _reviews = [];
   bool _isLoadingReviews = true;
   String? _reviewsError;
@@ -44,22 +62,34 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
   @override
   void initState() {
     super.initState();
+    _analytics = widget.analyticsService ?? FirebaseAnalyticsService();
+    _dataService = widget.dataService ?? DataService();
     _loadReviews();
     _preloadGalleryImages();
     _loadFavoriteStatus();
-    _trackProfessionalView();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _trackProfessionalView();
+    });
   }
 
   // Tracker la vue du professionnel
-  void _trackProfessionalView() async {
-    await _analytics.trackProfessionalView(
-      professionalId: widget.professionnel.id,
-      professionalName: widget.professionnel.title,
-      category: widget.professionnel.sousCategorie,
-      city: widget.professionnel.ville,
-      isSponsor: widget.professionnel.sponsor,
+  void _trackProfessionalView() {
+    _runAnalytics(
+      () => _analytics.trackProfessionalView(
+        professionalId: widget.professionnel.id,
+        placement: widget.sourcePlacement,
+        locale: _localizationService.currentLanguage,
+      ),
     );
-    await _analytics.setCurrentScreen('professional_detail');
+    _runAnalytics(() => _analytics.setCurrentScreen('professional_detail'));
+  }
+
+  void _runAnalytics(Future<void> Function() event) {
+    try {
+      unawaited(event().catchError((Object _) {}));
+    } catch (_) {
+      // La télémétrie ne doit jamais affecter le parcours principal.
+    }
   }
 
   // Charger le statut favori depuis le stockage local
@@ -97,11 +127,11 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
         widget.professionnel.id,
       );
 
-      // Tracker l'action de favori
-      await _analytics.trackFavoriteAction(
-        professionalId: widget.professionnel.id,
-        professionalName: widget.professionnel.title,
-        isAdding: newFavoriteStatus,
+      _runAnalytics(
+        () => _analytics.trackFavoriteAction(
+          professionalId: widget.professionnel.id,
+          isAdding: newFavoriteStatus,
+        ),
       );
 
       if (mounted) {
@@ -171,8 +201,7 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
     });
 
     try {
-      final wixApi = DataService();
-      final reviews = await wixApi.fetchReviews(widget.professionnel.id);
+      final reviews = await _dataService.fetchReviews(widget.professionnel.id);
       if (mounted && loadGeneration == _reviewsLoadGeneration) {
         setState(() {
           _reviews = reviews;
@@ -484,6 +513,13 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                   CouponWidget(
                     professionnel: widget.professionnel,
                     isCompact: false,
+                    onCouponCopied: () => _runAnalytics(
+                      () => _analytics.trackCouponCopy(
+                        professionalId: widget.professionnel.id,
+                        placement: widget.sourcePlacement,
+                        locale: _localizationService.currentLanguage,
+                      ),
+                    ),
                   ),
 
                   // Galerie d'images avec gestion d'erreurs améliorée
@@ -712,19 +748,17 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
   // Boutons d'action principaux sous l'en-tête
   Future<void> _callProfessional() async {
     try {
-      await _analytics.trackPhoneCall(
-        professionalId: widget.professionnel.id,
-        professionalName: widget.professionnel.title,
-      );
-    } on Exception {
-      // La télémétrie ne doit jamais empêcher l’action principale.
-    }
-
-    try {
-      final launched = await SimplePhoneCall.call(
-        widget.professionnel.numroDeTlphone,
-      );
-      if (!launched && mounted) {
+      final launcher = widget.phoneLauncher ?? SimplePhoneCall.call;
+      final launched = await launcher(widget.professionnel.numroDeTlphone);
+      if (launched) {
+        _runAnalytics(
+          () => _analytics.trackPhoneCall(
+            professionalId: widget.professionnel.id,
+            placement: widget.sourcePlacement,
+            locale: _localizationService.currentLanguage,
+          ),
+        );
+      } else if (mounted) {
         _showPhoneCallError();
       }
     } on Exception {
@@ -796,17 +830,19 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
   // Ouvrir Google Maps avec l'adresse
   Future<void> _openMaps(String address) async {
     try {
-      // Tracker la navigation
-      await _analytics.trackMapNavigation(
-        professionalId: widget.professionnel.id,
-        professionalName: widget.professionnel.title,
-        address: address,
-      );
+      final launcher =
+          widget.mapsLauncher ?? MapsService.instance.openNativeMaps;
+      final success = await launcher(address);
 
-      final mapsService = MapsService.instance;
-      final success = await mapsService.openNativeMaps(address);
-
-      if (!success && mounted) {
+      if (success) {
+        _runAnalytics(
+          () => _analytics.trackMapNavigation(
+            professionalId: widget.professionnel.id,
+            placement: widget.sourcePlacement,
+            locale: _localizationService.currentLanguage,
+          ),
+        );
+      } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(_localizationService.tr('network_error')),
@@ -831,13 +867,6 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
   // Ouvrir le site web du professionnel
   Future<void> _openWebsite(String website) async {
     try {
-      // Tracker l'ouverture du site web
-      await _analytics.trackWebsiteClick(
-        professionalId: widget.professionnel.id,
-        professionalName: widget.professionnel.title,
-        website: website,
-      );
-
       // Formatter l'URL si elle ne commence pas par http/https
       String finalUrl = website;
       if (!website.startsWith('http://') && !website.startsWith('https://')) {
@@ -845,12 +874,22 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
       }
 
       final Uri url = Uri.parse(finalUrl);
+      final launched = widget.websiteLauncher != null
+          ? await widget.websiteLauncher!(url)
+          : await canLaunchUrl(url) &&
+                await launchUrl(url, mode: LaunchMode.externalApplication);
 
-      if (await canLaunchUrl(url)) {
-        await launchUrl(url, mode: LaunchMode.externalApplication);
-      } else {
+      if (!launched) {
         throw 'Impossible d\'ouvrir le site web';
       }
+
+      _runAnalytics(
+        () => _analytics.trackWebsiteClick(
+          professionalId: widget.professionnel.id,
+          placement: widget.sourcePlacement,
+          locale: _localizationService.currentLanguage,
+        ),
+      );
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -891,18 +930,20 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                 const SizedBox(height: 2),
                 // Si c'est un numéro de téléphone, on le rend cliquable
                 if (label == _localizationService.tr('phone'))
-                  ClickToCall(
-                    phoneNumber: value,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
+                  TextButton(
+                    onPressed: _callProfessional,
+                    style: TextButton.styleFrom(
+                      minimumSize: const Size(48, 48),
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
                     ),
-                    onCallInitiated: () async {
-                      await _analytics.trackPhoneCall(
-                        professionalId: widget.professionnel.id,
-                        professionalName: widget.professionnel.title,
-                      );
-                    },
+                    child: Text(
+                      SimplePhoneCall.format(value),
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
                   )
                 // Si c'est une adresse, on la rend cliquable pour ouvrir Maps
                 else if (label == _localizationService.tr('address'))

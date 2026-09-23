@@ -11,6 +11,7 @@ import '../services/localization_service.dart';
 import '../services/firebase_analytics_service.dart';
 import '../services/cache_manager_service.dart';
 import '../widgets/language_selector.dart';
+import '../widgets/engagement_visibility_tracker.dart';
 import '../widgets/home_discovery_hero.dart';
 import '../widgets/wix_partner_widgets.dart';
 import '../widgets/wix_offers_widgets.dart';
@@ -22,10 +23,18 @@ import 'professional_registration_page.dart';
 import '../utils.dart'; // Importer utils.dart pour getValidImageUrl
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, this.onExploreServices, this.onOpenFavorites});
+  const HomePage({
+    super.key,
+    this.onExploreServices,
+    this.onOpenFavorites,
+    this.analyticsService,
+    this.dataService,
+  });
 
   final VoidCallback? onExploreServices;
   final VoidCallback? onOpenFavorites;
+  final FirebaseAnalyticsService? analyticsService;
+  final DataService? dataService;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -35,8 +44,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final PageController _pageController = PageController();
   final PageController _partnersPageController = PageController();
   final LocalizationService _localizationService = LocalizationService();
-  final FirebaseAnalyticsService _analytics = FirebaseAnalyticsService();
-  final DataService _dataService = DataService();
+  late final FirebaseAnalyticsService _analytics;
+  late final DataService _dataService;
+  final Set<String> _recordedFeaturedImpressions = <String>{};
   List<Professionnel> _featured = [];
   List<WixPartner> _partners = [];
   List<WixOffer> _offers = [];
@@ -107,6 +117,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _analytics = widget.analyticsService ?? FirebaseAnalyticsService();
+    _dataService = widget.dataService ?? DataService();
     WidgetsBinding.instance.addObserver(this);
 
     // Chargement optimisé en séquence pour éviter la surcharge
@@ -219,7 +231,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _loadFeatured({bool forceRefresh = false}) async {
     try {
-      final dataService = DataService();
+      final dataService = _dataService;
       if (forceRefresh) {
         await dataService.forceSyncWithWix();
       }
@@ -341,7 +353,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         context,
         PageRouteBuilder(
           pageBuilder: (context, animation, secondaryAnimation) =>
-              ProfessionnelsPage(sousCategorie: sousCategorie),
+              ProfessionnelsPage(
+                sousCategorie: sousCategorie,
+                analyticsService: _analytics,
+                dataService: _dataService,
+              ),
           transitionsBuilder: (context, animation, secondaryAnimation, child) {
             const begin = Offset(1.0, 0.0);
             const end = Offset.zero;
@@ -426,8 +442,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   // Définir le nom de l'écran pour Analytics
-  void _setScreenName() async {
-    await _analytics.setCurrentScreen('home_page');
+  void _setScreenName() {
+    _runAnalytics(() => _analytics.setCurrentScreen('home_page'));
+  }
+
+  void _runAnalytics(Future<void> Function() event) {
+    try {
+      unawaited(event().catchError((Object _) {}));
+    } catch (_) {
+      // La télémétrie ne doit jamais affecter le parcours principal.
+    }
+  }
+
+  void _trackFeaturedImpression(Professionnel professionnel) {
+    final impressionKey = '${professionnel.id}|home_featured';
+    if (!_recordedFeaturedImpressions.add(impressionKey)) return;
+
+    _runAnalytics(
+      () => _analytics.trackProfessionalImpression(
+        professionalId: professionnel.id,
+        placement: 'home_featured',
+        locale: _localizationService.currentLanguage,
+      ),
+    );
   }
 
   Future<void> _loadPartners({bool forceRefresh = false}) async {
@@ -698,14 +735,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                       children: [
                                         InkWell(
                                           onTap: () async {
-                                            // Tracker le clic sur le sponsor
-                                            await _analytics.trackSponsorClick(
-                                              sponsorId: pro.id,
-                                              sponsorName: pro.title,
-                                              clickType: 'carousel',
-                                              sourceScreen: 'home_page',
+                                            _runAnalytics(
+                                              () =>
+                                                  _analytics.trackSponsorClick(
+                                                    sponsorId: pro.id,
+                                                    clickType: 'professional',
+                                                    sourceScreen:
+                                                        'home_featured',
+                                                    locale: _localizationService
+                                                        .currentLanguage,
+                                                  ),
                                             );
-                                            if (!context.mounted) return;
 
                                             await Navigator.push(
                                               context,
@@ -713,6 +753,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                                 builder: (_) =>
                                                     ProfessionnelDetailPage(
                                                       professionnel: pro,
+                                                      sourcePlacement:
+                                                          'home_featured',
+                                                      analyticsService:
+                                                          _analytics,
+                                                      dataService: _dataService,
                                                     ),
                                               ),
                                             );
@@ -1054,6 +1099,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                       ],
                                     ),
                                   ),
+                                ).trackEngagementVisibility(
+                                  key: ValueKey(
+                                    'home_featured_impression_${pro.id}',
+                                  ),
+                                  onQualifiedVisibility: () =>
+                                      _trackFeaturedImpression(pro),
                                 );
                               },
                             ),
