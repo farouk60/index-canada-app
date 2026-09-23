@@ -156,6 +156,14 @@ function logFailure(scope, error, correlationId) {
   }));
 }
 
+function logEngagementPersistenceRecovery(entry) {
+  console.warn(JSON.stringify(entry));
+}
+
+function engagementRecoveryErrorCode(error) {
+  return isDuplicateInsertError(error) ? "DUPLICATE_INSERT" : "INSERT_ERROR";
+}
+
 function jsonResponse(status, body, headers = PRIVATE_HEADERS) {
   const options = { headers: { ...headers }, body };
   if (status === 200) return ok(options);
@@ -427,6 +435,7 @@ async function persistCheckoutDraft(draft) {
 export async function persistEngagementEvent(record, {
   findExisting = (id) => findById(ENGAGEMENT_COLLECTION, id, { consistentRead: true }),
   insertRecord = (item) => wixData.insert(ENGAGEMENT_COLLECTION, item, DATA_OPTIONS),
+  logRecovered = logEngagementPersistenceRecovery,
 } = {}) {
   const existing = await findExisting(record._id);
   if (existing) {
@@ -446,7 +455,19 @@ export async function persistEngagementEvent(record, {
     } catch (_readError) {
       throw new PaymentFlowError("ENGAGEMENT_PERSISTENCE_UNCERTAIN", 503);
     }
-    if (raced?.contentHash === record.contentHash) return { duplicate: true };
+    if (raced?.contentHash === record.contentHash) {
+      try {
+        logRecovered({
+          event: "engagement_persistence_recovered",
+          recordId: record._id,
+          eventType: record.type,
+          errorCode: engagementRecoveryErrorCode(_insertError),
+        });
+      } catch (_loggingError) {
+        // L'observabilité ne doit jamais transformer une écriture récupérée en échec client.
+      }
+      return { duplicate: true };
+    }
     if (raced) throw new IdempotencyConflictError("ENGAGEMENT_EVENT_CONFLICT");
     throw new PaymentFlowError("ENGAGEMENT_PERSISTENCE_UNCERTAIN", 503);
   }

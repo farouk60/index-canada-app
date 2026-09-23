@@ -21,6 +21,7 @@ const {
   use_search_professionals,
   use_searchProfessionals,
 } = await import("../http-functions.js");
+const { buildEngagementEventRecord } = await import("../security-core.js");
 
 const PUBLIC_REQUEST = Object.freeze({
   ip: "203.0.113.25",
@@ -536,6 +537,122 @@ test("persistEngagementEvent relit après toute erreur d'insertion", async () =>
     (error) => error?.code === "ENGAGEMENT_PERSISTENCE_UNCERTAIN" && error?.status === 503,
   );
   assert.equal(reads, 2);
+});
+
+test("persistEngagementEvent journalise sans donnée sensible une insertion ambiguë récupérée", async () => {
+  const rawEventId = "00000000-0000-4000-8000-000000000123";
+  const email = "fixture@example.invalid";
+  const professionalId = "pro_fixture_001";
+  const record = buildEngagementEventRecord({
+    version: 1,
+    eventId: rawEventId,
+    type: "professional_view",
+    professionalId,
+    placement: "detail",
+    locale: "fr",
+  }, new Date("2030-01-01T00:00:00.000Z"));
+  const insertError = Object.assign(
+    new Error(`Wix write timeout after commit for ${email}`),
+    { code: "private-token-123" },
+  );
+  const recoveredLogs = [];
+  let reads = 0;
+
+  const result = await persistEngagementEvent(record, {
+    findExisting: async () => {
+      reads += 1;
+      return reads === 1 ? null : { ...record };
+    },
+    insertRecord: async () => {
+      throw insertError;
+    },
+    logRecovered: (entry) => recoveredLogs.push(entry),
+  });
+
+  assert.deepEqual(result, { duplicate: true });
+
+  assert.equal(reads, 2);
+  assert.deepEqual(recoveredLogs, [{
+    event: "engagement_persistence_recovered",
+    recordId: record._id,
+    eventType: record.type,
+    errorCode: "INSERT_ERROR",
+  }]);
+
+  const [logEntry] = recoveredLogs;
+  for (const forbiddenField of [
+    "record",
+    "contentHash",
+    "professionalId",
+    "eventId",
+    "email",
+    "message",
+  ]) {
+    assert.equal(Object.hasOwn(logEntry, forbiddenField), false);
+  }
+  const serializedLog = JSON.stringify(logEntry);
+  assert.equal(serializedLog.includes(rawEventId), false);
+  assert.equal(serializedLog.includes(email), false);
+  assert.equal(serializedLog.includes(professionalId), false);
+  assert.equal(serializedLog.includes(insertError.message), false);
+  assert.equal(serializedLog.includes(insertError.code), false);
+});
+
+test("persistEngagementEvent reste idempotent si le logger de récupération échoue", async () => {
+  const record = buildEngagementEventRecord({
+    version: 1,
+    eventId: "00000000-0000-4000-8000-000000000124",
+    type: "search",
+    placement: "directory",
+    resultsBucket: "0",
+    searchKind: "category",
+  }, new Date("2030-01-01T00:01:00.000Z"));
+  let reads = 0;
+
+  const result = await persistEngagementEvent(record, {
+    findExisting: async () => {
+      reads += 1;
+      return reads === 1 ? null : { ...record };
+    },
+    insertRecord: async () => {
+      throw Object.assign(new Error("already exists"), { code: "WDE0074" });
+    },
+    logRecovered: () => {
+      throw new Error("logging unavailable");
+    },
+  });
+
+  assert.deepEqual(result, { duplicate: true });
+  assert.equal(reads, 2);
+});
+
+test("persistEngagementEvent ne journalise pas le doublon normal", async () => {
+  const record = buildEngagementEventRecord({
+    version: 1,
+    eventId: "00000000-0000-4000-8000-000000000125",
+    type: "search",
+    placement: "directory",
+    resultsBucket: "1-5",
+    searchKind: "text",
+  }, new Date("2030-01-01T00:02:00.000Z"));
+  let insertCalled = false;
+  let recoveryLogCount = 0;
+
+  const result = await persistEngagementEvent(record, {
+    findExisting: async () => ({ ...record }),
+    insertRecord: async () => {
+      insertCalled = true;
+      return record;
+    },
+    logRecovered: () => {
+      recoveryLogCount += 1;
+    },
+  });
+
+  assert.deepEqual(result, { duplicate: true });
+
+  assert.equal(insertCalled, false);
+  assert.equal(recoveryLogCount, 0);
 });
 
 test("persistEngagementEvent retourne 503 si la relecture après erreur échoue", async () => {
