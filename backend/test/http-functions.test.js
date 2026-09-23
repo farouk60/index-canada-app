@@ -247,6 +247,53 @@ test("get_reviews accepte les alias historiques mais ne publie que les avis appr
   );
 });
 
+test("get_reviews accepte l'ancien professionalId dans request.path", async () => {
+  seed({
+    Professionnel: [{ _id: "pro_legacy", title: "Cabinet historique", isActive: true }],
+    Reviews: [{
+      _id: "review_legacy",
+      professionalId: "pro_legacy",
+      isApproved: true,
+      message: "Avis historique",
+    }],
+  });
+
+  const result = await get_reviews(request({}, { path: ["pro_legacy"] }));
+
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.reviews, [{
+    _id: "review_legacy",
+    message: "Avis historique",
+    professionalId: "pro_legacy",
+  }]);
+});
+
+test("get_reviews refuse les identifiants contradictoires ou un chemin ambigu", async () => {
+  seed({
+    Professionnel: [
+      { _id: "pro_query", title: "Cabinet actuel", isActive: true },
+      { _id: "pro_path", title: "Cabinet historique", isActive: true },
+    ],
+  });
+
+  const queryPathConflict = await get_reviews(request(
+    { professionalId: "pro_query" },
+    { path: ["pro_path"] },
+  ));
+  const queryAliasConflict = await get_reviews(request({
+    professionalId: "pro_query",
+    professionnelId: "pro_path",
+  }));
+  const multiSegmentPath = await get_reviews(request({}, {
+    path: ["pro_path", "segment-inattendu"],
+  }));
+
+  for (const result of [queryPathConflict, queryAliasConflict, multiSegmentPath]) {
+    assert.equal(result.status, 400);
+    assert.equal(result.body.code, "INVALID_SEARCH");
+  }
+});
+
 test("les routes v2 retournent 400 pour une taille ou un curseur de pagination invalide", async () => {
   const invalidLimit = await get_categories(request({ limit: "101" }));
   const invalidCursor = await get_categories(request({ cursor: "curseur-altéré!" }));

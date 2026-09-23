@@ -808,9 +808,19 @@ export async function get_reviews(request) {
   const correlationId = requestId();
   try {
     await consumeRateLimit(request, "directory", correlationId);
-    const professionalId = normalizeProfessionalIdFilter(
-      request?.query?.professionalId ?? request?.query?.professionnelId,
-    );
+    const legacyPath = request?.path;
+    if (Array.isArray(legacyPath) && legacyPath.length > 1) {
+      throw new InputError("INVALID_SEARCH");
+    }
+    const candidates = [
+      request?.query?.professionalId,
+      request?.query?.professionnelId,
+      Array.isArray(legacyPath) ? legacyPath[0] : undefined,
+    ].filter((candidate) => candidate !== undefined && candidate !== null);
+    if (candidates.length > 1 && candidates.some((candidate) => candidate !== candidates[0])) {
+      throw new InputError("INVALID_SEARCH");
+    }
+    const professionalId = normalizeProfessionalIdFilter(candidates[0]);
     const professional = await findById("Professionnel", professionalId, { consistentRead: true });
     if (!professional || professional.isActive !== true) {
       return jsonResponse(404, {
