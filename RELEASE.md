@@ -87,6 +87,17 @@ Le dépôt permet de vérifier et de compiler l'application, mais il ne démontr
 
 Créer une clé d'envoi si aucune clé officielle n'existe déjà :
 
+Sous Windows, la commande suivante automatise la génération du keystore, de
+son mot de passe local et du certificat public PEM à transmettre à Google Play :
+
+```powershell
+.\tool\provision_android_upload_key.ps1
+```
+
+Le script refuse d'écraser une clé existante. Il conserve le keystore et
+`android/key.properties` dans les chemins déjà ignorés par Git, sans afficher
+le mot de passe dans la sortie. La commande manuelle équivalente est :
+
 ```powershell
 keytool -genkeypair -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
 ```
