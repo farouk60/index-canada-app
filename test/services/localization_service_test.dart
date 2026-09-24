@@ -28,4 +28,23 @@ void main() {
       expect(localization.galleryPreviewLabel(1), 'Open gallery, 1 image');
     },
   );
+
+  test(
+    'fournit une proposition d’accueil claire et prudente en FR/EN',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final localization = LocalizationService();
+      addTearDown(() => localization.setLanguage('fr'));
+
+      await localization.setLanguage('fr');
+      expect(localization.tr('home_eyebrow'), 'Le repère canadien');
+      expect(localization.tr('explore_services'), 'Trouver un service');
+      expect(localization.tr('register_here'), 'Créer mon profil');
+
+      await localization.setLanguage('en');
+      expect(localization.tr('home_eyebrow'), 'Your Canadian starting point');
+      expect(localization.tr('explore_services'), 'Find a service');
+      expect(localization.tr('register_here'), 'Create my profile');
+    },
+  );
 }

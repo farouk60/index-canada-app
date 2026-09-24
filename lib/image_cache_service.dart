@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 
@@ -15,26 +16,31 @@ class ImageCacheService {
   static ImageCacheService get instance => _instance;
 
   // Cache manager personnalisé pour les images
-  static final CacheManager _cacheManager = CacheManager(
-    Config(
-      'professional_images',
-      stalePeriod: const Duration(days: 7), // Cache pendant 7 jours
-      maxNrOfCacheObjects: 500, // Augmenté pour plus d'images
-      repo: JsonCacheInfoRepository(databaseName: 'professional_images'),
-    ),
-  );
+  static final CacheManager? _cacheManager = kIsWeb
+      ? null
+      : CacheManager(
+          Config(
+            'professional_images',
+            stalePeriod: const Duration(days: 7), // Cache pendant 7 jours
+            maxNrOfCacheObjects: 500, // Augmenté pour plus d'images
+            repo: JsonCacheInfoRepository(databaseName: 'professional_images'),
+          ),
+        );
 
   // Cache manager spécialisé pour les services (images plus petites)
-  static final CacheManager _servicesCacheManager = CacheManager(
-    Config(
-      'services_images',
-      stalePeriod: const Duration(
-        days: 30, // Cache très long pour les services (30 jours)
-      ),
-      maxNrOfCacheObjects: 1000, // Beaucoup plus d'images de services en cache
-      repo: JsonCacheInfoRepository(databaseName: 'services_images'),
-    ),
-  );
+  static final CacheManager? _servicesCacheManager = kIsWeb
+      ? null
+      : CacheManager(
+          Config(
+            'services_images',
+            stalePeriod: const Duration(
+              days: 30, // Cache très long pour les services (30 jours)
+            ),
+            maxNrOfCacheObjects:
+                1000, // Beaucoup plus d'images de services en cache
+            repo: JsonCacheInfoRepository(databaseName: 'services_images'),
+          ),
+        );
   // Précharger une image
   Future<void> preloadImage(String imageUrl, BuildContext context) async {
     if (!context.mounted) return;
@@ -42,8 +48,9 @@ class ImageCacheService {
     try {
       final validUrl = getValidImageUrl(imageUrl);
 
-      // Précharger avec le cache manager
-      await _cacheManager.getSingleFile(validUrl);
+      // Sur Web, le navigateur fournit déjà son cache HTTP. Le cache manager
+      // persistant dépend de path_provider, qui n'existe pas dans ce runtime.
+      await _cacheManager?.getSingleFile(validUrl);
 
       // Vérifier si le context est toujours valide
       if (!context.mounted) return;
@@ -79,8 +86,7 @@ class ImageCacheService {
     try {
       final validUrl = getValidImageUrl(imageUrl);
 
-      // Précharger avec le cache manager des services
-      await _servicesCacheManager.getSingleFile(validUrl);
+      await _servicesCacheManager?.getSingleFile(validUrl);
 
       // Vérifier si le context est toujours valide
       if (!context.mounted) return;
@@ -143,21 +149,23 @@ class ImageCacheService {
   }
 
   // Obtenir le cache manager pour les services (pour CachedNetworkImage)
-  CacheManager get servicesCacheManager => _servicesCacheManager;
+  CacheManager? get servicesCacheManager => _servicesCacheManager;
 
   // Vider le cache
   Future<void> clearCache() async {
-    await _cacheManager.emptyCache();
+    await _cacheManager?.emptyCache();
   }
 
   // Vider le cache des services
   Future<void> clearServicesCache() async {
-    await _servicesCacheManager.emptyCache();
+    await _servicesCacheManager?.emptyCache();
   }
 
   // Obtenir la taille du cache
   Future<int> getCacheSize() async {
-    final files = await _cacheManager.getFileStream('').length;
+    final manager = _cacheManager;
+    if (manager == null) return 0;
+    final files = await manager.getFileStream('').length;
     return files;
   }
 

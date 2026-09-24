@@ -24,9 +24,12 @@ class LocalizationService extends ChangeNotifier {
   final Map<String, Map<String, String>> _translations = {
     'fr': {
       // Page d'accueil
-      'welcome_title': 'Bienvenue sur Index',
-      'welcome_subtitle': 'Trouvez et recommandez des professionnels de confiance dans votre communauté.',
-      'explore_services': 'Explorer les services',
+      'home_eyebrow': 'Le repère canadien',
+      'welcome_title': 'Trouvez les services utiles pour vos prochaines étapes',
+      'welcome_subtitle': 'Explorez des professionnels et des ressources pour avancer dans votre installation au Canada.',
+      'home_browse_hint':
+          'Parcourez par service, par ville ou par professionnel.',
+      'explore_services': 'Trouver un service',
       'sponsored_professionals': 'Professionnels en vedette',
       'favorites': 'Favoris',
       'no_sponsored': 'Aucun professionnel sponsor pour le moment.',
@@ -210,7 +213,7 @@ class LocalizationService extends ChangeNotifier {
       'change_language': 'Changer de langue',
 
       // Partenaires et sponsors
-      'our_partners': 'Nos partenaires',
+      'our_partners': 'Partenaires à découvrir',
       'official_partner': 'Partenaire officiel',
       'partner': 'Partenaire',
       'exclusive_offers': 'Offres exclusives',
@@ -233,10 +236,10 @@ class LocalizationService extends ChangeNotifier {
       'valid_until': 'Valide jusqu\'au',
       'no_offers_available': 'Aucune offre disponible',
       'featured_professionals': 'Professionnels en vedette',
-      'are_you_professional': 'Vous êtes un professionnel?',
-      'register_here': 'Inscrivez-vous ici',
-      'grow_your_business':
-          'Rejoignez l’annuaire et développez votre clientèle locale.',
+      'professional_cta_eyebrow': 'Pour les entreprises',
+      'are_you_professional': 'Vous offrez des services?',
+      'register_here': 'Créer mon profil',
+      'grow_your_business': 'Créez votre profil professionnel et présentez vos services à la communauté.',
       'see_all': 'Voir tout',
       'featured': 'En vedette',
       'official': 'Officiel',
@@ -256,10 +259,11 @@ class LocalizationService extends ChangeNotifier {
     },
     'en': {
       // Home page
-      'welcome_title': 'Welcome to Index',
-      'welcome_subtitle':
-          'Find and recommend trusted professionals in your community.',
-      'explore_services': 'Explore Services',
+      'home_eyebrow': 'Your Canadian starting point',
+      'welcome_title': 'Find useful services for your next steps',
+      'welcome_subtitle': 'Explore professionals and resources for your settlement journey in Canada.',
+      'home_browse_hint': 'Browse by service, city, or professional.',
+      'explore_services': 'Find a service',
       'sponsored_professionals': 'Featured Professionals',
       'favorites': 'Favorites',
       'no_sponsored': 'No sponsored professionals at the moment.',
@@ -443,7 +447,7 @@ class LocalizationService extends ChangeNotifier {
       'change_language': 'Change Language',
 
       // Partenaires et sponsors
-      'our_partners': 'Our Partners',
+      'our_partners': 'Partners to discover',
       'official_partner': 'Official Partner',
       'partner': 'Partner',
       'exclusive_offers': 'Exclusive Offers',
@@ -466,10 +470,10 @@ class LocalizationService extends ChangeNotifier {
       'valid_until': 'Valid until',
       'no_offers_available': 'No offers available',
       'featured_professionals': 'Featured Professionals',
-      'are_you_professional': 'Are you a professional?',
-      'register_here': 'Register here',
-      'grow_your_business':
-          'Join the directory and grow your local customer base.',
+      'professional_cta_eyebrow': 'For businesses',
+      'are_you_professional': 'Do you offer services?',
+      'register_here': 'Create my profile',
+      'grow_your_business': 'Create a professional profile and present your services to the community.',
       'see_all': 'See all',
       'learn_more': 'Learn more',
       'information': 'Information',

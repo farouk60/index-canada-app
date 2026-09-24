@@ -10,20 +10,28 @@ import '../data_service.dart';
 import '../models.dart';
 import '../services/localization_service.dart';
 import '../services/stripe_native_payment_service.dart';
+import '../theme/app_theme.dart';
 import '../widgets/language_selector.dart';
 import 'native_payment_page.dart';
 import 'payment_success_page.dart';
+
+typedef PaymentPlansLoader = Future<PaymentPlanCatalog> Function();
+typedef ProfessionalCategoriesLoader = Future<List<SousCategorie>> Function();
 
 class ProfessionalRegistrationPage extends StatefulWidget {
   final String? categoryId;
   final String? categoryName;
   final String? categoryNameEn;
+  final PaymentPlansLoader? paymentPlansLoader;
+  final ProfessionalCategoriesLoader? categoriesLoader;
 
   const ProfessionalRegistrationPage({
     super.key,
     this.categoryId,
     this.categoryName,
     this.categoryNameEn,
+    this.paymentPlansLoader,
+    this.categoriesLoader,
   });
 
   @override
@@ -40,7 +48,7 @@ class _ProfessionalRegistrationPageState
   late final String _registrationSessionId =
       'temp_${DateTime.now().microsecondsSinceEpoch}';
 
-  // Clés de formulaire pour chaque étape
+  // Clés de formulaire pour chaque section du parcours.
   final _step1Key = GlobalKey<FormState>(); // Identité
   final _step2Key = GlobalKey<FormState>(); // Contact & Localisation
   final _step3Key = GlobalKey<FormState>(); // Médias & Social
@@ -114,12 +122,23 @@ class _ProfessionalRegistrationPageState
   }
 
   String _formatPlanPrice(PaymentPlanQuote plan, bool isEn) {
-    if (!plan.requiresPayment) return isEn ? 'Free' : 'Gratuit';
-    return NumberFormat.simpleCurrency(
+    final amount = NumberFormat.simpleCurrency(
       locale: isEn ? 'en_CA' : 'fr_CA',
       name: plan.currency.toUpperCase(),
       decimalDigits: 2,
     ).format(plan.amount);
+    final durationDays = plan.durationDays;
+    late final String period;
+    if (durationDays >= 360 && durationDays <= 366) {
+      period = isEn ? 'year' : 'an';
+    } else if (durationDays >= 28 && durationDays <= 31) {
+      period = isEn ? 'month' : 'mois';
+    } else if (durationDays == 7) {
+      period = isEn ? 'week' : 'semaine';
+    } else {
+      period = isEn ? '$durationDays days' : '$durationDays jours';
+    }
+    return '$amount / $period';
   }
 
   @override
@@ -141,7 +160,9 @@ class _ProfessionalRegistrationPageState
       });
     }
     try {
-      final catalog = await StripeNativePaymentService.fetchPaymentPlans();
+      final catalog =
+          await (widget.paymentPlansLoader?.call() ??
+              StripeNativePaymentService.fetchPaymentPlans());
       if (!mounted) return;
 
       final previousSelection = catalog.findPlan(_selectedPlanId ?? '');
@@ -191,8 +212,9 @@ class _ProfessionalRegistrationPageState
       });
     }
     try {
-      final DataService dataService = DataService();
-      final categories = await dataService.fetchSousCategories();
+      final categories =
+          await (widget.categoriesLoader?.call() ??
+              DataService().fetchSousCategories());
       if (mounted) {
         setState(() {
           _sousCategories = categories;
@@ -308,10 +330,11 @@ class _ProfessionalRegistrationPageState
 
   void _showSuccessMessage(String message) {
     if (mounted) {
+      final colors = Theme.of(context).colorScheme;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(message),
-          backgroundColor: Colors.green,
+          content: Text(message, style: TextStyle(color: colors.onTertiary)),
+          backgroundColor: colors.tertiary,
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -320,10 +343,11 @@ class _ProfessionalRegistrationPageState
 
   void _showErrorMessage(String message) {
     if (mounted) {
+      final colors = Theme.of(context).colorScheme;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(message),
-          backgroundColor: Colors.red.shade700,
+          content: Text(message, style: TextStyle(color: colors.onError)),
+          backgroundColor: colors.error,
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -359,6 +383,7 @@ class _ProfessionalRegistrationPageState
 
   void _showImageSourceChoice(bool isGallery) {
     final isEn = _localizationService.currentLanguage == 'en';
+    final colors = Theme.of(context).colorScheme;
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -369,7 +394,7 @@ class _ProfessionalRegistrationPageState
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.camera_alt, color: Colors.blue),
+              leading: Icon(Icons.camera_alt, color: colors.primary),
               title: Text(isEn ? 'Camera' : 'Appareil photo'),
               onTap: () {
                 Navigator.pop(context);
@@ -377,7 +402,7 @@ class _ProfessionalRegistrationPageState
               },
             ),
             ListTile(
-              leading: const Icon(Icons.photo_library, color: Colors.green),
+              leading: Icon(Icons.photo_library, color: colors.tertiary),
               title: Text(isEn ? 'Gallery' : 'Galerie'),
               onTap: () {
                 Navigator.pop(context);
@@ -439,7 +464,7 @@ class _ProfessionalRegistrationPageState
     final selectedCategory = _selectedCategory;
     if (_businessNameController.text.trim().isEmpty ||
         selectedCategory == null) {
-      setState(() => _currentStep = 0);
+      setState(() => _currentStep = 1);
       _showErrorMessage(
         _localizationService.currentLanguage == 'en'
             ? 'Select a valid business name and category.'
@@ -457,14 +482,14 @@ class _ProfessionalRegistrationPageState
       return;
     }
     if (!_isPlanSupported(selectedPlan)) {
-      setState(() => _currentStep = 3);
+      setState(() => _currentStep = 0);
       _showErrorMessage(
         _localizationService.tr('paid_payment_web_unavailable'),
       );
       return;
     }
     if (_galleryImages.length > selectedPlan.capabilities.galleryMax) {
-      setState(() => _currentStep = 2);
+      setState(() => _currentStep = 3);
       _showErrorMessage(
         isEn
             ? 'This plan allows up to ${selectedPlan.capabilities.galleryMax} gallery images.'
@@ -844,6 +869,8 @@ class _ProfessionalRegistrationPageState
 
   Widget _buildStep3Media(bool isEn) {
     final selectedPlan = _selectedPlan;
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
     final supportsProfileImage =
         selectedPlan?.capabilities.profileImage == true;
     final galleryMax = selectedPlan?.capabilities.galleryMax ?? 0;
@@ -918,56 +945,27 @@ class _ProfessionalRegistrationPageState
             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
           ),
           const SizedBox(height: 8),
-          _socialField(
-            _facebookController,
-            'Facebook',
-            Icons.facebook,
-            Colors.blue,
-          ),
+          _socialField(_facebookController, 'Facebook', Icons.facebook),
           const SizedBox(height: 8),
-          _socialField(
-            _instagramController,
-            'Instagram',
-            Icons.camera_alt,
-            Colors.purple,
-          ),
+          _socialField(_instagramController, 'Instagram', Icons.camera_alt),
           const SizedBox(height: 8),
-          _socialField(
-            _tiktokController,
-            'TikTok',
-            Icons.music_note,
-            Colors.black87,
-          ),
+          _socialField(_tiktokController, 'TikTok', Icons.music_note),
           const SizedBox(height: 8),
-          _socialField(
-            _youtubeController,
-            'YouTube',
-            Icons.play_circle,
-            Colors.red,
-          ),
+          _socialField(_youtubeController, 'YouTube', Icons.play_circle),
           const SizedBox(height: 8),
-          _socialField(
-            _whatsappController,
-            'WhatsApp',
-            Icons.phone,
-            Colors.green,
-          ),
+          _socialField(_whatsappController, 'WhatsApp', Icons.phone),
 
           const SizedBox(height: 24),
 
           // Gallery
           Row(
             children: [
-              Icon(Icons.star, color: Colors.amber, size: 20),
+              Icon(Icons.collections_outlined, color: colors.primary, size: 20),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   isEn ? 'Photo gallery' : 'Galerie photo',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                    color: Colors.indigo,
-                  ),
+                  style: theme.textTheme.titleMedium,
                 ),
               ),
             ],
@@ -1041,15 +1039,13 @@ class _ProfessionalRegistrationPageState
     TextEditingController controller,
     String label,
     IconData icon,
-    Color color,
   ) {
+    final colors = Theme.of(context).colorScheme;
     return TextFormField(
       controller: controller,
       decoration: InputDecoration(
         labelText: label,
-        prefixIcon: Icon(icon, color: color),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        prefixIcon: Icon(icon, color: colors.onSurfaceVariant),
       ),
     );
   }
@@ -1081,22 +1077,29 @@ class _ProfessionalRegistrationPageState
           ? '$planName, $price'
           : '$planName, $price. $unavailableMessage',
       child: Card(
-        color: isAvailable ? null : theme.colorScheme.surfaceContainerHighest,
-        elevation: isSelected ? 4 : 1,
+        color: !isAvailable
+            ? theme.colorScheme.surfaceContainerHighest
+            : isSelected
+            ? theme.colorScheme.primaryContainer.withValues(alpha: 0.32)
+            : theme.colorScheme.surface,
+        elevation: 0,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(AppRadii.card),
           side: BorderSide(
-            color: isSelected ? Colors.blue : Colors.transparent,
-            width: 2,
+            color: isSelected
+                ? theme.colorScheme.primary
+                : theme.colorScheme.outlineVariant,
+            width: isSelected ? 2 : 1,
           ),
         ),
-        margin: const EdgeInsets.only(bottom: 12),
+        margin: const EdgeInsets.only(bottom: AppSpacing.md),
         child: InkWell(
           onTap: isAvailable ? () => _selectPaymentPlan(plan) : null,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(AppRadii.card),
           child: Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(AppSpacing.md),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Icon(
                   isSelected
@@ -1105,39 +1108,90 @@ class _ProfessionalRegistrationPageState
                       ? Icons.radio_button_unchecked
                       : Icons.block,
                   color: isSelected
-                      ? Colors.blue
+                      ? theme.colorScheme.primary
                       : isAvailable
-                      ? Colors.grey
+                      ? theme.colorScheme.onSurfaceVariant
                       : theme.colorScheme.onSurfaceVariant,
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: AppSpacing.sm),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Expanded(
                             child: Text(
                               planName,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                color: isAvailable
+                                    ? theme.colorScheme.onSurface
+                                    : theme.colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          Text(
-                            price,
-                            style: TextStyle(
-                              color: !isAvailable
-                                  ? theme.colorScheme.onSurfaceVariant
-                                  : plan.requiresPayment
-                                  ? Colors.blue
-                                  : Colors.green,
-                              fontWeight: FontWeight.bold,
+                          if (isSelected) ...[
+                            const SizedBox(width: AppSpacing.xs),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: AppSpacing.sm,
+                                vertical: AppSpacing.xxs,
+                              ),
+                              decoration: BoxDecoration(
+                                color: theme.colorScheme.primary,
+                                borderRadius: BorderRadius.circular(
+                                  AppRadii.pill,
+                                ),
+                              ),
+                              child: Text(
+                                isEn ? 'Selected' : 'Sélectionné',
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: theme.colorScheme.onPrimary,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
                             ),
-                          ),
+                          ],
                         ],
+                      ),
+                      const SizedBox(height: AppSpacing.xs),
+                      Text(
+                        price,
+                        key: ValueKey('plan-price-${plan.id}'),
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          color: isAvailable
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: AppSpacing.sm),
+                      ...features.map(
+                        (feature) => Padding(
+                          padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons.check_circle_outline,
+                                size: 18,
+                                color: isAvailable
+                                    ? theme.colorScheme.tertiary
+                                    : theme.colorScheme.onSurfaceVariant,
+                              ),
+                              const SizedBox(width: AppSpacing.xs),
+                              Expanded(
+                                child: Text(
+                                  feature,
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                       if (!isAvailable) ...[
                         const SizedBox(height: 8),
@@ -1161,20 +1215,63 @@ class _ProfessionalRegistrationPageState
                           ],
                         ),
                       ],
-                      if (isSelected) ...[
-                        const Divider(),
-                        ...features.map(
-                          (feature) => Text(
-                            '• $feature',
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                        ),
-                      ],
                     ],
                   ),
                 ),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPublicationReviewNotice(bool isEn) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return Semantics(
+      container: true,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colors.tertiaryContainer,
+          borderRadius: BorderRadius.circular(AppRadii.control),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.verified_user_outlined,
+                color: colors.onTertiaryContainer,
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isEn
+                          ? 'Reviewed before publication'
+                          : 'Validation avant publication',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: colors.onTertiaryContainer,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.xxs),
+                    Text(
+                      isEn
+                          ? 'After submission, the Index Canada team reviews your profile before it becomes visible. Payment does not result in immediate publication.'
+                          : 'Après l’envoi, l’équipe Index Canada vérifie votre fiche avant sa mise en ligne. Le paiement n’entraîne pas une publication immédiate.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colors.onTertiaryContainer,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -1215,6 +1312,7 @@ class _ProfessionalRegistrationPageState
   }
 
   Widget _buildStep4Plan(bool isEn) {
+    final theme = Theme.of(context);
     final hasUnsupportedPlans = _paymentPlans.any(
       (plan) => !_isPlanSupported(plan),
     );
@@ -1224,10 +1322,23 @@ class _ProfessionalRegistrationPageState
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            isEn ? 'Select Your Plan' : 'Choisissez votre plan',
-            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+            isEn
+                ? 'Choose your annual plan'
+                : 'Choisissez votre forfait annuel',
+            style: theme.textTheme.titleLarge,
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            isEn
+                ? 'Compare every option and its full annual price before completing your profile.'
+                : 'Comparez toutes les options et leur prix annuel complet avant de remplir votre fiche.',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.md),
+          _buildPublicationReviewNotice(isEn),
+          const SizedBox(height: AppSpacing.lg),
           if (_isLoadingPlans)
             const Center(child: CircularProgressIndicator())
           else if (_plansUnavailable || _paymentPlans.isEmpty)
@@ -1269,7 +1380,10 @@ class _ProfessionalRegistrationPageState
                     ? 'Add a Coupon (Optional)'
                     : 'Ajouter un coupon (Optionnel)',
               ),
-              leading: const Icon(Icons.local_offer, color: Colors.orange),
+              leading: Icon(
+                Icons.local_offer_outlined,
+                color: theme.colorScheme.primary,
+              ),
               children: [
                 Padding(
                   padding: const EdgeInsets.all(8.0),
@@ -1347,29 +1461,29 @@ class _ProfessionalRegistrationPageState
         ? StepperType.vertical
         : StepperType.horizontal;
 
-    // Steps Definition
+    // Le choix tarifaire précède volontairement la saisie détaillée.
     final steps = [
       Step(
-        title: Text(isEn ? 'Identity' : 'Identité'),
-        content: _buildStep1Identity(isEn),
+        title: Text(isEn ? 'Plan' : 'Forfait'),
+        content: _buildStep4Plan(isEn),
         isActive: _currentStep >= 0,
         state: _currentStep > 0 ? StepState.complete : StepState.editing,
       ),
       Step(
-        title: Text(isEn ? 'Location' : 'Lieu'),
-        content: _buildStep2Location(isEn),
+        title: Text(isEn ? 'Identity' : 'Identité'),
+        content: _buildStep1Identity(isEn),
         isActive: _currentStep >= 1,
         state: _currentStep > 1 ? StepState.complete : StepState.editing,
       ),
       Step(
-        title: Text(isEn ? 'Media' : 'Média'),
-        content: _buildStep3Media(isEn),
+        title: Text(isEn ? 'Location' : 'Lieu'),
+        content: _buildStep2Location(isEn),
         isActive: _currentStep >= 2,
         state: _currentStep > 2 ? StepState.complete : StepState.editing,
       ),
       Step(
-        title: Text(isEn ? 'Plan' : 'Plan'),
-        content: _buildStep4Plan(isEn),
+        title: Text(isEn ? 'Media' : 'Médias'),
+        content: _buildStep3Media(isEn),
         isActive: _currentStep >= 3,
         state: _currentStep == 3 ? StepState.complete : StepState.editing,
       ),
@@ -1377,7 +1491,11 @@ class _ProfessionalRegistrationPageState
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(isEn ? 'Registration Wizard' : 'Inscription Pro'),
+        title: Text(
+          isEn
+              ? 'Create your professional profile'
+              : 'Créer votre profil professionnel',
+        ),
         actions: [LanguageSelector(onLanguageChanged: (_) => setState(() {}))],
       ),
       body: _isSubmitting
@@ -1412,23 +1530,23 @@ class _ProfessionalRegistrationPageState
                       // Validate current step
                       bool isValid = false;
                       switch (_currentStep) {
-                        case 0: // Identity
-                          isValid = _step1Key.currentState?.validate() ?? false;
-                          if (_selectedCategory == null) isValid = false;
-                          break;
-                        case 1: // Location
-                          isValid = _step2Key.currentState?.validate() ?? false;
-                          break;
-                        case 2: // Media
-                          isValid = true; // Optional mostly
-                          break;
-                        case 3: // Plan
+                        case 0: // Plan
                           final selectedPlan = _selectedPlan;
                           isValid =
                               !_isLoadingPlans &&
                               !_plansUnavailable &&
                               selectedPlan != null &&
                               _isPlanSupported(selectedPlan);
+                          break;
+                        case 1: // Identity
+                          isValid = _step1Key.currentState?.validate() ?? false;
+                          if (_selectedCategory == null) isValid = false;
+                          break;
+                        case 2: // Location
+                          isValid = _step2Key.currentState?.validate() ?? false;
+                          break;
+                        case 3: // Media
+                          isValid = true; // Optional mostly
                           break;
                       }
 
@@ -1464,55 +1582,34 @@ class _ProfessionalRegistrationPageState
                               selectedPlan != null &&
                               _isPlanSupported(selectedPlan));
                       return Padding(
-                        padding: const EdgeInsets.only(top: 24.0),
+                        padding: const EdgeInsets.only(top: AppSpacing.lg),
                         child: Row(
                           children: [
+                            if (_currentStep > 0) ...[
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: details.onStepCancel,
+                                  child: Text(isEn ? 'Back' : 'Retour'),
+                                ),
+                              ),
+                              const SizedBox(width: AppSpacing.sm),
+                            ],
                             Expanded(
-                              child: ElevatedButton(
+                              child: FilledButton(
                                 onPressed: canSubmit
                                     ? details.onStepContinue
                                     : null,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.blue.shade700,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 16,
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                ),
                                 child: Text(
                                   isLast
                                       ? (selectedPlan?.requiresPayment == true
                                             ? (isEn
-                                                  ? 'FINISH & PAY'
-                                                  : 'TERMINER & PAYER')
-                                            : (isEn ? 'FINISH' : 'TERMINER'))
-                                      : (isEn ? 'NEXT' : 'SUIVANT'),
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                                                  ? 'Submit and pay'
+                                                  : 'Envoyer et payer')
+                                            : (isEn ? 'Submit' : 'Envoyer'))
+                                      : (isEn ? 'Continue' : 'Continuer'),
                                 ),
                               ),
                             ),
-                            if (_currentStep > 0) ...[
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: OutlinedButton(
-                                  onPressed: details.onStepCancel,
-                                  style: OutlinedButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 16,
-                                    ),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                  ),
-                                  child: Text(isEn ? 'BACK' : 'RETOUR'),
-                                ),
-                              ),
-                            ],
                           ],
                         ),
                       );
