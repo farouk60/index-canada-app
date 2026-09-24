@@ -13,7 +13,7 @@
 	<key>provisioningProfiles</key>
 	<dict>
 		<key>ca.indexcanada.app</key>
-		<string>Index Canada – App Store (Release)</string>
+		<string>Index Canada – App Store (Release 2026-2027)</string>
 	</dict>
 	<key>stripSwiftSymbols</key>
 	<true/>
