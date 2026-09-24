@@ -9,7 +9,7 @@ Cette liste est un registre de preuves, pas une estimation commerciale. Une case
 - [x] Identifiant Android : `ca.indexcanada.app`.
 - [x] Bundle Identifier iOS : `ca.indexcanada.app`.
 - [x] Nom affiché Android/iOS : `Index Canada`.
-- [x] Version actuelle du projet : `1.0.3+21`.
+- [x] Version candidate actuelle du projet : `1.1.0+25` (supérieure à iOS `1.0.4 (24)` et Android `1.0.3 (21)`).
 - [x] Minification et réduction des ressources activées pour Android release.
 - [x] Le build Android release exige une signature, sauf dérogation CI explicite produisant un artefact non distribuable.
 - [x] La CI iOS compile sans signature et ne produit pas d'archive soumissible.
