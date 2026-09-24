@@ -10,7 +10,9 @@ import '../image_cache_service.dart';
 import '../services/localization_service.dart';
 import '../services/firebase_analytics_service.dart';
 import '../services/cache_manager_service.dart';
+import '../theme/app_theme.dart';
 import '../widgets/language_selector.dart';
+import '../widgets/engagement_visibility_tracker.dart';
 import '../widgets/home_discovery_hero.dart';
 import '../widgets/wix_partner_widgets.dart';
 import '../widgets/wix_offers_widgets.dart';
@@ -22,10 +24,18 @@ import 'professional_registration_page.dart';
 import '../utils.dart'; // Importer utils.dart pour getValidImageUrl
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, this.onExploreServices, this.onOpenFavorites});
+  const HomePage({
+    super.key,
+    this.onExploreServices,
+    this.onOpenFavorites,
+    this.analyticsService,
+    this.dataService,
+  });
 
   final VoidCallback? onExploreServices;
   final VoidCallback? onOpenFavorites;
+  final FirebaseAnalyticsService? analyticsService;
+  final DataService? dataService;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -33,10 +43,10 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final PageController _pageController = PageController();
-  final PageController _partnersPageController = PageController();
   final LocalizationService _localizationService = LocalizationService();
-  final FirebaseAnalyticsService _analytics = FirebaseAnalyticsService();
-  final DataService _dataService = DataService();
+  late final FirebaseAnalyticsService _analytics;
+  late final DataService _dataService;
+  final Set<String> _recordedFeaturedImpressions = <String>{};
   List<Professionnel> _featured = [];
   List<WixPartner> _partners = [];
   List<WixOffer> _offers = [];
@@ -80,33 +90,24 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
-  // Petit helper pour un pictogramme moderne (icône dans un cercle en dégradé)
-  Widget _sectionIcon(IconData icon, List<Color> gradientColors) {
+  Widget _sectionIcon(IconData icon, Color accent) {
     return Container(
       width: 36,
       height: 36,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        gradient: LinearGradient(
-          colors: gradientColors,
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: gradientColors.first.withValues(alpha: 0.25),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
+        color: accent.withValues(alpha: 0.12),
+        border: Border.all(color: accent.withValues(alpha: 0.22)),
       ),
-      child: Icon(icon, color: Colors.white, size: 20),
+      child: Icon(icon, color: accent, size: 20),
     );
   }
 
   @override
   void initState() {
     super.initState();
+    _analytics = widget.analyticsService ?? FirebaseAnalyticsService();
+    _dataService = widget.dataService ?? DataService();
     WidgetsBinding.instance.addObserver(this);
 
     // Chargement optimisé en séquence pour éviter la surcharge
@@ -202,9 +203,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
 
-    // Disposer les contrôleurs
     _pageController.dispose();
-    _partnersPageController.dispose();
 
     super.dispose();
   }
@@ -219,7 +218,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Future<void> _loadFeatured({bool forceRefresh = false}) async {
     try {
-      final dataService = DataService();
+      final dataService = _dataService;
       if (forceRefresh) {
         await dataService.forceSyncWithWix();
       }
@@ -341,7 +340,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         context,
         PageRouteBuilder(
           pageBuilder: (context, animation, secondaryAnimation) =>
-              ProfessionnelsPage(sousCategorie: sousCategorie),
+              ProfessionnelsPage(
+                sousCategorie: sousCategorie,
+                analyticsService: _analytics,
+                dataService: _dataService,
+              ),
           transitionsBuilder: (context, animation, secondaryAnimation, child) {
             const begin = Offset(1.0, 0.0);
             const end = Offset.zero;
@@ -426,8 +429,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   // Définir le nom de l'écran pour Analytics
-  void _setScreenName() async {
-    await _analytics.setCurrentScreen('home_page');
+  void _setScreenName() {
+    _runAnalytics(() => _analytics.setCurrentScreen('home_page'));
+  }
+
+  void _runAnalytics(Future<void> Function() event) {
+    try {
+      unawaited(event().catchError((Object _) {}));
+    } catch (_) {
+      // La télémétrie ne doit jamais affecter le parcours principal.
+    }
+  }
+
+  void _trackFeaturedImpression(Professionnel professionnel) {
+    final impressionKey = '${professionnel.id}|home_featured';
+    if (!_recordedFeaturedImpressions.add(impressionKey)) return;
+
+    _runAnalytics(
+      () => _analytics.trackProfessionalImpression(
+        professionalId: professionnel.id,
+        placement: 'home_featured',
+        locale: _localizationService.currentLanguage,
+      ),
+    );
   }
 
   Future<void> _loadPartners({bool forceRefresh = false}) async {
@@ -469,7 +493,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           // Titre de la section
           Row(
             children: [
-              _sectionIcon(Icons.groups_rounded, [Colors.indigo, Colors.blue]),
+              _sectionIcon(Icons.groups_rounded, AppTheme.trustTeal),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
@@ -506,35 +530,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     ),
                   ),
                 )
-              : SizedBox(
-                  height: 110, // Ajuster à la nouvelle taille
-                  child: PageView.builder(
-                    controller: _partnersPageController,
-                    itemCount: (_partners.length / 3)
-                        .ceil(), // Nombre de pages pour 3 items par page
-                    itemBuilder: (context, pageIndex) {
-                      // Calculer les indices pour cette page
-                      int startIndex = pageIndex * 3;
-                      int endIndex = (startIndex + 3)
-                          .clamp(0, _partners.length)
-                          .toInt();
-
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                          children: [
-                            for (int i = startIndex; i < endIndex; i++)
-                              SizedBox(
-                                width: 110, // Réduire légèrement pour éviter débordement
-                                height: 110, // Garder proportionnel
-                                child: WixPartnerCard(partner: _partners[i]),
-                              ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
+              : HomePartnerRail(
+                  children: [
+                    for (final partner in _partners)
+                      WixPartnerCard(partner: partner),
+                  ],
                 ),
         ],
       ),
@@ -551,10 +551,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           // Titre de la section avec emoji "cible"
           Row(
             children: [
-              _sectionIcon(Icons.local_offer_rounded, [
-                Colors.orange,
-                Colors.redAccent,
-              ]),
+              _sectionIcon(Icons.local_offer_rounded, AppTheme.mapleRed),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
@@ -593,8 +590,111 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
+  Future<void> _openProfessionalRegistration() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ProfessionalRegistrationPage()),
+    );
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Widget _buildProfessionalCta() {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final accent = Theme.of(context).brightness == Brightness.dark
+        ? colorScheme.tertiary
+        : AppTheme.trustTeal;
+
+    final message = Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: accent.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(AppRadii.compact),
+          ),
+          child: Icon(Icons.storefront_rounded, color: accent),
+        ),
+        const SizedBox(width: AppSpacing.sm),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _localizationService
+                    .tr('professional_cta_eyebrow')
+                    .toUpperCase(),
+                style: textTheme.labelSmall?.copyWith(
+                  color: accent,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.7,
+                ),
+              ),
+              const SizedBox(height: AppSpacing.xxs),
+              Text(
+                _localizationService.tr('are_you_professional'),
+                style: textTheme.titleMedium,
+              ),
+              const SizedBox(height: AppSpacing.xxs),
+              Text(
+                _localizationService.tr('grow_your_business'),
+                style: textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+    final action = OutlinedButton.icon(
+      onPressed: _openProfessionalRegistration,
+      icon: const Icon(Icons.arrow_forward_rounded),
+      label: Text(_localizationService.tr('register_here')),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: accent,
+        side: BorderSide(color: accent.withValues(alpha: 0.52)),
+      ),
+    );
+
+    return Card(
+      key: const Key('home_professional_cta'),
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            if (constraints.maxWidth < 620) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  message,
+                  const SizedBox(height: AppSpacing.md),
+                  action,
+                ],
+              );
+            }
+
+            return Row(
+              children: [
+                Expanded(child: message),
+                const SizedBox(width: AppSpacing.lg),
+                action,
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Index Canada'),
@@ -661,12 +761,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     children: [
                       Align(
                         alignment: Alignment.centerLeft,
-                        child: Text(
-                          _localizationService.tr('sponsored_professionals'),
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
+                        child: Row(
+                          children: [
+                            _sectionIcon(
+                              Icons.workspace_premium_rounded,
+                              AppTheme.mapleRed,
+                            ),
+                            const SizedBox(width: AppSpacing.sm),
+                            Expanded(
+                              child: Text(
+                                _localizationService.tr(
+                                  'sponsored_professionals',
+                                ),
+                                style: Theme.of(context).textTheme.titleLarge,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                       const SizedBox(height: 16),
@@ -693,19 +803,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                     horizontal: 8,
                                   ),
                                   child: Card(
-                                    elevation: 6,
+                                    elevation: 0,
                                     child: Stack(
                                       children: [
                                         InkWell(
                                           onTap: () async {
-                                            // Tracker le clic sur le sponsor
-                                            await _analytics.trackSponsorClick(
-                                              sponsorId: pro.id,
-                                              sponsorName: pro.title,
-                                              clickType: 'carousel',
-                                              sourceScreen: 'home_page',
+                                            _runAnalytics(
+                                              () =>
+                                                  _analytics.trackSponsorClick(
+                                                    sponsorId: pro.id,
+                                                    clickType: 'professional',
+                                                    sourceScreen:
+                                                        'home_featured',
+                                                    locale: _localizationService
+                                                        .currentLanguage,
+                                                  ),
                                             );
-                                            if (!context.mounted) return;
 
                                             await Navigator.push(
                                               context,
@@ -713,6 +826,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                                 builder: (_) =>
                                                     ProfessionnelDetailPage(
                                                       professionnel: pro,
+                                                      sourcePlacement:
+                                                          'home_featured',
+                                                      analyticsService:
+                                                          _analytics,
+                                                      dataService: _dataService,
                                                     ),
                                               ),
                                             );
@@ -727,23 +845,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                               children: [
                                                 CircleAvatar(
                                                   radius: 40,
-                                                  backgroundColor:
-                                                      Colors.grey[200],
+                                                  backgroundColor: colorScheme
+                                                      .surfaceContainerHighest,
                                                   child: pro.image.isNotEmpty
                                                       ? ClipRRect(
                                                           borderRadius:
                                                               BorderRadius.circular(
                                                                 40,
                                                               ),
-                                                          child: ImageCacheService()
-                                                              .buildOptimizedImage(
-                                                                imageUrl:
-                                                                    pro.image,
-                                                                width: 80,
-                                                                height: 80,
-                                                                fit: BoxFit
-                                                                    .cover,
-                                                                placeholder: const SizedBox(
+                                                          child: ImageCacheService().buildOptimizedImage(
+                                                            imageUrl: pro.image,
+                                                            width: 80,
+                                                            height: 80,
+                                                            fit: BoxFit.cover,
+                                                            placeholder:
+                                                                const SizedBox(
                                                                   width: 80,
                                                                   height: 80,
                                                                   child: Center(
@@ -753,20 +869,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                                                     ),
                                                                   ),
                                                                 ),
-                                                                errorWidget:
-                                                                    const Icon(
-                                                                      Icons
-                                                                          .person,
-                                                                      size: 40,
-                                                                      color: Colors
-                                                                          .grey,
-                                                                    ),
-                                                              ),
+                                                            errorWidget: Icon(
+                                                              Icons.person,
+                                                              size: 40,
+                                                              color: colorScheme
+                                                                  .onSurfaceVariant,
+                                                            ),
+                                                          ),
                                                         )
-                                                      : const Icon(
+                                                      : Icon(
                                                           Icons.person,
                                                           size: 40,
-                                                          color: Colors.grey,
+                                                          color: colorScheme
+                                                              .onSurfaceVariant,
                                                         ),
                                                 ),
                                                 const SizedBox(width: 16),
@@ -808,36 +923,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                                                 vertical: 6,
                                                               ),
                                                           decoration: BoxDecoration(
-                                                            gradient: LinearGradient(
-                                                              colors: [
-                                                                Colors.teal,
-                                                                Colors.cyan,
-                                                              ],
-                                                              begin: Alignment
-                                                                  .topLeft,
-                                                              end: Alignment
-                                                                  .bottomRight,
-                                                            ),
+                                                            color: AppTheme
+                                                                .trustTeal,
                                                             borderRadius:
                                                                 BorderRadius.circular(
                                                                   16,
                                                                 ),
-                                                            boxShadow: [
-                                                              BoxShadow(
-                                                                color: Colors
-                                                                    .teal
-                                                                    .withValues(
-                                                                      alpha:
-                                                                          0.25,
-                                                                    ),
-                                                                blurRadius: 6,
-                                                                offset:
-                                                                    const Offset(
-                                                                      0,
-                                                                      2,
-                                                                    ),
-                                                              ),
-                                                            ],
                                                           ),
                                                           child: Text(
                                                             _getSousCategorieTitle(
@@ -873,40 +964,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                                                 vertical: 4,
                                                               ),
                                                           decoration: BoxDecoration(
-                                                            gradient: LinearGradient(
-                                                              colors: [
-                                                                Colors
-                                                                    .purple
-                                                                    .shade400,
-                                                                Colors
-                                                                    .pink
-                                                                    .shade400,
-                                                              ],
-                                                              begin: Alignment
-                                                                  .topLeft,
-                                                              end: Alignment
-                                                                  .bottomRight,
-                                                            ),
+                                                            color: AppTheme
+                                                                .mapleRedDark,
                                                             borderRadius:
                                                                 BorderRadius.circular(
                                                                   8,
                                                                 ),
-                                                            boxShadow: [
-                                                              BoxShadow(
-                                                                color: Colors
-                                                                    .purple
-                                                                    .withValues(
-                                                                      alpha:
-                                                                          0.3,
-                                                                    ),
-                                                                blurRadius: 4,
-                                                                offset:
-                                                                    const Offset(
-                                                                      0,
-                                                                      2,
-                                                                    ),
-                                                              ),
-                                                            ],
                                                           ),
                                                           child: Row(
                                                             mainAxisSize:
@@ -962,16 +1025,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                               vertical: 4,
                                             ),
                                             decoration: BoxDecoration(
-                                              color: Colors.orange.shade400,
+                                              color: AppTheme.ink,
                                               borderRadius:
                                                   BorderRadius.circular(12),
-                                              boxShadow: [
-                                                BoxShadow(
-                                                  color: Colors.orange.shade200,
-                                                  blurRadius: 4,
-                                                  offset: const Offset(0, 2),
-                                                ),
-                                              ],
                                             ),
                                             child: Row(
                                               mainAxisSize: MainAxisSize.min,
@@ -983,11 +1039,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                                 ),
                                                 const SizedBox(width: 4),
                                                 Text(
-                                                  _localizationService
-                                                              .currentLanguage ==
-                                                          'fr'
-                                                      ? 'EN VEDETTE'
-                                                      : 'FEATURED',
+                                                  _localizationService.tr(
+                                                    'featured_badge',
+                                                  ),
                                                   style: const TextStyle(
                                                     color: Colors.white,
                                                     fontSize: 10,
@@ -1010,24 +1064,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                                     vertical: 4,
                                                   ),
                                               decoration: BoxDecoration(
-                                                gradient: LinearGradient(
-                                                  colors: [
-                                                    Colors.purple.shade600,
-                                                    Colors.pink.shade500,
-                                                  ],
-                                                  begin: Alignment.topLeft,
-                                                  end: Alignment.bottomRight,
-                                                ),
+                                                color: AppTheme.mapleRedDark,
                                                 borderRadius:
                                                     BorderRadius.circular(12),
-                                                boxShadow: [
-                                                  BoxShadow(
-                                                    color: Colors.purple
-                                                        .withValues(alpha: 0.4),
-                                                    blurRadius: 6,
-                                                    offset: const Offset(0, 2),
-                                                  ),
-                                                ],
                                               ),
                                               child: Row(
                                                 mainAxisSize: MainAxisSize.min,
@@ -1054,6 +1093,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                                       ],
                                     ),
                                   ),
+                                ).trackEngagementVisibility(
+                                  key: ValueKey(
+                                    'home_featured_impression_${pro.id}',
+                                  ),
+                                  onQualifiedVisibility: () =>
+                                      _trackFeaturedImpression(pro),
                                 );
                               },
                             ),
@@ -1116,102 +1161,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                           ],
                         ),
                       ),
-                const SizedBox(height: 16), // Réduit de 24 à 16
-                // Section offres exclusives
+                const SizedBox(height: AppSpacing.lg),
+                _buildProfessionalCta(),
+
+                const SizedBox(height: AppSpacing.sm),
                 _buildOffersSection(),
 
-                const SizedBox(height: 16), // Réduit de 24 à 16
-                // Section partenaires de confiance
+                const SizedBox(height: AppSpacing.sm),
                 _buildPartnersSection(),
-
-                const SizedBox(height: 16), // Réduit de 24 à 16
-                // Bouton pour les professionnels qui veulent s'inscrire
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.secondaryContainer,
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Theme.of(context).colorScheme.shadow
-                            .withValues(alpha: 0.12),
-                        blurRadius: 16,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    children: [
-                      Icon(
-                        Icons.business_center,
-                        size: 40,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSecondaryContainer,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _localizationService.tr('are_you_professional'),
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSecondaryContainer,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        _localizationService.tr('grow_your_business'),
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Theme.of(context)
-                              .colorScheme
-                              .onSecondaryContainer,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 12),
-                      ElevatedButton(
-                        onPressed: () async {
-                          await Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) =>
-                                  const ProfessionalRegistrationPage(),
-                            ),
-                          );
-                          // Forcer la mise à jour de la page d'accueil quand on revient
-                          if (mounted) {
-                            setState(() {});
-                          }
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Theme.of(context)
-                              .colorScheme
-                              .onSecondaryContainer,
-                          foregroundColor: Theme.of(context)
-                              .colorScheme
-                              .secondaryContainer,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 24,
-                            vertical: 12,
-                          ),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(25),
-                          ),
-                        ),
-                        child: Text(
-                          _localizationService.tr('register_here'),
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 24), // Réduit de 40 à 24
+                const SizedBox(height: AppSpacing.lg),
               ],
             ),
           ),

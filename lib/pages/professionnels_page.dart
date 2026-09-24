@@ -15,6 +15,7 @@ import '../services/localization_service.dart';
 import '../services/firebase_analytics_service.dart';
 import '../services/cache_manager_service.dart';
 import '../widgets/language_selector.dart';
+import '../widgets/engagement_visibility_tracker.dart';
 import 'professionnel_detail_page.dart';
 import '../theme/app_theme.dart';
 
@@ -23,8 +24,17 @@ enum SortOption { defaultOrder, alphabeticalAZ, alphabeticalZA, bestRated }
 
 class ProfessionnelsPage extends StatefulWidget {
   final SousCategorie sousCategorie;
+  final FirebaseAnalyticsService? analyticsService;
+  final DataService? dataService;
+  final Future<bool> Function(String address)? mapsLauncher;
 
-  const ProfessionnelsPage({super.key, required this.sousCategorie});
+  const ProfessionnelsPage({
+    super.key,
+    required this.sousCategorie,
+    this.analyticsService,
+    this.dataService,
+    this.mapsLauncher,
+  });
 
   @override
   State<ProfessionnelsPage> createState() => _ProfessionnelsPageState();
@@ -33,7 +43,9 @@ class ProfessionnelsPage extends StatefulWidget {
 class _ProfessionnelsPageState extends State<ProfessionnelsPage>
     with WidgetsBindingObserver {
   final LocalizationService _localizationService = LocalizationService();
-  final FirebaseAnalyticsService _analytics = FirebaseAnalyticsService();
+  late final FirebaseAnalyticsService _analytics;
+  late final DataService _dataService;
+  final Set<String> _recordedDirectoryImpressions = <String>{};
   Timer? _searchTrackingTimer; // Timer pour éviter trop de tracking
   String _searchQuery = '';
   String _citySearchQuery = '';
@@ -52,6 +64,8 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
   @override
   void initState() {
     super.initState();
+    _analytics = widget.analyticsService ?? FirebaseAnalyticsService();
+    _dataService = widget.dataService ?? DataService();
     WidgetsBinding.instance.addObserver(this);
     _loadProfessionnels(
       forceRefresh: true,
@@ -85,7 +99,7 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
         _errorKey = null;
       });
 
-      final wixApi = DataService();
+      final wixApi = _dataService;
 
       // Si c'est un refresh forcé, vider le cache ET forcer la sync Wix
       if (forceRefresh) {
@@ -226,12 +240,13 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
       _searchQuery = query;
       _applyFilters();
     });
+    final resultsCount = _filteredProfessionnels.length;
 
     // Tracker la recherche avec un délai pour éviter trop de calls
     _searchTrackingTimer?.cancel();
     if (query.isNotEmpty) {
       _searchTrackingTimer = Timer(const Duration(milliseconds: 500), () {
-        _trackSearch(query, 'professional');
+        _trackSearch('professional', resultsCount);
       });
     }
   }
@@ -242,20 +257,22 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
       _isSearchingByCity = city.isNotEmpty;
       _applyFilters();
     });
+    final resultsCount = _filteredProfessionnels.length;
 
     // Tracker la recherche par ville
     if (city.isNotEmpty) {
-      _trackSearch(city, 'city');
+      _trackSearch('city', resultsCount);
     }
   }
 
   // Tracker les recherches
-  void _trackSearch(String query, String type) async {
-    final resultsCount = _filteredProfessionnels.length;
-    await _analytics.trackSearch(
-      searchQuery: query,
-      searchType: type,
-      resultsCount: resultsCount,
+  void _trackSearch(String type, int resultsCount) {
+    _runAnalytics(
+      () => _analytics.trackSearch(
+        searchType: type,
+        resultsCount: resultsCount,
+        locale: _localizationService.currentLanguage,
+      ),
     );
   }
 
@@ -480,12 +497,21 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
   }
 
   // Ouvrir Google Maps avec l'adresse
-  Future<void> _openMaps(String address) async {
+  Future<void> _openMaps(Professionnel professionnel) async {
     try {
-      final mapsService = MapsService.instance;
-      final success = await mapsService.openNativeMaps(address);
+      final launcher =
+          widget.mapsLauncher ?? MapsService.instance.openNativeMaps;
+      final success = await launcher(professionnel.address);
 
-      if (!success && mounted) {
+      if (success) {
+        _runAnalytics(
+          () => _analytics.trackMapNavigation(
+            professionalId: professionnel.id,
+            placement: 'directory',
+            locale: _localizationService.currentLanguage,
+          ),
+        );
+      } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(_localizationService.tr('error_opening_maps')),
@@ -617,8 +643,119 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
   }
 
   // Définir le nom de l'écran pour Analytics
-  void _setScreenName() async {
-    await _analytics.setCurrentScreen('professionals_page');
+  void _setScreenName() {
+    _runAnalytics(() => _analytics.setCurrentScreen('professionals_page'));
+  }
+
+  void _runAnalytics(Future<void> Function() event) {
+    try {
+      unawaited(event().catchError((Object _) {}));
+    } catch (_) {
+      // La télémétrie ne doit jamais affecter le parcours principal.
+    }
+  }
+
+  void _trackDirectoryImpression(Professionnel professionnel) {
+    final impressionKey = '${professionnel.id}|directory';
+    if (!_recordedDirectoryImpressions.add(impressionKey)) return;
+
+    _runAnalytics(
+      () => _analytics.trackProfessionalImpression(
+        professionalId: professionnel.id,
+        placement: 'directory',
+        locale: _localizationService.currentLanguage,
+      ),
+    );
+  }
+
+  String _localized(String french, String english) {
+    return _localizationService.currentLanguage == 'en' ? english : french;
+  }
+
+  String _ratingSemanticsLabel(Professionnel professionnel) {
+    if (professionnel.reviewCount == 0) {
+      return _localized('Aucun avis client', 'No customer reviews');
+    }
+    return _localized(
+      'Note ${professionnel.averageRating.toStringAsFixed(1)} sur 5, '
+          '${professionnel.reviewCount} avis',
+      'Rating ${professionnel.averageRating.toStringAsFixed(1)} out of 5, '
+          '${professionnel.reviewCount} reviews',
+    );
+  }
+
+  Widget _buildCompactRating(Professionnel professionnel) {
+    if (professionnel.reviewCount == 0) return const SizedBox.shrink();
+
+    return Semantics(
+      key: ValueKey('directory_rating_${professionnel.id}'),
+      label: _ratingSemanticsLabel(professionnel),
+      readOnly: true,
+      child: ExcludeSemantics(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.star_rounded, color: Color(0xFFE09B16), size: 18),
+            const SizedBox(width: 4),
+            Text(
+              professionnel.averageRating.toStringAsFixed(1),
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              '(${_localizationService.reviewCountLabel(professionnel.reviewCount)})',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSponsoredBadge(Professionnel professionnel) {
+    final label = _localized('Sponsorisé', 'Sponsored');
+    final semanticsLabel = _localized(
+      'Placement sponsorisé. Ce badge ne signifie pas que le professionnel est vérifié.',
+      'Sponsored placement. This badge does not mean the professional is verified.',
+    );
+
+    return Semantics(
+      key: ValueKey('directory_sponsored_${professionnel.id}'),
+      label: semanticsLabel,
+      readOnly: true,
+      child: ExcludeSemantics(
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.sm,
+            vertical: AppSpacing.xs,
+          ),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.secondaryContainer,
+            borderRadius: BorderRadius.circular(AppRadii.pill),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.campaign_outlined,
+                color: Theme.of(context).colorScheme.onSecondaryContainer,
+                size: 16,
+              ),
+              const SizedBox(width: AppSpacing.xs),
+              Text(
+                label,
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSecondaryContainer,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -686,142 +823,137 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                 bottomRight: Radius.circular(20),
               ),
             ),
-            child: Column(
-              children: [
-                TextField(
-                  decoration: InputDecoration(
-                    labelText: _localizationService.tr('search_professional'),
-                    labelStyle: const TextStyle(color: Colors.white70),
-                    prefixIcon: const Icon(Icons.search, color: Colors.white70),
-                    suffixIcon: _searchQuery.isNotEmpty
-                        ? IconButton(
-                            icon: const Icon(
-                              Icons.clear,
-                              color: Colors.white70,
-                            ),
-                            onPressed: () => _filterProfessionnels(''),
-                          )
-                        : IconButton(
-                            icon: Icon(
-                              _isSearchingByCity
-                                  ? Icons.location_city
-                                  : Icons.location_on,
-                              color: _isSearchingByCity
-                                  ? AppTheme.brandTertiary
-                                  : Colors.white70,
-                            ),
-                            onPressed: _showCityFilterDialog,
-                            tooltip: _localizationService.tr('search_by_city'),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 920),
+                child: Column(
+                  children: [
+                    TextField(
+                      decoration: InputDecoration(
+                        labelText: _localizationService.tr(
+                          'search_professional',
+                        ),
+                        labelStyle: const TextStyle(color: Colors.white70),
+                        prefixIcon: const Icon(
+                          Icons.search,
+                          color: Colors.white70,
+                        ),
+                        suffixIcon: _searchQuery.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(
+                                  Icons.clear,
+                                  color: Colors.white70,
+                                ),
+                                onPressed: () => _filterProfessionnels(''),
+                              )
+                            : IconButton(
+                                icon: Icon(
+                                  _isSearchingByCity
+                                      ? Icons.location_city
+                                      : Icons.location_on,
+                                  color: _isSearchingByCity
+                                      ? AppTheme.brandTertiary
+                                      : Colors.white70,
+                                ),
+                                onPressed: _showCityFilterDialog,
+                                tooltip: _localizationService.tr(
+                                  'search_by_city',
+                                ),
+                              ),
+                        filled: true,
+                        fillColor: Colors.white.withValues(alpha: 0.12),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(25),
+                          borderSide: BorderSide.none,
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(25),
+                          borderSide: const BorderSide(
+                            color: Colors.white,
+                            width: 2,
                           ),
-                    filled: true,
-                    fillColor: Colors.white.withValues(alpha: 0.12),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(25),
-                      borderSide: BorderSide.none,
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(25),
-                      borderSide: const BorderSide(
-                        color: Colors.white,
-                        width: 2,
+                        ),
                       ),
+                      style: const TextStyle(color: Colors.white),
+                      onChanged: _filterProfessionnels,
                     ),
-                  ),
-                  style: const TextStyle(color: Colors.white),
-                  onChanged: _filterProfessionnels,
+                    // Indicateur de filtre par ville
+                    if (_isSearchingByCity)
+                      Padding(
+                        padding: const EdgeInsets.only(top: AppSpacing.sm),
+                        child: Semantics(
+                          button: true,
+                          label: _localized(
+                            'Filtre ville $_citySearchQuery. Retirer le filtre.',
+                            'City filter $_citySearchQuery. Remove filter.',
+                          ),
+                          child: InputChip(
+                            avatar: const Icon(Icons.location_on, size: 18),
+                            label: Text(
+                              '${_localizationService.tr('filter_by')} $_citySearchQuery',
+                            ),
+                            onDeleted: _clearAllFilters,
+                            deleteButtonTooltipMessage: _localized(
+                              'Retirer le filtre de ville',
+                              'Remove city filter',
+                            ),
+                            backgroundColor: Colors.white.withValues(
+                              alpha: 0.14,
+                            ),
+                            side: BorderSide(
+                              color: Colors.white.withValues(alpha: 0.72),
+                            ),
+                            labelStyle: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            iconTheme: const IconThemeData(color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    // Indicateur de tri actif
+                    if (_currentSortOption != SortOption.defaultOrder)
+                      Padding(
+                        padding: EdgeInsets.only(
+                          top: _isSearchingByCity
+                              ? AppSpacing.xs
+                              : AppSpacing.sm,
+                        ),
+                        child: Semantics(
+                          button: true,
+                          label: _localized(
+                            'Tri ${_getSortOptionText(_currentSortOption)}. Revenir au tri par defaut.',
+                            'Sort ${_getSortOptionText(_currentSortOption)}. Return to default sort.',
+                          ),
+                          child: InputChip(
+                            avatar: Icon(
+                              _getSortOptionIcon(_currentSortOption),
+                              size: 18,
+                            ),
+                            label: Text(_getSortOptionText(_currentSortOption)),
+                            onDeleted: () =>
+                                _changeSortOption(SortOption.defaultOrder),
+                            deleteButtonTooltipMessage: _localized(
+                              'Retirer ce tri',
+                              'Remove this sort',
+                            ),
+                            backgroundColor: Colors.white.withValues(
+                              alpha: 0.14,
+                            ),
+                            side: BorderSide(
+                              color: Colors.white.withValues(alpha: 0.72),
+                            ),
+                            labelStyle: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            iconTheme: const IconThemeData(color: Colors.white),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
-                // Indicateur de filtre par ville
-                if (_isSearchingByCity)
-                  Container(
-                    margin: const EdgeInsets.only(top: 12),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppTheme.brandTertiary.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: AppTheme.brandTertiary,
-                        width: 1,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.location_on,
-                          color: AppTheme.brandTertiary,
-                          size: 16,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          '${_localizationService.tr('filter_by')} $_citySearchQuery',
-                          style: const TextStyle(
-                            color: AppTheme.brandTertiary,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        GestureDetector(
-                          onTap: _clearAllFilters,
-                          child: const Icon(
-                            Icons.close,
-                            color: AppTheme.brandTertiary,
-                            size: 16,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                // Indicateur de tri actif
-                if (_currentSortOption != SortOption.defaultOrder)
-                  Container(
-                    margin: EdgeInsets.only(top: _isSearchingByCity ? 8 : 12),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppTheme.brandTertiary.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: AppTheme.brandTertiary,
-                        width: 1,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          _getSortOptionIcon(_currentSortOption),
-                          color: AppTheme.brandTertiary,
-                          size: 16,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          _getSortOptionText(_currentSortOption),
-                          style: const TextStyle(
-                            color: AppTheme.brandTertiary,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        GestureDetector(
-                          onTap: () =>
-                              _changeSortOption(SortOption.defaultOrder),
-                          child: const Icon(
-                            Icons.close,
-                            color: AppTheme.brandTertiary,
-                            size: 16,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-              ],
+              ),
             ),
           ),
           // Liste des professionnels
@@ -936,339 +1068,511 @@ class _ProfessionnelsPageState extends State<ProfessionnelsPage>
                       itemBuilder: (context, index) {
                         final prof = _filteredProfessionnels[index];
                         final galleryImages = prof.getAllGalleryImages();
-                        return AnimatedContainer(
-                          duration: Duration(milliseconds: 300 + (index * 50)),
-                          curve: Curves.easeOutBack,
-                          child: Hero(
-                            tag: 'prof_${prof.id}',
-                            child: Material(
-                              elevation: 4,
-                              borderRadius: BorderRadius.circular(12),
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(12),
-                                onTap: () async {
-                                  await Navigator.push(
-                                    context,
-                                    PageRouteBuilder(
-                                      pageBuilder:
-                                          (
-                                            context,
-                                            animation,
-                                            secondaryAnimation,
-                                          ) => ProfessionnelDetailPage(
-                                            professionnel: prof,
-                                          ),
-                                      transitionsBuilder:
-                                          (
-                                            context,
-                                            animation,
-                                            secondaryAnimation,
-                                            child,
-                                          ) {
-                                            const begin = Offset(1.0, 0.0);
-                                            const end = Offset.zero;
-                                            const curve = Curves.easeInOutQuart;
-
-                                            var tween = Tween(
-                                              begin: begin,
-                                              end: end,
-                                            ).chain(CurveTween(curve: curve));
-
-                                            return SlideTransition(
-                                              position: animation.drive(tween),
-                                              child: FadeTransition(
-                                                opacity: animation,
-                                                child: child,
-                                              ),
-                                            );
-                                          },
-                                      transitionDuration: const Duration(
-                                        milliseconds: 500,
-                                      ),
-                                    ),
-                                  );
-                                  if (!mounted) return;
-                                  await _loadFavorites();
-                                },
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(12),
-                                    gradient: LinearGradient(
-                                      colors: [
-                                        Colors.white,
-                                        Colors.grey.shade50,
-                                      ],
-                                      begin: Alignment.topLeft,
-                                      end: Alignment.bottomRight,
-                                    ),
+                        return Center(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 920),
+                            child:
+                                AnimatedContainer(
+                                  duration: Duration(
+                                    milliseconds:
+                                        220 + (index.clamp(0, 6) * 35),
                                   ),
-                                  padding: const EdgeInsets.all(16),
-                                  child: Row(
-                                    children: [
-                                      // Photo du professionnel
-                                      Container(
-                                        width: 60,
-                                        height: 60,
-                                        decoration: BoxDecoration(
-                                          borderRadius: BorderRadius.circular(
-                                            30,
-                                          ),
-                                          gradient: LinearGradient(
-                                            colors: [
-                                              AppTheme.brandPrimary,
-                                              AppTheme.brandSecondary,
-                                            ],
-                                          ),
+                                  curve: Curves.easeOutCubic,
+                                  child: Hero(
+                                    tag: 'prof_${prof.id}',
+                                    child: Material(
+                                      elevation: 0,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .surface,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(
+                                          AppRadii.card,
                                         ),
-                                        child: prof.image.isNotEmpty
-                                            ? ClipRRect(
-                                                borderRadius:
-                                                    BorderRadius.circular(30),
-                                                child: FastImageWidget(
-                                                  imageUrl: getValidImageUrl(
-                                                    prof.image,
-                                                  ),
-                                                  width: 60,
-                                                  height: 60,
-                                                  fit: BoxFit.cover,
-                                                  placeholder: Container(
-                                                    width: 60,
-                                                    height: 60,
-                                                    decoration: BoxDecoration(
-                                                      color: Colors.grey[300],
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                            30,
-                                                          ),
-                                                    ),
-                                                    child: const Icon(
-                                                      Icons.person,
-                                                      color: Colors.white,
-                                                      size: 30,
-                                                    ),
-                                                  ),
-                                                  errorWidget: const Icon(
-                                                    Icons.person,
-                                                    color: Colors.white,
-                                                    size: 30,
-                                                  ),
-                                                ),
-                                              )
-                                            : const Icon(
-                                                Icons.person,
-                                                color: Colors.white,
-                                                size: 30,
-                                              ),
+                                        side: BorderSide(
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .outlineVariant,
+                                        ),
                                       ),
-                                      const SizedBox(width: 16),
-                                      // Informations du professionnel
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Row(
-                                              children: [
-                                                Expanded(
-                                                  child: Text(
-                                                    prof.title,
-                                                    style: const TextStyle(
-                                                      fontSize: 16,
-                                                      fontWeight:
-                                                          FontWeight.bold,
-                                                    ),
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(
+                                          AppRadii.card,
+                                        ),
+                                        onTap: () async {
+                                          await Navigator.push(
+                                            context,
+                                            PageRouteBuilder(
+                                              pageBuilder:
+                                                  (
+                                                    context,
+                                                    animation,
+                                                    secondaryAnimation,
+                                                  ) => ProfessionnelDetailPage(
+                                                    professionnel: prof,
+                                                    sourcePlacement:
+                                                        'directory',
+                                                    analyticsService:
+                                                        _analytics,
+                                                    dataService: _dataService,
                                                   ),
-                                                ),
-                                                if (prof.sponsor)
-                                                  Container(
-                                                    padding:
-                                                        const EdgeInsets.symmetric(
-                                                          horizontal: 6,
-                                                          vertical: 2,
-                                                        ),
-                                                    decoration: BoxDecoration(
-                                                      gradient:
-                                                          const LinearGradient(
-                                                            colors: [
-                                                              AppTheme
-                                                                  .brandSecondary,
-                                                              AppTheme
-                                                                  .brandTertiary,
-                                                            ],
-                                                            begin: Alignment
-                                                                .topLeft,
-                                                            end: Alignment
-                                                                .bottomRight,
+                                              transitionsBuilder:
+                                                  (
+                                                    context,
+                                                    animation,
+                                                    secondaryAnimation,
+                                                    child,
+                                                  ) {
+                                                    const begin = Offset(
+                                                      1.0,
+                                                      0.0,
+                                                    );
+                                                    const end = Offset.zero;
+                                                    const curve =
+                                                        Curves.easeInOutQuart;
+
+                                                    var tween =
+                                                        Tween(
+                                                          begin: begin,
+                                                          end: end,
+                                                        ).chain(
+                                                          CurveTween(
+                                                            curve: curve,
                                                           ),
+                                                        );
+
+                                                    return SlideTransition(
+                                                      position: animation.drive(
+                                                        tween,
+                                                      ),
+                                                      child: FadeTransition(
+                                                        opacity: animation,
+                                                        child: child,
+                                                      ),
+                                                    );
+                                                  },
+                                              transitionDuration:
+                                                  const Duration(
+                                                    milliseconds: 500,
+                                                  ),
+                                            ),
+                                          );
+                                          if (!mounted) return;
+                                          await _loadFavorites();
+                                        },
+                                        child: Container(
+                                          decoration: BoxDecoration(
+                                            borderRadius: BorderRadius.circular(
+                                              AppRadii.card,
+                                            ),
+                                          ),
+                                          padding: const EdgeInsets.all(
+                                            AppSpacing.md,
+                                          ),
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.stretch,
+                                            children: [
+                                              Row(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  // Photo du professionnel
+                                                  Container(
+                                                    width: 72,
+                                                    height: 72,
+                                                    decoration: BoxDecoration(
                                                       borderRadius:
                                                           BorderRadius.circular(
-                                                            8,
+                                                            AppRadii.control,
                                                           ),
+                                                      gradient: LinearGradient(
+                                                        colors: [
+                                                          AppTheme.brandPrimary,
+                                                          AppTheme
+                                                              .brandSecondary,
+                                                        ],
+                                                      ),
                                                     ),
-                                                    child: Row(
-                                                      mainAxisSize:
-                                                          MainAxisSize.min,
+                                                    child: prof.image.isNotEmpty
+                                                        ? ClipRRect(
+                                                            borderRadius:
+                                                                BorderRadius.circular(
+                                                                  AppRadii
+                                                                      .control,
+                                                                ),
+                                                            child: FastImageWidget(
+                                                              imageUrl:
+                                                                  getValidImageUrl(
+                                                                    prof.image,
+                                                                  ),
+                                                              width: 72,
+                                                              height: 72,
+                                                              fit: BoxFit.cover,
+                                                              placeholder: Container(
+                                                                width: 72,
+                                                                height: 72,
+                                                                decoration: BoxDecoration(
+                                                                  color: Colors
+                                                                      .grey[300],
+                                                                  borderRadius:
+                                                                      BorderRadius.circular(
+                                                                        AppRadii
+                                                                            .control,
+                                                                      ),
+                                                                ),
+                                                                child: const Icon(
+                                                                  Icons.person,
+                                                                  color: Colors
+                                                                      .white,
+                                                                  size: 30,
+                                                                ),
+                                                              ),
+                                                              errorWidget:
+                                                                  const Icon(
+                                                                    Icons
+                                                                        .person,
+                                                                    color: Colors
+                                                                        .white,
+                                                                    size: 30,
+                                                                  ),
+                                                            ),
+                                                          )
+                                                        : const Icon(
+                                                            Icons.person,
+                                                            color: Colors.white,
+                                                            size: 30,
+                                                          ),
+                                                  ),
+                                                  const SizedBox(width: 16),
+                                                  // Informations du professionnel
+                                                  Expanded(
+                                                    child: Column(
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
                                                       children: [
-                                                        const Icon(
-                                                          Icons.star,
-                                                          color: Colors.white,
-                                                          size: 10,
-                                                        ),
-                                                        const SizedBox(
-                                                          width: 2,
-                                                        ),
                                                         Text(
-                                                          _localizationService
-                                                              .tr(
-                                                                'recommended_professional',
-                                                              ),
+                                                          prof.title,
                                                           style:
-                                                              const TextStyle(
-                                                                color: Colors
-                                                                    .white,
-                                                                fontSize: 8,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .bold,
+                                                              Theme.of(context)
+                                                                  .textTheme
+                                                                  .titleMedium,
+                                                          maxLines: 2,
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                        ),
+                                                        if (prof.sponsor) ...[
+                                                          const SizedBox(
+                                                            height:
+                                                                AppSpacing.xs,
+                                                          ),
+                                                          Align(
+                                                            alignment: Alignment
+                                                                .centerLeft,
+                                                            child:
+                                                                _buildSponsoredBadge(
+                                                                  prof,
+                                                                ),
+                                                          ),
+                                                        ],
+                                                        const SizedBox(
+                                                          height: AppSpacing.xs,
+                                                        ),
+                                                        Wrap(
+                                                          spacing:
+                                                              AppSpacing.sm,
+                                                          runSpacing:
+                                                              AppSpacing.xs,
+                                                          crossAxisAlignment:
+                                                              WrapCrossAlignment
+                                                                  .center,
+                                                          children: [
+                                                            Semantics(
+                                                              label: _localized(
+                                                                'Categorie ${widget.sousCategorie.getTitleInLanguage(_localizationService.currentLanguage)}',
+                                                                'Category ${widget.sousCategorie.getTitleInLanguage(_localizationService.currentLanguage)}',
                                                               ),
+                                                              child: ConstrainedBox(
+                                                                constraints:
+                                                                    const BoxConstraints(
+                                                                      maxWidth:
+                                                                          220,
+                                                                    ),
+                                                                child: Row(
+                                                                  children: [
+                                                                    Icon(
+                                                                      Icons
+                                                                          .work_outline,
+                                                                      size: 16,
+                                                                      color: Theme.of(
+                                                                        context,
+                                                                      ).colorScheme.onSurfaceVariant,
+                                                                    ),
+                                                                    const SizedBox(
+                                                                      width:
+                                                                          AppSpacing
+                                                                              .xs,
+                                                                    ),
+                                                                    Expanded(
+                                                                      child: Text(
+                                                                        widget
+                                                                            .sousCategorie
+                                                                            .getTitleInLanguage(
+                                                                              _localizationService.currentLanguage,
+                                                                            ),
+                                                                        maxLines:
+                                                                            1,
+                                                                        overflow:
+                                                                            TextOverflow.ellipsis,
+                                                                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                                                                          color: Theme.of(
+                                                                            context,
+                                                                          ).colorScheme.onSurfaceVariant,
+                                                                        ),
+                                                                      ),
+                                                                    ),
+                                                                  ],
+                                                                ),
+                                                              ),
+                                                            ),
+                                                            if (prof
+                                                                .ville
+                                                                .isNotEmpty)
+                                                              Semantics(
+                                                                label: _localized(
+                                                                  'Ville ${prof.ville}',
+                                                                  'City ${prof.ville}',
+                                                                ),
+                                                                child: Row(
+                                                                  mainAxisSize:
+                                                                      MainAxisSize
+                                                                          .min,
+                                                                  children: [
+                                                                    Icon(
+                                                                      Icons
+                                                                          .location_on_outlined,
+                                                                      size: 16,
+                                                                      color: Theme.of(
+                                                                        context,
+                                                                      ).colorScheme.onSurfaceVariant,
+                                                                    ),
+                                                                    const SizedBox(
+                                                                      width: AppSpacing
+                                                                          .xxs,
+                                                                    ),
+                                                                    Text(
+                                                                      prof.ville,
+                                                                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                                        color: Theme.of(
+                                                                          context,
+                                                                        ).colorScheme.onSurfaceVariant,
+                                                                      ),
+                                                                    ),
+                                                                  ],
+                                                                ),
+                                                              ),
+                                                            _buildCompactRating(
+                                                              prof,
+                                                            ),
+                                                          ],
+                                                        ),
+                                                        if (prof
+                                                            .subtitle
+                                                            .isNotEmpty) ...[
+                                                          const SizedBox(
+                                                            height:
+                                                                AppSpacing.xs,
+                                                          ),
+                                                          Text(
+                                                            prof.subtitle,
+                                                            style:
+                                                                Theme.of(
+                                                                      context,
+                                                                    )
+                                                                    .textTheme
+                                                                    .bodyMedium
+                                                                    ?.copyWith(
+                                                                      color: Theme.of(
+                                                                        context,
+                                                                      ).colorScheme.onSurfaceVariant,
+                                                                    ),
+                                                            maxLines: 2,
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
+                                                          ),
+                                                        ],
+                                                        if (prof
+                                                            .address
+                                                            .isNotEmpty) ...[
+                                                          const SizedBox(
+                                                            height:
+                                                                AppSpacing.xs,
+                                                          ),
+                                                          Semantics(
+                                                            button: true,
+                                                            label: _localized(
+                                                              'Ouvrir l itineraire vers ${prof.address}',
+                                                              'Open directions to ${prof.address}',
+                                                            ),
+                                                            child: TextButton.icon(
+                                                              key: ValueKey(
+                                                                'directory_address_${prof.id}',
+                                                              ),
+                                                              onPressed: () =>
+                                                                  _openMaps(
+                                                                    prof,
+                                                                  ),
+                                                              style: TextButton.styleFrom(
+                                                                alignment: Alignment
+                                                                    .centerLeft,
+                                                                minimumSize:
+                                                                    const Size(
+                                                                      48,
+                                                                      48,
+                                                                    ),
+                                                                padding: const EdgeInsets.symmetric(
+                                                                  horizontal:
+                                                                      AppSpacing
+                                                                          .xs,
+                                                                ),
+                                                              ),
+                                                              icon: const Icon(
+                                                                Icons
+                                                                    .directions_outlined,
+                                                                size: 18,
+                                                              ),
+                                                              label: Text(
+                                                                prof.address,
+                                                                maxLines: 2,
+                                                                overflow:
+                                                                    TextOverflow
+                                                                        .ellipsis,
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        ],
+                                                        CouponWidget(
+                                                          professionnel: prof,
+                                                          isCompact: true,
                                                         ),
                                                       ],
                                                     ),
                                                   ),
-                                              ],
-                                            ),
-                                            if (prof.subtitle.isNotEmpty) ...[
-                                              const SizedBox(height: 4),
-                                              Text(
-                                                prof.subtitle,
-                                                style: const TextStyle(
-                                                  fontSize: 14,
-                                                  color: Colors.black87,
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                              ),
-                                            ],
-                                            if (prof.reviewCount > 0) ...[
-                                              const SizedBox(height: 4),
-                                              Row(
-                                                children: [
-                                                  ...List.generate(5, (index) {
-                                                    return Icon(
-                                                      index <
-                                                              prof.averageRating
-                                                                  .round()
-                                                          ? Icons.star
-                                                          : Icons.star_border,
-                                                      color: Colors.amber,
-                                                      size: 16,
-                                                    );
-                                                  }),
-                                                  const SizedBox(width: 4),
-                                                  Text(
-                                                    '${prof.averageRating.toStringAsFixed(1)} (${_localizationService.reviewCountLabel(prof.reviewCount)})',
-                                                    style: TextStyle(
-                                                      fontSize: 12,
-                                                      color: Colors.grey[600],
-                                                      fontWeight:
-                                                          FontWeight.w500,
-                                                    ),
-                                                  ),
                                                 ],
                                               ),
-                                            ],
-                                            if (prof.address.isNotEmpty) ...[
-                                              const SizedBox(height: 4),
-                                              GestureDetector(
-                                                onTap: () =>
-                                                    _openMaps(prof.address),
-                                                child: Text(
-                                                  prof.address,
-                                                  style: const TextStyle(
-                                                    fontSize: 14,
-                                                    color:
-                                                        AppTheme.brandPrimary,
-                                                    decoration: TextDecoration
-                                                        .underline,
-                                                  ),
-                                                  maxLines: 2,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                ),
+                                              const SizedBox(
+                                                height: AppSpacing.xs,
                                               ),
-                                            ],
-                                            if (prof.ville.isNotEmpty) ...[
-                                              const SizedBox(height: 8),
                                               Row(
+                                                mainAxisAlignment:
+                                                    MainAxisAlignment.end,
                                                 children: [
-                                                  Icon(
-                                                    Icons.location_on,
-                                                    size: 16,
-                                                    color: Colors.grey[500],
-                                                  ),
-                                                  const SizedBox(width: 4),
-                                                  Expanded(
-                                                    child: Text(
-                                                      prof.ville,
-                                                      style: TextStyle(
-                                                        fontSize: 12,
-                                                        color: Colors.grey[500],
+                                                  // Indicateur de galerie si le professionnel a des images
+                                                  if (galleryImages
+                                                      .isNotEmpty) ...[
+                                                    const SizedBox(width: 8),
+                                                    Semantics(
+                                                      button: true,
+                                                      label: _localized(
+                                                        'Ouvrir la galerie de ${prof.title}',
+                                                        'Open ${prof.title} gallery',
                                                       ),
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
+                                                      child: GalleryPreviewWidget(
+                                                        images: galleryImages,
+                                                        size: 48,
+                                                        onTap: () {
+                                                          Navigator.push(
+                                                            context,
+                                                            MaterialPageRoute(
+                                                              builder: (_) => ProfessionnelDetailPage(
+                                                                professionnel:
+                                                                    prof,
+                                                                sourcePlacement:
+                                                                    'directory',
+                                                                analyticsService:
+                                                                    _analytics,
+                                                                dataService:
+                                                                    _dataService,
+                                                              ),
+                                                            ),
+                                                          );
+                                                        },
+                                                      ),
+                                                    ),
+                                                  ],
+
+                                                  // Bouton favoris
+                                                  Semantics(
+                                                    button: true,
+                                                    toggled: _favoriteIds
+                                                        .contains(prof.id),
+                                                    label: _localized(
+                                                      _favoriteIds.contains(
+                                                            prof.id,
+                                                          )
+                                                          ? 'Retirer ${prof.title} des favoris'
+                                                          : 'Ajouter ${prof.title} aux favoris',
+                                                      _favoriteIds.contains(
+                                                            prof.id,
+                                                          )
+                                                          ? 'Remove ${prof.title} from favorites'
+                                                          : 'Add ${prof.title} to favorites',
+                                                    ),
+                                                    child: IconButton(
+                                                      icon: Icon(
+                                                        _favoriteIds.contains(
+                                                              prof.id,
+                                                            )
+                                                            ? Icons.favorite
+                                                            : Icons
+                                                                  .favorite_border,
+                                                        color:
+                                                            _favoriteIds
+                                                                .contains(
+                                                                  prof.id,
+                                                                )
+                                                            ? Theme.of(context)
+                                                                  .colorScheme
+                                                                  .error
+                                                            : Theme.of(context)
+                                                                  .colorScheme
+                                                                  .onSurfaceVariant,
+                                                      ),
+                                                      onPressed: () =>
+                                                          _toggleFavorite(
+                                                            prof.id,
+                                                          ),
+                                                      tooltip: _localized(
+                                                        _favoriteIds.contains(
+                                                              prof.id,
+                                                            )
+                                                            ? 'Supprimer des favoris'
+                                                            : 'Ajouter aux favoris',
+                                                        _favoriteIds.contains(
+                                                              prof.id,
+                                                            )
+                                                            ? 'Remove from favorites'
+                                                            : 'Add to favorites',
+                                                      ),
                                                     ),
                                                   ),
                                                 ],
                                               ),
                                             ],
-                                            CouponWidget(
-                                              professionnel: prof,
-                                              isCompact: true,
-                                            ),
-                                          ],
+                                          ),
                                         ),
                                       ),
-
-                                      // Indicateur de galerie si le professionnel a des images
-                                      if (galleryImages.isNotEmpty) ...[
-                                        const SizedBox(width: 8),
-                                        GalleryPreviewWidget(
-                                          images: galleryImages,
-                                          size: 40,
-                                          onTap: () {
-                                            Navigator.push(
-                                              context,
-                                              MaterialPageRoute(
-                                                builder: (_) =>
-                                                    ProfessionnelDetailPage(
-                                                      professionnel: prof,
-                                                    ),
-                                              ),
-                                            );
-                                          },
-                                        ),
-                                      ],
-
-                                      // Bouton favoris
-                                      IconButton(
-                                        icon: Icon(
-                                          _favoriteIds.contains(prof.id)
-                                              ? Icons.favorite
-                                              : Icons.favorite_border,
-                                          color: _favoriteIds.contains(prof.id)
-                                              ? Colors.red
-                                              : Colors.grey,
-                                        ),
-                                        onPressed: () =>
-                                            _toggleFavorite(prof.id),
-                                        tooltip: _favoriteIds.contains(prof.id)
-                                            ? 'Supprimer des favoris'
-                                            : 'Ajouter aux favoris',
-                                      ),
-                                    ],
+                                    ),
                                   ),
+                                ).trackEngagementVisibility(
+                                  key: ValueKey(
+                                    'directory_impression_${prof.id}',
+                                  ),
+                                  onQualifiedVisibility: () =>
+                                      _trackDirectoryImpression(prof),
                                 ),
-                              ),
-                            ),
                           ),
                         );
                       },

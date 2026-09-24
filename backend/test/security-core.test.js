@@ -5,6 +5,7 @@ import {
   InputError,
   MEDIA_STORAGE_VERSION,
   assertCheckoutNotExpired,
+  buildEngagementEventRecord,
   buildMediaUploadPlan,
   buildPersistedCheckoutDraft,
   buildProfessionalId,
@@ -19,6 +20,7 @@ import {
   getPlan,
   isCategoryEnabled,
   isReviewPublic,
+  normalizeEngagementEvent,
   normalizeImageDataUrl,
   normalizeFeaturedFilter,
   normalizeProfessionalIdFilter,
@@ -566,6 +568,195 @@ test("la recherche borne la longueur et le nombre de résultats", () => {
     streetAddress: { formattedAddressLine: "100 rue Exemple" },
   }), "100 rue Exemple, Montréal Montréal 100 rue Exemple");
   assert.equal(directorySearchText({ _id: "category_1" }), "category_1");
+});
+
+test("un événement ROI v1 est normalisé sans donnée personnelle et reçoit un identifiant déterministe", () => {
+  const normalized = normalizeEngagementEvent({
+    version: 1,
+    eventId: "123e4567-e89b-42d3-a456-426614174000",
+    type: "contact",
+    professionalId: "pro_001",
+    placement: "detail",
+    channel: "phone",
+    locale: "fr",
+  });
+
+  assert.deepEqual(normalized, {
+    version: 1,
+    eventId: "123e4567-e89b-42d3-a456-426614174000",
+    type: "contact",
+    professionalId: "pro_001",
+    placement: "detail",
+    channel: "phone",
+    locale: "fr",
+  });
+
+  const receivedAt = new Date("2026-09-23T14:00:00.000Z");
+  const first = buildEngagementEventRecord(normalized, receivedAt);
+  const replay = buildEngagementEventRecord(normalized, receivedAt);
+
+  assert.match(first._id, /^eng_[a-f0-9]{32}$/u);
+  assert.match(first.contentHash, /^[a-f0-9]{64}$/u);
+  assert.equal(first.receivedAt.toISOString(), receivedAt.toISOString());
+  assert.equal(first.trustLevel, "client_reported_unverified");
+  assert.deepEqual(first, replay);
+  assert.equal(Object.hasOwn(first, "eventId"), false);
+  assert.equal(JSON.stringify(first).includes("owner@example.ca"), false);
+});
+
+test("un événement de recherche ROI exige uniquement des dimensions agrégées", () => {
+  assert.deepEqual(normalizeEngagementEvent({
+    version: 1,
+    eventId: "123e4567-e89b-42d3-a456-426614174001",
+    type: "search",
+    placement: "directory",
+    resultsBucket: "21+",
+    searchKind: "category",
+    locale: "en",
+  }), {
+    version: 1,
+    eventId: "123e4567-e89b-42d3-a456-426614174001",
+    type: "search",
+    placement: "directory",
+    resultsBucket: "21+",
+    searchKind: "category",
+    locale: "en",
+  });
+
+  expectInputError(() => normalizeEngagementEvent({
+    version: 1,
+    eventId: "123e4567-e89b-42d3-a456-426614174001",
+    type: "search",
+    placement: "directory",
+    searchKind: "text",
+  }), "INVALID_ENGAGEMENT_EVENT");
+  expectInputError(() => normalizeEngagementEvent({
+    version: 1,
+    eventId: "123e4567-e89b-42d3-a456-426614174001",
+    type: "search",
+    placement: "directory",
+    searchKind: "text",
+    resultsBucket: "1-5",
+    professionalId: "pro_001",
+  }), "INVALID_ENGAGEMENT_EVENT");
+  expectInputError(() => normalizeEngagementEvent({
+    version: 1,
+    eventId: "123e4567-e89b-42d3-a456-426614174001",
+    type: "search",
+    placement: "favorites",
+    searchKind: "text",
+    resultsBucket: "1-5",
+  }), "INVALID_ENGAGEMENT_EVENT");
+});
+
+test("le contrat ROI refuse les clés inconnues, les PII et les combinaisons incohérentes", () => {
+  const base = {
+    version: 1,
+    eventId: "123e4567-e89b-42d3-a456-426614174002",
+    type: "professional_view",
+    professionalId: "pro_001",
+  };
+  const rejected = [
+    base,
+    { ...base, email: "owner@example.ca" },
+    { ...base, query: "avocat immigration" },
+    { ...base, sessionId: "session_001" },
+    { ...base, trustLevel: "verified" },
+    { ...base, type: "category_view" },
+    { ...base, placement: "unknown" },
+    { ...base, locale: "es" },
+    { ...base, channel: "phone" },
+    { ...base, eventId: "event-not-a-uuid" },
+    { ...base, professionalId: "pro/001" },
+    { ...base, professionalId: " pro_001 " },
+    { ...base, categoryId: "legal-services" },
+    { ...base, type: undefined },
+  ];
+
+  for (const candidate of rejected) {
+    expectInputError(
+      () => normalizeEngagementEvent(candidate),
+      "INVALID_ENGAGEMENT_EVENT",
+    );
+  }
+
+  expectInputError(() => normalizeEngagementEvent({
+    ...base,
+    padding: "x".repeat(2500),
+  }), "INVALID_ENGAGEMENT_EVENT");
+  expectInputError(() => normalizeEngagementEvent({
+    ...base,
+    type: "contact",
+  }), "INVALID_ENGAGEMENT_EVENT");
+  expectInputError(() => normalizeEngagementEvent({
+    ...base,
+    type: "coupon_copy",
+    channel: "website",
+  }), "INVALID_ENGAGEMENT_EVENT");
+});
+
+test("le contrat ROI impose la matrice événement, placement et canal de contact", () => {
+  const event = (suffix, type, placement, extra = {}) => ({
+    version: 1,
+    eventId: `123e4567-e89b-42d3-a456-4266141740${suffix}`,
+    type,
+    professionalId: "pro_001",
+    placement,
+    ...extra,
+  });
+
+  const accepted = [
+    event("20", "professional_click", "home_featured"),
+    event("21", "professional_impression", "home_featured"),
+    event("22", "professional_impression", "directory"),
+    event("23", "professional_view", "detail"),
+    event("24", "professional_view", "home_featured"),
+    event("25", "professional_view", "directory"),
+    event("26", "contact", "detail", { channel: "phone" }),
+    event("27", "contact", "home_featured", { channel: "website" }),
+    event("28", "contact", "directory", { channel: "map" }),
+    event("29", "coupon_copy", "detail"),
+    event("30", "coupon_copy", "home_featured"),
+    event("31", "coupon_copy", "directory"),
+    {
+      version: 1,
+      eventId: "123e4567-e89b-42d3-a456-426614174032",
+      type: "search",
+      placement: "directory",
+      searchKind: "text",
+      resultsBucket: "1-5",
+    },
+  ];
+  for (const candidate of accepted) {
+    assert.equal(normalizeEngagementEvent(candidate).placement, candidate.placement);
+  }
+
+  const rejected = [
+    event("40", "professional_click", "directory"),
+    event("41", "professional_impression", "detail"),
+    event("42", "professional_impression", "favorites"),
+    event("43", "professional_view", "favorites"),
+    event("44", "contact", "registration", { channel: "phone" }),
+    event("45", "contact", "detail", { channel: "email" }),
+    event("46", "contact", "detail"),
+    event("47", "coupon_copy", "favorites"),
+    event("48", "coupon_copy", "detail", { channel: "website" }),
+    {
+      version: 1,
+      eventId: "123e4567-e89b-42d3-a456-426614174049",
+      type: "search",
+      placement: "detail",
+      searchKind: "city",
+      resultsBucket: "6-20",
+    },
+    event("50", "professional_view", "registration"),
+  ];
+  for (const candidate of rejected) {
+    expectInputError(
+      () => normalizeEngagementEvent(candidate),
+      "INVALID_ENGAGEMENT_EVENT",
+    );
+  }
 });
 
 test("les filtres publics featured, professionnel et catégorie sont stricts", () => {

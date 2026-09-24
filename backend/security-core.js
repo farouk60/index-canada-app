@@ -102,12 +102,14 @@ export const MAX_PROFILE_IMAGE_CHARS = 100_000;
 export const MAX_GALLERY_IMAGE_CHARS = 90_000;
 export const MAX_TOTAL_IMAGE_CHARS = 420_000;
 export const MAX_CHECKOUT_CHARS = 480_000;
+export const MAX_ENGAGEMENT_EVENT_BYTES = 2_048;
 export const MEDIA_STORAGE_VERSION = 1;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/u;
 const CATEGORY_PATTERN = /^[\p{L}\p{N}_-]{1,80}$/u;
 const TEMP_ID_PATTERN = /^temp_[A-Za-z0-9_-]{8,80}$/u;
 const WIX_ID_PATTERN = /^[A-Za-z0-9_-]{1,100}$/u;
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const PAYMENT_INTENT_PATTERN = /^pi_[A-Za-z0-9_]{10,80}$/u;
 const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/u;
 const WIX_IMAGE_URL_PATTERN = /^wix:image:\/\/v1\/[A-Za-z0-9][A-Za-z0-9._~-]{0,255}(?:\/[^#\s<>"']{1,512})?(?:#[A-Za-z0-9=&%._~-]{1,1024})?$/u;
@@ -116,6 +118,42 @@ const IMAGE_EXTENSION_BY_MIME = Object.freeze({
   "image/png": "png",
   "image/webp": "webp",
 });
+const ENGAGEMENT_EVENT_FIELDS = new Set([
+  "version",
+  "eventId",
+  "type",
+  "professionalId",
+  "placement",
+  "channel",
+  "resultsBucket",
+  "searchKind",
+  "locale",
+]);
+const ENGAGEMENT_EVENT_TYPES = new Set([
+  "search",
+  "professional_impression",
+  "professional_click",
+  "professional_view",
+  "contact",
+  "coupon_copy",
+]);
+const ENGAGEMENT_PLACEMENTS = new Set([
+  "directory",
+  "home_featured",
+  "detail",
+]);
+const ENGAGEMENT_PLACEMENTS_BY_TYPE = Object.freeze({
+  professional_click: new Set(["home_featured"]),
+  professional_impression: new Set(["home_featured", "directory"]),
+  professional_view: new Set(["detail", "home_featured", "directory"]),
+  contact: new Set(["detail", "home_featured", "directory"]),
+  coupon_copy: new Set(["detail", "home_featured", "directory"]),
+  search: new Set(["directory"]),
+});
+const ENGAGEMENT_CHANNELS = new Set(["phone", "website", "map"]);
+const ENGAGEMENT_RESULTS_BUCKETS = new Set(["0", "1-5", "6-20", "21+"]);
+const ENGAGEMENT_SEARCH_KINDS = new Set(["text", "city", "category"]);
+const ENGAGEMENT_LOCALES = new Set(["fr", "en"]);
 
 export class InputError extends Error {
   constructor(code = "INVALID_INPUT") {
@@ -301,6 +339,99 @@ export function projectPaymentPlans() {
 
 export function sha256(value) {
   return createHash("sha256").update(String(value), "utf8").digest("hex");
+}
+
+function engagementEnum(value, allowedValues) {
+  if (value === undefined) return "";
+  if (typeof value !== "string" || !allowedValues.has(value)) {
+    throw new InputError("INVALID_ENGAGEMENT_EVENT");
+  }
+  return value;
+}
+
+function engagementId(value, { required = false } = {}) {
+  if (value === undefined) {
+    if (required) throw new InputError("INVALID_ENGAGEMENT_EVENT");
+    return "";
+  }
+  if (typeof value !== "string") throw new InputError("INVALID_ENGAGEMENT_EVENT");
+  const id = value.normalize("NFKC");
+  if (id !== value || !id || !WIX_ID_PATTERN.test(id)) {
+    throw new InputError("INVALID_ENGAGEMENT_EVENT");
+  }
+  return id;
+}
+
+export function normalizeEngagementEvent(rawBody) {
+  const body = assertPlainObject(rawBody);
+  let serialized;
+  try {
+    serialized = JSON.stringify(body);
+  } catch (_error) {
+    throw new InputError("INVALID_ENGAGEMENT_EVENT");
+  }
+  if (
+    typeof serialized !== "string"
+    || Buffer.byteLength(serialized, "utf8") > MAX_ENGAGEMENT_EVENT_BYTES
+    || Object.keys(body).some((field) => !ENGAGEMENT_EVENT_FIELDS.has(field))
+  ) {
+    throw new InputError("INVALID_ENGAGEMENT_EVENT");
+  }
+  if (body.version !== 1 || typeof body.eventId !== "string" || !UUID_V4_PATTERN.test(body.eventId)) {
+    throw new InputError("INVALID_ENGAGEMENT_EVENT");
+  }
+
+  const type = engagementEnum(body.type, ENGAGEMENT_EVENT_TYPES);
+  if (!type) throw new InputError("INVALID_ENGAGEMENT_EVENT");
+  const professionalId = engagementId(body.professionalId);
+  const placement = engagementEnum(body.placement, ENGAGEMENT_PLACEMENTS);
+  const channel = engagementEnum(body.channel, ENGAGEMENT_CHANNELS);
+  const resultsBucket = engagementEnum(body.resultsBucket, ENGAGEMENT_RESULTS_BUCKETS);
+  const searchKind = engagementEnum(body.searchKind, ENGAGEMENT_SEARCH_KINDS);
+  const locale = engagementEnum(body.locale, ENGAGEMENT_LOCALES);
+
+  if (!placement || !ENGAGEMENT_PLACEMENTS_BY_TYPE[type]?.has(placement)) {
+    throw new InputError("INVALID_ENGAGEMENT_EVENT");
+  }
+  if (type === "search") {
+    if (placement !== "directory" || professionalId || !resultsBucket || !searchKind || channel) {
+      throw new InputError("INVALID_ENGAGEMENT_EVENT");
+    }
+  } else if (!professionalId || resultsBucket || searchKind) {
+    throw new InputError("INVALID_ENGAGEMENT_EVENT");
+  }
+  if ((type === "contact") !== Boolean(channel)) {
+    throw new InputError("INVALID_ENGAGEMENT_EVENT");
+  }
+
+  const normalized = {
+    version: 1,
+    eventId: body.eventId,
+    type,
+  };
+  if (professionalId) normalized.professionalId = professionalId;
+  if (placement) normalized.placement = placement;
+  if (channel) normalized.channel = channel;
+  if (resultsBucket) normalized.resultsBucket = resultsBucket;
+  if (searchKind) normalized.searchKind = searchKind;
+  if (locale) normalized.locale = locale;
+  return Object.freeze(normalized);
+}
+
+export function buildEngagementEventRecord(rawEvent, receivedAt = new Date()) {
+  const event = normalizeEngagementEvent(rawEvent);
+  if (!(receivedAt instanceof Date) || !Number.isFinite(receivedAt.getTime())) {
+    throw new InputError("INVALID_ENGAGEMENT_EVENT");
+  }
+  const { eventId, ...dimensions } = event;
+  return Object.freeze({
+    _id: `eng_${sha256(eventId).slice(0, 32)}`,
+    ...dimensions,
+    // Donnée déclarée par un client anonyme : jamais une preuve de vente/facturation.
+    trustLevel: "client_reported_unverified",
+    contentHash: sha256(JSON.stringify(event)),
+    receivedAt: new Date(receivedAt.getTime()),
+  });
 }
 
 export function registrationFingerprint(registration) {

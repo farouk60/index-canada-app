@@ -1,9 +1,11 @@
 FR-CA:
-- Amélioration de l'interface d'inscription.
-- Correction du bouton de confirmation pour le plan de base.
-- Mise à jour des performances et corrections mineures.
+- Nouvel accueil « Le repère canadien » pour faciliter la découverte des services locaux.
+- Annuaire et fiches professionnelles modernisés avec actions de contact mises en évidence.
+- Forfaits et prix annuels présentés clairement avant l'inscription.
+- Meilleure adaptation aux petits écrans et accessibilité renforcée.
 
 EN-CA:
-- Improved registration interface.
-- Fixed confirmation button for basic plan.
-- Performance updates and minor bug fixes.
+- New “Your Canadian starting point” home experience for clearer local discovery.
+- Modernized directory and professional profiles with prominent contact actions.
+- Plans and annual prices shown clearly before registration.
+- Better small-screen layouts and improved accessibility.

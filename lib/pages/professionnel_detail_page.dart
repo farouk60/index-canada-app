@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -22,8 +24,23 @@ import '../utils.dart';
 
 class ProfessionnelDetailPage extends StatefulWidget {
   final Professionnel professionnel;
+  final String sourcePlacement;
+  final FirebaseAnalyticsService? analyticsService;
+  final DataService? dataService;
+  final Future<bool> Function(String phoneNumber)? phoneLauncher;
+  final Future<bool> Function(String address)? mapsLauncher;
+  final Future<bool> Function(Uri uri)? websiteLauncher;
 
-  const ProfessionnelDetailPage({super.key, required this.professionnel});
+  const ProfessionnelDetailPage({
+    super.key,
+    required this.professionnel,
+    this.sourcePlacement = 'detail',
+    this.analyticsService,
+    this.dataService,
+    this.phoneLauncher,
+    this.mapsLauncher,
+    this.websiteLauncher,
+  });
 
   @override
   State<ProfessionnelDetailPage> createState() =>
@@ -32,7 +49,8 @@ class ProfessionnelDetailPage extends StatefulWidget {
 
 class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
   final LocalizationService _localizationService = LocalizationService();
-  final FirebaseAnalyticsService _analytics = FirebaseAnalyticsService();
+  late final FirebaseAnalyticsService _analytics;
+  late final DataService _dataService;
   List<Review> _reviews = [];
   bool _isLoadingReviews = true;
   String? _reviewsError;
@@ -44,22 +62,34 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
   @override
   void initState() {
     super.initState();
+    _analytics = widget.analyticsService ?? FirebaseAnalyticsService();
+    _dataService = widget.dataService ?? DataService();
     _loadReviews();
     _preloadGalleryImages();
     _loadFavoriteStatus();
-    _trackProfessionalView();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _trackProfessionalView();
+    });
   }
 
   // Tracker la vue du professionnel
-  void _trackProfessionalView() async {
-    await _analytics.trackProfessionalView(
-      professionalId: widget.professionnel.id,
-      professionalName: widget.professionnel.title,
-      category: widget.professionnel.sousCategorie,
-      city: widget.professionnel.ville,
-      isSponsor: widget.professionnel.sponsor,
+  void _trackProfessionalView() {
+    _runAnalytics(
+      () => _analytics.trackProfessionalView(
+        professionalId: widget.professionnel.id,
+        placement: widget.sourcePlacement,
+        locale: _localizationService.currentLanguage,
+      ),
     );
-    await _analytics.setCurrentScreen('professional_detail');
+    _runAnalytics(() => _analytics.setCurrentScreen('professional_detail'));
+  }
+
+  void _runAnalytics(Future<void> Function() event) {
+    try {
+      unawaited(event().catchError((Object _) {}));
+    } catch (_) {
+      // La télémétrie ne doit jamais affecter le parcours principal.
+    }
   }
 
   // Charger le statut favori depuis le stockage local
@@ -97,11 +127,11 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
         widget.professionnel.id,
       );
 
-      // Tracker l'action de favori
-      await _analytics.trackFavoriteAction(
-        professionalId: widget.professionnel.id,
-        professionalName: widget.professionnel.title,
-        isAdding: newFavoriteStatus,
+      _runAnalytics(
+        () => _analytics.trackFavoriteAction(
+          professionalId: widget.professionnel.id,
+          isAdding: newFavoriteStatus,
+        ),
       );
 
       if (mounted) {
@@ -171,8 +201,7 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
     });
 
     try {
-      final wixApi = DataService();
-      final reviews = await wixApi.fetchReviews(widget.professionnel.id);
+      final reviews = await _dataService.fetchReviews(widget.professionnel.id);
       if (mounted && loadGeneration == _reviewsLoadGeneration) {
         setState(() {
           _reviews = reviews;
@@ -196,34 +225,76 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
     return sum / _reviews.length;
   }
 
+  String _localized(String french, String english) {
+    return _localizationService.currentLanguage == 'en' ? english : french;
+  }
+
+  double get _displayRating {
+    if (_reviews.isNotEmpty) return _calculateAverageRating();
+    return widget.professionnel.averageRating;
+  }
+
+  int get _displayReviewCount {
+    if (_reviews.isNotEmpty) return _reviews.length;
+    return widget.professionnel.reviewCount;
+  }
+
   Widget _buildStarRating(double rating, {double size = 20}) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: List.generate(5, (index) {
-        if (index < rating.floor()) {
-          return Icon(Icons.star, color: Colors.amber, size: size);
-        } else if (index < rating) {
-          return Icon(Icons.star_half, color: Colors.amber, size: size);
-        } else {
-          return Icon(Icons.star_outline, color: Colors.grey, size: size);
-        }
-      }),
+    final label = _localized(
+      'Note ${rating.toStringAsFixed(1)} sur 5',
+      'Rating ${rating.toStringAsFixed(1)} out of 5',
+    );
+
+    return Semantics(
+      label: label,
+      readOnly: true,
+      child: ExcludeSemantics(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: List.generate(5, (index) {
+            if (index < rating.floor()) {
+              return Icon(
+                Icons.star_rounded,
+                color: const Color(0xFFE09B16),
+                size: size,
+              );
+            } else if (index < rating) {
+              return Icon(
+                Icons.star_half_rounded,
+                color: const Color(0xFFE09B16),
+                size: size,
+              );
+            } else {
+              return Icon(
+                Icons.star_outline_rounded,
+                color: Theme.of(context).colorScheme.outline,
+                size: size,
+              );
+            }
+          }),
+        ),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final avgRating = _calculateAverageRating();
+    final avgRating = _displayRating;
 
     return Scaffold(
       body: CustomScrollView(
         slivers: [
           // App Bar avec image de profil
           SliverAppBar(
-            expandedHeight: 300,
+            expandedHeight: 260,
             pinned: true,
             backgroundColor: AppTheme.brandPrimary,
             foregroundColor: Colors.white,
+            title: Text(
+              widget.professionnel.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
             actions: [
               // Sélecteur de langue
               LanguageSelector(
@@ -233,6 +304,24 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                     // La page sera reconstruite avec la nouvelle langue
                   });
                 },
+              ),
+              Semantics(
+                button: true,
+                toggled: _isFavorite,
+                label: _localized(
+                  _isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
+                  _isFavorite ? 'Remove from favorites' : 'Add to favorites',
+                ),
+                child: IconButton(
+                  onPressed: _toggleFavorite,
+                  tooltip: _localized(
+                    _isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
+                    _isFavorite ? 'Remove from favorites' : 'Add to favorites',
+                  ),
+                  icon: Icon(
+                    _isFavorite ? Icons.favorite : Icons.favorite_border,
+                  ),
+                ),
               ),
             ],
             flexibleSpace: FlexibleSpaceBar(
@@ -358,328 +447,250 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
           ),
           // Contenu principal
           SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // CTA rapide: Appeler, Itinéraire, Site web, Partager
-                  _buildActionButtons(),
-                  const SizedBox(height: 16),
-                  // Informations principales
-                  Card(
-                    elevation: 4,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            widget.professionnel.title,
-                            style: const TextStyle(
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          if (widget.professionnel.subtitle.isNotEmpty) ...[
-                            const SizedBox(height: 8),
-                            Text(
-                              widget.professionnel.subtitle,
-                              style: const TextStyle(
-                                fontSize: 18,
-                                color: Colors.black87,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ],
-                          const SizedBox(height: 16),
-                          if (widget.professionnel.address.isNotEmpty)
-                            _buildInfoRow(
-                              Icons.location_on,
-                              _localizationService.tr('address'),
-                              widget.professionnel.address,
-                            ),
-                          if (widget.professionnel.ville.isNotEmpty)
-                            _buildInfoRow(
-                              Icons.location_city,
-                              _localizationService.tr('city'),
-                              widget.professionnel.ville,
-                            ),
-                          if (widget.professionnel.numroDeTlphone.isNotEmpty)
-                            _buildInfoRow(
-                              Icons.phone,
-                              _localizationService.tr('phone'),
-                              widget.professionnel.numroDeTlphone,
-                            ),
-                          if (widget.professionnel.email.isNotEmpty)
-                            _buildInfoRow(
-                              Icons.email,
-                              _localizationService.tr('email'),
-                              widget.professionnel.email,
-                            ),
-                          if (widget.professionnel.website.isNotEmpty)
-                            _buildInfoRow(
-                              Icons.language,
-                              _localizationService.tr('website'),
-                              widget.professionnel.website,
-                            ),
-                          // Section réseaux sociaux
-                          if (widget.professionnel.facebook.isNotEmpty ||
-                              widget.professionnel.instagram.isNotEmpty ||
-                              widget.professionnel.linkedin.isNotEmpty ||
-                              widget.professionnel.whatsapp.isNotEmpty ||
-                              widget.professionnel.tiktok.isNotEmpty ||
-                              widget.professionnel.youtube.isNotEmpty)
-                            _buildSocialMediaSection(),
-                          if (widget.professionnel.sponsor)
-                            Container(
-                              margin: const EdgeInsets.only(top: 12),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 6,
-                              ),
-                              decoration: BoxDecoration(
-                                gradient: const LinearGradient(
-                                  colors: [
-                                    AppTheme.brandSecondary,
-                                    AppTheme.brandTertiary,
-                                  ],
-                                  begin: Alignment.topLeft,
-                                  end: Alignment.bottomRight,
-                                ),
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(
-                                    Icons.star,
-                                    color: Colors.white,
-                                    size: 16,
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    _localizationService.tr(
-                                      'recommended_professional',
-                                    ),
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Widget coupon complet si disponible
-                  CouponWidget(
-                    professionnel: widget.professionnel,
-                    isCompact: false,
-                  ),
-
-                  // Galerie d'images avec gestion d'erreurs améliorée
-                  if (widget.professionnel.getAllGalleryImages().isNotEmpty)
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _localizationService.tr('image_gallery'),
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        MediaGalleryWidget(
-                          professionnel: widget.professionnel,
-                          imageHeight: 150,
-                          imageWidth: 200,
-                        ),
-                      ],
-                    ),
-                  if (widget.professionnel.getAllGalleryImages().isNotEmpty)
-                    const SizedBox(height: 16),
-
-                  // Section des avis
-                  Card(
-                    elevation: 4,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 960),
+                child: Padding(
+                  padding: const EdgeInsets.all(AppSpacing.md),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Informations principales
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(AppSpacing.lg),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
+                              if (widget.professionnel.sponsor) ...[
+                                _buildSponsoredDisclosure(),
+                                const SizedBox(height: AppSpacing.sm),
+                              ],
                               Text(
-                                _localizationService.clientReviewsLabel(
-                                  _reviews.length,
-                                ),
-                                style: const TextStyle(
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                                widget.professionnel.title,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .headlineSmall,
                               ),
-                              ElevatedButton.icon(
-                                onPressed: () async {
-                                  final result = await Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => AddReviewPage(
-                                        professionnelId:
-                                            widget.professionnel.id,
-                                      ),
-                                    ),
-                                  );
-                                  if (!mounted) return;
-                                  if (result == true) {
-                                    await _loadReviews();
-                                  }
-                                },
-                                icon: const Icon(Icons.add),
-                                label: Text(
-                                  _localizationService.tr('add_review'),
-                                ),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: AppTheme.brandPrimary,
-                                  foregroundColor: Colors.white,
-                                  shape: const StadiumBorder(),
-                                ),
-                              ),
-                            ],
-                          ),
-                          if (_reviews.isNotEmpty) ...[
-                            const SizedBox(height: 16),
-                            Row(
-                              children: [
-                                _buildStarRating(avgRating, size: 24),
-                                const SizedBox(width: 8),
+                              const SizedBox(height: AppSpacing.sm),
+                              _buildSummaryMetadata(avgRating),
+                              if (widget.professionnel.subtitle.isNotEmpty) ...[
+                                const SizedBox(height: AppSpacing.md),
                                 Text(
-                                  '${avgRating.toStringAsFixed(1)}/5',
-                                  style: const TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                                  widget.professionnel.subtitle,
+                                  style: Theme.of(context).textTheme.bodyLarge
+                                      ?.copyWith(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurfaceVariant,
+                                      ),
                                 ),
                               ],
+                              const Padding(
+                                padding: EdgeInsets.symmetric(
+                                  vertical: AppSpacing.md,
+                                ),
+                                child: Divider(),
+                              ),
+                              if (widget.professionnel.address.isNotEmpty)
+                                _buildInfoRow(
+                                  Icons.location_on,
+                                  _localizationService.tr('address'),
+                                  widget.professionnel.address,
+                                ),
+                              if (widget
+                                  .professionnel
+                                  .numroDeTlphone
+                                  .isNotEmpty)
+                                _buildInfoRow(
+                                  Icons.phone,
+                                  _localizationService.tr('phone'),
+                                  widget.professionnel.numroDeTlphone,
+                                ),
+                              if (widget.professionnel.email.isNotEmpty)
+                                _buildInfoRow(
+                                  Icons.email,
+                                  _localizationService.tr('email'),
+                                  widget.professionnel.email,
+                                ),
+                              if (widget.professionnel.website.isNotEmpty)
+                                _buildInfoRow(
+                                  Icons.language,
+                                  _localizationService.tr('website'),
+                                  widget.professionnel.website,
+                                ),
+                              // Section réseaux sociaux
+                              if (widget.professionnel.facebook.isNotEmpty ||
+                                  widget.professionnel.instagram.isNotEmpty ||
+                                  widget.professionnel.linkedin.isNotEmpty ||
+                                  widget.professionnel.whatsapp.isNotEmpty ||
+                                  widget.professionnel.tiktok.isNotEmpty ||
+                                  widget.professionnel.youtube.isNotEmpty)
+                                _buildSocialMediaSection(),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+
+                      // Widget coupon complet si disponible
+                      CouponWidget(
+                        professionnel: widget.professionnel,
+                        isCompact: false,
+                        onCouponCopied: () => _runAnalytics(
+                          () => _analytics.trackCouponCopy(
+                            professionalId: widget.professionnel.id,
+                            placement: widget.sourcePlacement,
+                            locale: _localizationService.currentLanguage,
+                          ),
+                        ),
+                      ),
+
+                      // Galerie d'images avec gestion d'erreurs améliorée
+                      if (widget.professionnel.getAllGalleryImages().isNotEmpty)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _localizationService.tr('image_gallery'),
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            MediaGalleryWidget(
+                              professionnel: widget.professionnel,
+                              imageHeight: 150,
+                              imageWidth: 200,
                             ),
                           ],
-                          const SizedBox(height: 16),
-                          if (_isLoadingReviews)
-                            const Center(child: CircularProgressIndicator())
-                          else if (_reviewsError != null)
-                            Center(
-                              child: Text(
-                                _localizationService.tr(_reviewsError!),
-                                style: TextStyle(color: Colors.red.shade600),
-                              ),
-                            )
-                          else if (_reviews.isEmpty)
-                            Center(
-                              child: Text(
-                                _localizationService.tr('no_reviews_first'),
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  color: Colors.grey,
+                        ),
+                      if (widget.professionnel.getAllGalleryImages().isNotEmpty)
+                        const SizedBox(height: 16),
+
+                      // Section des avis
+                      Card(
+                        elevation: 4,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _buildReviewsHeader(),
+                              if (_reviews.isNotEmpty) ...[
+                                const SizedBox(height: 16),
+                                Row(
+                                  children: [
+                                    _buildStarRating(avgRating, size: 24),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      '${avgRating.toStringAsFixed(1)}/5',
+                                      style: const TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                              ),
-                            )
-                          else
-                            ListView.separated(
-                              shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
-                              itemCount: _reviews.length,
-                              separatorBuilder: (_, _) => const Divider(),
-                              itemBuilder: (context, index) {
-                                final review = _reviews[index];
-                                return Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 8,
+                              ],
+                              const SizedBox(height: 16),
+                              if (_isLoadingReviews)
+                                const Center(child: CircularProgressIndicator())
+                              else if (_reviewsError != null)
+                                Center(
+                                  child: Text(
+                                    _localizationService.tr(_reviewsError!),
+                                    style: TextStyle(
+                                      color: Colors.red.shade600,
+                                    ),
                                   ),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
+                                )
+                              else if (_reviews.isEmpty)
+                                Center(
+                                  child: Text(
+                                    _localizationService.tr('no_reviews_first'),
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      fontSize: 16,
+                                      color: Colors.grey,
+                                    ),
+                                  ),
+                                )
+                              else
+                                ListView.separated(
+                                  shrinkWrap: true,
+                                  physics: const NeverScrollableScrollPhysics(),
+                                  itemCount: _reviews.length,
+                                  separatorBuilder: (_, _) => const Divider(),
+                                  itemBuilder: (context, index) {
+                                    final review = _reviews[index];
+                                    return Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 8,
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
                                         children: [
-                                          Expanded(
-                                            child: Text(
-                                              review.auteurNom,
+                                          Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  review.auteurNom,
+                                                  style: const TextStyle(
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 16,
+                                                  ),
+                                                ),
+                                              ),
+                                              _buildStarRating(
+                                                review.rating.toDouble(),
+                                              ),
+                                            ],
+                                          ),
+                                          if (review.title.isNotEmpty) ...[
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              review.title,
                                               style: const TextStyle(
-                                                fontWeight: FontWeight.bold,
-                                                fontSize: 16,
+                                                fontWeight: FontWeight.w600,
+                                                fontSize: 14,
                                               ),
                                             ),
-                                          ),
-                                          _buildStarRating(
-                                            review.rating.toDouble(),
-                                          ),
+                                          ],
+                                          if (review.message.isNotEmpty) ...[
+                                            const SizedBox(height: 8),
+                                            Text(
+                                              review.message,
+                                              style: const TextStyle(
+                                                fontSize: 14,
+                                              ),
+                                            ),
+                                          ],
                                         ],
                                       ),
-                                      if (review.title.isNotEmpty) ...[
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          review.title,
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.w600,
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                      ],
-                                      if (review.message.isNotEmpty) ...[
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          review.message,
-                                          style: const TextStyle(fontSize: 14),
-                                        ),
-                                      ],
-                                    ],
-                                  ),
-                                );
-                              },
-                            ),
-                        ],
+                                    );
+                                  },
+                                ),
+                            ],
+                          ),
+                        ),
                       ),
-                    ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
         ],
       ),
-      floatingActionButton: Semantics(
-        selected: _isFavorite,
-        label: _localizationService.tr(
-          _isFavorite ? 'remove_from_favorites' : 'add_to_favorites',
-        ),
-        child: FloatingActionButton(
-          onPressed: _toggleFavorite,
-          tooltip: _localizationService.tr(
-            _isFavorite ? 'remove_from_favorites' : 'add_to_favorites',
-          ),
-          backgroundColor: _isFavorite ? Colors.red : Colors.grey,
-          child: Icon(
-            _isFavorite ? Icons.favorite : Icons.favorite_border,
-            color: Colors.white,
-          ),
-        ),
-      ),
+      bottomNavigationBar: _buildActionButtons(),
     );
   }
 
@@ -709,22 +720,183 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
     );
   }
 
+  Widget _buildSponsoredDisclosure() {
+    return Semantics(
+      key: const ValueKey('professional_sponsored_badge'),
+      label: _localized(
+        'Placement sponsorisé. Ce badge ne signifie pas que le professionnel est vérifié.',
+        'Sponsored placement. This badge does not mean the professional is verified.',
+      ),
+      readOnly: true,
+      child: ExcludeSemantics(
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.sm,
+            vertical: AppSpacing.xs,
+          ),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.secondaryContainer,
+            borderRadius: BorderRadius.circular(AppRadii.pill),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.campaign_outlined,
+                color: Theme.of(context).colorScheme.onSecondaryContainer,
+                size: 18,
+              ),
+              const SizedBox(width: AppSpacing.xs),
+              Text(
+                _localized('Sponsorisé', 'Sponsored'),
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSecondaryContainer,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String? _safeCategoryLabel() {
+    final value = widget.professionnel.sousCategorie.trim();
+    if (value.isEmpty) return null;
+
+    final compact = value.replaceAll('-', '');
+    final isOpaqueIdentifier =
+        compact.length >= 24 && RegExp(r'^[0-9a-fA-F]+$').hasMatch(compact);
+    return isOpaqueIdentifier ? null : value;
+  }
+
+  Widget _buildSummaryMetadata(double rating) {
+    List<Widget> items({required bool fillWidth}) {
+      final category = _safeCategoryLabel();
+      return <Widget>[
+        if (category != null)
+          _buildSummaryMeta(
+            Icons.work_outline,
+            category,
+            _localized('Catégorie', 'Category'),
+            fillWidth: fillWidth,
+          ),
+        if (widget.professionnel.ville.isNotEmpty)
+          _buildSummaryMeta(
+            Icons.location_on_outlined,
+            widget.professionnel.ville,
+            _localized('Ville', 'City'),
+            fillWidth: fillWidth,
+          ),
+        if (_displayReviewCount > 0) _buildRatingSummary(rating),
+      ];
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 360) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final item in items(fillWidth: true)) ...[
+                item,
+                const SizedBox(height: AppSpacing.xs),
+              ],
+            ],
+          );
+        }
+        return Wrap(
+          spacing: AppSpacing.md,
+          runSpacing: AppSpacing.sm,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: items(fillWidth: false),
+        );
+      },
+    );
+  }
+
+  Widget _buildRatingSummary(double rating) {
+    return Semantics(
+      key: const ValueKey('professional_rating_summary'),
+      label: _localized(
+        'Note ${rating.toStringAsFixed(1)} sur 5, $_displayReviewCount avis',
+        'Rating ${rating.toStringAsFixed(1)} out of 5, $_displayReviewCount reviews',
+      ),
+      readOnly: true,
+      child: ExcludeSemantics(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.star_rounded, color: Color(0xFFE09B16), size: 20),
+            const SizedBox(width: AppSpacing.xs),
+            Text(
+              rating.toStringAsFixed(1),
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+            const SizedBox(width: AppSpacing.xs),
+            Text(
+              '(${_localizationService.reviewCountLabel(_displayReviewCount)})',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryMeta(
+    IconData icon,
+    String value,
+    String label, {
+    bool fillWidth = false,
+  }) {
+    final text = Text(
+      value,
+      maxLines: fillWidth ? 2 : 1,
+      overflow: TextOverflow.ellipsis,
+      style: Theme.of(context).textTheme.labelLarge
+          ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+    );
+
+    return Semantics(
+      label: '$label $value',
+      readOnly: true,
+      child: ExcludeSemantics(
+        child: Row(
+          mainAxisSize: fillWidth ? MainAxisSize.max : MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 18,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: AppSpacing.xs),
+            if (fillWidth) Expanded(child: text) else text,
+          ],
+        ),
+      ),
+    );
+  }
+
   // Boutons d'action principaux sous l'en-tête
   Future<void> _callProfessional() async {
     try {
-      await _analytics.trackPhoneCall(
-        professionalId: widget.professionnel.id,
-        professionalName: widget.professionnel.title,
-      );
-    } on Exception {
-      // La télémétrie ne doit jamais empêcher l’action principale.
-    }
-
-    try {
-      final launched = await SimplePhoneCall.call(
-        widget.professionnel.numroDeTlphone,
-      );
-      if (!launched && mounted) {
+      final launcher = widget.phoneLauncher ?? SimplePhoneCall.call;
+      final launched = await launcher(widget.professionnel.numroDeTlphone);
+      if (launched) {
+        _runAnalytics(
+          () => _analytics.trackPhoneCall(
+            professionalId: widget.professionnel.id,
+            placement: widget.sourcePlacement,
+            locale: _localizationService.currentLanguage,
+          ),
+        );
+      } else if (mounted) {
         _showPhoneCallError();
       }
     } on Exception {
@@ -740,6 +912,67 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
     );
   }
 
+  Widget _buildReviewsHeader() {
+    final title = Semantics(
+      header: true,
+      child: Text(
+        _localizationService.clientReviewsLabel(_reviews.length),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+      ),
+    );
+    final action = ElevatedButton.icon(
+      key: const ValueKey('professional_add_review_action'),
+      onPressed: _openAddReview,
+      icon: const Icon(Icons.add),
+      label: Text(_localizationService.tr('add_review')),
+      style: ElevatedButton.styleFrom(
+        minimumSize: const Size(48, 48),
+        backgroundColor: AppTheme.brandPrimary,
+        foregroundColor: Colors.white,
+        shape: const StadiumBorder(),
+      ),
+    );
+
+    return LayoutBuilder(
+      key: const ValueKey('professional_reviews_header'),
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 360) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              title,
+              const SizedBox(height: AppSpacing.sm),
+              action,
+            ],
+          );
+        }
+        return Row(
+          children: [
+            Expanded(child: title),
+            const SizedBox(width: AppSpacing.sm),
+            action,
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _openAddReview() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) =>
+            AddReviewPage(professionnelId: widget.professionnel.id),
+      ),
+    );
+    if (!mounted) return;
+    if (result == true) {
+      await _loadReviews();
+    }
+  }
+
   Widget _buildActionButtons() {
     final hasPhone = widget.professionnel.numroDeTlphone.isNotEmpty;
     final hasAddress = widget.professionnel.address.isNotEmpty;
@@ -748,65 +981,135 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
 
     String t(String fr, String en) => lang == 'fr' ? fr : en;
 
-    return Wrap(
-      spacing: 10,
-      runSpacing: 10,
-      children: [
-        ElevatedButton.icon(
-          onPressed: hasPhone ? _callProfessional : null,
-          icon: const Icon(Icons.phone),
-          label: Text(t('Appeler', 'Call')),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: hasPhone ? Colors.green.shade600 : Colors.grey,
-            foregroundColor: Colors.white,
-            shape: const StadiumBorder(),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+    return Material(
+      key: const ValueKey('persistent_contact_bar'),
+      color: Theme.of(context).colorScheme.surface,
+      elevation: 12,
+      shadowColor: Colors.black.withValues(alpha: 0.12),
+      child: SafeArea(
+        top: false,
+        child: Center(
+          heightFactor: 1,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(
+                AppSpacing.md,
+                AppSpacing.sm,
+                AppSpacing.md,
+                AppSpacing.sm,
+              ),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final isCompact = constraints.maxWidth < 360;
+                  Widget action({
+                    required Key key,
+                    required IconData icon,
+                    required String label,
+                    required VoidCallback? onPressed,
+                    Color? backgroundColor,
+                    Color? foregroundColor,
+                  }) {
+                    final style = ElevatedButton.styleFrom(
+                      minimumSize: Size(48, isCompact ? 64 : 52),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: isCompact ? AppSpacing.xxs : AppSpacing.xs,
+                        vertical: isCompact ? AppSpacing.xxs : 0,
+                      ),
+                      backgroundColor: backgroundColor,
+                      foregroundColor: foregroundColor,
+                    );
+                    final button = isCompact
+                        ? ElevatedButton(
+                            key: key,
+                            onPressed: onPressed,
+                            style: style,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(icon, size: 20),
+                                const SizedBox(height: AppSpacing.xxs),
+                                FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: Text(label, maxLines: 1),
+                                ),
+                              ],
+                            ),
+                          )
+                        : ElevatedButton.icon(
+                            key: key,
+                            onPressed: onPressed,
+                            icon: Icon(icon),
+                            label: Text(label),
+                            style: style,
+                          );
+                    return Expanded(
+                      child: Semantics(
+                        button: true,
+                        enabled: onPressed != null,
+                        label: label,
+                        child: button,
+                      ),
+                    );
+                  }
+
+                  return Row(
+                    children: [
+                      action(
+                        key: const ValueKey('professional_call_action'),
+                        icon: Icons.phone,
+                        label: t('Appeler', 'Call'),
+                        onPressed: hasPhone ? _callProfessional : null,
+                        backgroundColor: AppTheme.brandTertiary,
+                        foregroundColor: Colors.white,
+                      ),
+                      const SizedBox(width: AppSpacing.xs),
+                      action(
+                        key: const ValueKey('professional_directions_action'),
+                        icon: Icons.directions,
+                        label: t('Itinéraire', 'Directions'),
+                        onPressed: hasAddress
+                            ? () => _openMaps(widget.professionnel.address)
+                            : null,
+                      ),
+                      const SizedBox(width: AppSpacing.xs),
+                      action(
+                        key: const ValueKey('professional_website_action'),
+                        icon: Icons.language,
+                        label: t('Site', 'Website'),
+                        onPressed: hasWebsite
+                            ? () => _openWebsite(widget.professionnel.website)
+                            : null,
+                        backgroundColor: AppTheme.brandSecondary,
+                        foregroundColor: Colors.white,
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
           ),
         ),
-        ElevatedButton.icon(
-          onPressed: hasAddress
-              ? () => _openMaps(widget.professionnel.address)
-              : null,
-          icon: const Icon(Icons.directions),
-          label: Text(t('Itinéraire', 'Directions')),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: hasAddress ? AppTheme.brandPrimary : Colors.grey,
-            foregroundColor: Colors.white,
-            shape: const StadiumBorder(),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          ),
-        ),
-        ElevatedButton.icon(
-          onPressed: hasWebsite
-              ? () => _openWebsite(widget.professionnel.website)
-              : null,
-          icon: const Icon(Icons.language),
-          label: Text(t('Site web', 'Website')),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: hasWebsite ? AppTheme.brandSecondary : Colors.grey,
-            foregroundColor: Colors.white,
-            shape: const StadiumBorder(),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          ),
-        ),
-      ],
+      ),
     );
   }
 
   // Ouvrir Google Maps avec l'adresse
   Future<void> _openMaps(String address) async {
     try {
-      // Tracker la navigation
-      await _analytics.trackMapNavigation(
-        professionalId: widget.professionnel.id,
-        professionalName: widget.professionnel.title,
-        address: address,
-      );
+      final launcher =
+          widget.mapsLauncher ?? MapsService.instance.openNativeMaps;
+      final success = await launcher(address);
 
-      final mapsService = MapsService.instance;
-      final success = await mapsService.openNativeMaps(address);
-
-      if (!success && mounted) {
+      if (success) {
+        _runAnalytics(
+          () => _analytics.trackMapNavigation(
+            professionalId: widget.professionnel.id,
+            placement: widget.sourcePlacement,
+            locale: _localizationService.currentLanguage,
+          ),
+        );
+      } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(_localizationService.tr('network_error')),
@@ -831,13 +1134,6 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
   // Ouvrir le site web du professionnel
   Future<void> _openWebsite(String website) async {
     try {
-      // Tracker l'ouverture du site web
-      await _analytics.trackWebsiteClick(
-        professionalId: widget.professionnel.id,
-        professionalName: widget.professionnel.title,
-        website: website,
-      );
-
       // Formatter l'URL si elle ne commence pas par http/https
       String finalUrl = website;
       if (!website.startsWith('http://') && !website.startsWith('https://')) {
@@ -845,12 +1141,22 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
       }
 
       final Uri url = Uri.parse(finalUrl);
+      final launched = widget.websiteLauncher != null
+          ? await widget.websiteLauncher!(url)
+          : await canLaunchUrl(url) &&
+                await launchUrl(url, mode: LaunchMode.externalApplication);
 
-      if (await canLaunchUrl(url)) {
-        await launchUrl(url, mode: LaunchMode.externalApplication);
-      } else {
+      if (!launched) {
         throw 'Impossible d\'ouvrir le site web';
       }
+
+      _runAnalytics(
+        () => _analytics.trackWebsiteClick(
+          professionalId: widget.professionnel.id,
+          placement: widget.sourcePlacement,
+          locale: _localizationService.currentLanguage,
+        ),
+      );
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -891,35 +1197,45 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
                 const SizedBox(height: 2),
                 // Si c'est un numéro de téléphone, on le rend cliquable
                 if (label == _localizationService.tr('phone'))
-                  ClickToCall(
-                    phoneNumber: value,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
-                    ),
-                    onCallInitiated: () async {
-                      await _analytics.trackPhoneCall(
-                        professionalId: widget.professionnel.id,
-                        professionalName: widget.professionnel.title,
-                      );
-                    },
-                  )
-                // Si c'est une adresse, on la rend cliquable pour ouvrir Maps
-                else if (label == _localizationService.tr('address'))
                   TextButton(
-                    onPressed: () => _openMaps(value),
+                    onPressed: _callProfessional,
                     style: TextButton.styleFrom(
-                      alignment: Alignment.centerLeft,
                       minimumSize: const Size(48, 48),
-                      padding: EdgeInsets.zero,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
                     ),
                     child: Text(
-                      value,
+                      SimplePhoneCall.format(value),
                       style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w500,
-                        color: AppTheme.brandPrimary,
                         decoration: TextDecoration.underline,
+                      ),
+                    ),
+                  )
+                // Si c'est une adresse, on la rend cliquable pour ouvrir Maps
+                else if (label == _localizationService.tr('address'))
+                  Semantics(
+                    button: true,
+                    label: _localized(
+                      'Ouvrir l itinéraire vers $value',
+                      'Open directions to $value',
+                    ),
+                    child: TextButton(
+                      key: const ValueKey('professional_address_action'),
+                      onPressed: () => _openMaps(value),
+                      style: TextButton.styleFrom(
+                        alignment: Alignment.centerLeft,
+                        minimumSize: const Size(48, 48),
+                        padding: EdgeInsets.zero,
+                      ),
+                      child: Text(
+                        value,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                          color: AppTheme.brandPrimary,
+                          decoration: TextDecoration.underline,
+                        ),
                       ),
                     ),
                   )

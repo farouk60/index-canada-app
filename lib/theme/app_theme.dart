@@ -6,13 +6,21 @@ import 'package:flutter/material.dart';
 /// reserved for trust and success states. Centralizing the decisions here
 /// prevents individual screens from visually drifting over time.
 abstract final class AppTheme {
-  static const Color brandPrimary = Color(0xFFD93632);
-  static const Color brandPrimaryDark = Color(0xFFB42320);
-  static const Color brandSecondary = Color(0xFF163247);
-  static const Color brandTertiary = Color(0xFF147D78);
+  // Semantic brand tokens. Keep the legacy aliases below so existing screens
+  // can migrate progressively without introducing one-off colours.
+  static const Color mapleRed = Color(0xFFD93632);
+  static const Color mapleRedDark = Color(0xFFB42320);
+  static const Color ink = Color(0xFF163247);
+  static const Color trustTeal = Color(0xFF147D78);
+  static const Color snow = Color(0xFFFFFBFA);
 
-  static const Color _lightSurface = Color(0xFFFFFBFA);
-  static const Color _lightCanvas = Color(0xFFF7F7F5);
+  static const Color brandPrimary = mapleRed;
+  static const Color brandPrimaryDark = mapleRedDark;
+  static const Color brandSecondary = ink;
+  static const Color brandTertiary = trustTeal;
+
+  static const Color _lightSurface = snow;
+  static const Color _lightCanvas = Color(0xFFF4F6F5);
   static const Color _darkSurface = Color(0xFF17191C);
   static const Color _darkCanvas = Color(0xFF0F1113);
 

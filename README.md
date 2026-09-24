@@ -34,6 +34,18 @@ console d'administration, avec les règles suivantes :
 - les lectures Wix parcourent toutes les pages jusqu'à un plafond explicite :
   `Professionnel` 10 000, `Reviews` 10 000, et 2 000 pour
   `SousCategorie`, `Partenaires` et `OffresPartenaire`.
+- la mesure ROI first-party enregistre uniquement des dimensions fermées
+  (impression, vue, clic, contact, copie de coupon et recherche agrégée), sans
+  terme recherché, nom, courriel, téléphone, adresse, URL ni identifiant
+  d'utilisateur/appareil;
+- les événements ROI sont idempotents, limités par IP hachée, conservés environ
+  13 mois et projetés dans un rapport accessible uniquement aux administrateurs
+  Wix;
+- le client les place dans une file mémoire bornée à 100 événements et rejoue
+  au plus deux fois uniquement les échecs transitoires avec le même identifiant
+  idempotent; les erreurs 4xx ne sont pas rejouées et le parcours utilisateur
+  n'est jamais bloqué. Cette file n'est pas persistante : une fermeture brutale
+  peut perdre les derniers événements.
 
 Les parcours principaux du client utilisent maintenant les endpoints v2
 `GET /categories`, `/professionals`, `/reviews`, `/partners` et `/offers`.
@@ -93,7 +105,7 @@ Le gestionnaire de secrets Wix doit contenir :
   confirmations gratuites et les empreintes anti-abus.
 
 Les collections de contenu et les collections techniques
-`PaymentCheckouts`/`ApiRateLimits` doivent être privées. Le webhook Stripe
+`PaymentCheckouts`/`ApiRateLimits`/`EngagementEvents` doivent être privées. Le webhook Stripe
 `POST /_functions/stripeWebhook` doit recevoir au minimum
 `payment_intent.succeeded`. La confirmation est idempotente : le checkout,
 l'intention Stripe et le profil final portent des identifiants et empreintes
@@ -103,6 +115,12 @@ Le limiteur persiste ses compteurs dans Wix. Il échoue en mode fermé pour les
 écritures sensibles, mais une séquence lecture/mise à jour Wix n'est pas un
 incrément atomique sous forte concurrence. Ajoutez une limite CDN/WAF avant un
 lancement à fort trafic.
+
+`POST /_functions/engagementEvent` accepte uniquement le contrat ROI v1. Le
+UUID d'idempotence est haché et n'est pas conservé en clair. Le rapport agrégé
+est exposé par un Web Method `Permissions.Admin`, jamais par une route publique.
+Les événements anonymes sont explicitement marqués non vérifiés et ne doivent
+pas servir à facturer un professionnel ni à garantir une vente.
 
 La procédure complète, les permissions, les vérifications Media Manager et le
 retour arrière sont décrits dans [WIX_DEPLOYMENT.md](WIX_DEPLOYMENT.md).
@@ -130,6 +148,9 @@ configuration présente n'est pas une preuve de pipeline vert. Consultez
 - `backend/http-functions.js` : endpoints Wix et orchestration serveur;
 - `backend/security-core.js` : validation, projections, intégrité et médias;
 - `backend/directory-pagination.js` : lecture complète bornée des collections;
+- `backend/engagement-report.js` : agrégation déterministe des interactions;
+- `backend/engagement-report.web.js` : rapport privé réservé aux administrateurs;
+- `backend/engagement-maintenance.js` : purge de rétention planifiée;
 - `test/` et `backend/test/` : tests Flutter et backend.
 
 ## Règles avant publication

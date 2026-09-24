@@ -7,11 +7,13 @@ import '../services/localization_service.dart';
 class CouponWidget extends StatelessWidget {
   final Professionnel professionnel;
   final bool isCompact;
+  final VoidCallback? onCouponCopied;
 
   const CouponWidget({
     super.key,
     required this.professionnel,
     this.isCompact = false,
+    this.onCouponCopied,
   });
 
   // Vérifier si le coupon est valide
@@ -341,11 +343,23 @@ class CouponWidget extends StatelessWidget {
     );
   }
 
-  void _copyCouponCode(
+  Future<void> _copyCouponCode(
     BuildContext context,
     LocalizationService localizationService,
-  ) {
-    Clipboard.setData(ClipboardData(text: professionnel.couponCode));
+  ) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: professionnel.couponCode));
+    } catch (_) {
+      return;
+    }
+
+    try {
+      onCouponCopied?.call();
+    } catch (_) {
+      // La télémétrie ne doit jamais affecter la copie du coupon.
+    }
+
+    if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(localizationService.tr('coupon_code_copied')),
