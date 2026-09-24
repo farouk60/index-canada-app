@@ -6,7 +6,8 @@ Le dépôt permet de vérifier et de compiler l'application, mais il ne démontr
 
 État vérifié dans le dépôt :
 
-- version Flutter : `1.0.3+21` ;
+- version Flutter candidate : `1.1.0+25` ;
+- versions déjà utilisées dans les stores : iOS `1.0.4 (24)` et Android `1.0.3 (21)` ;
 - identifiant Android et iOS : `ca.indexcanada.app` ;
 - nom affiché : `Index Canada` ;
 - la CI Android produit volontairement un AAB **non signé et non distribuable** ;

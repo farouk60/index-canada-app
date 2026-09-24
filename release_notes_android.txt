@@ -1,0 +1,11 @@
+FR-CA:
+- Nouvel accueil « Le repère canadien » pour découvrir plus facilement les services locaux.
+- Annuaire et fiches professionnelles modernisés avec actions de contact visibles.
+- Forfaits annuels plus clairs avant l'inscription.
+- Meilleure adaptation aux petits écrans et accessibilité renforcée.
+
+EN-CA:
+- New “Your Canadian starting point” home experience for easier local discovery.
+- Modernized directory and professional profiles with visible contact actions.
+- Clearer annual plans before registration.
+- Better small-screen layouts and improved accessibility.
