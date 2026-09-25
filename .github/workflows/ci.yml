@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - 'candidate/**'
+      - "candidate/**"
   pull_request:
   workflow_dispatch:
 
@@ -30,7 +30,7 @@ jobs:
       - name: Installer Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: "22"
           cache: npm
           cache-dependency-path: backend/package-lock.json
 
@@ -98,7 +98,7 @@ jobs:
         uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Installer Gradle
         uses: gradle/actions/setup-gradle@v6
@@ -106,7 +106,7 @@ jobs:
       - name: Installer Flutter
         uses: subosito/flutter-action@v2.23.0
         with:
-          flutter-version: '3.47.4'
+          flutter-version: "3.47.4"
           channel: stable
           cache: true
 
@@ -176,7 +176,7 @@ jobs:
 
   ios-build:
     name: Compilation iOS
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 30
 
     steps:
@@ -185,10 +185,35 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Vérifier Xcode 26 et le SDK iOS 26
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          xcode_version="$(xcodebuild -version | awk '/^Xcode / { print $2 }')"
+          ios_sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
+          xcode_major="${xcode_version%%.*}"
+          ios_sdk_major="${ios_sdk_version%%.*}"
+
+          uname -m
+          xcode-select -p
+          echo "Xcode $xcode_version"
+          echo "SDK iOS $ios_sdk_version"
+          pod --version
+
+          if [[ ! "$xcode_major" =~ ^[0-9]+$ ]] || (( xcode_major < 26 )); then
+            echo "::error title=Xcode trop ancien::Xcode 26 ou ultérieur est requis."
+            exit 1
+          fi
+          if [[ ! "$ios_sdk_major" =~ ^[0-9]+$ ]] || (( ios_sdk_major < 26 )); then
+            echo "::error title=SDK iOS trop ancien::Le SDK iOS 26 ou ultérieur est requis."
+            exit 1
+          fi
+
       - name: Installer Flutter
         uses: subosito/flutter-action@v2.23.0
         with:
-          flutter-version: '3.47.4'
+          flutter-version: "3.47.4"
           channel: stable
           cache: true
 
