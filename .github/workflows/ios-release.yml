@@ -2,6 +2,12 @@ name: iOS Release
 
 on:
   workflow_dispatch:
+    inputs:
+      upload_testflight:
+        description: Envoyer l'IPA vérifiée vers TestFlight
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -233,16 +239,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          ipa_path="$(find build/ios/ipa -maxdepth 1 -type f -name '*.ipa' -print -quit)"
-          if [[ -z "$ipa_path" ]]; then
-            echo "::error title=IPA absente::Aucun fichier IPA n'a été produit."
+          shopt -s nullglob
+          ipa_files=(build/ios/ipa/*.ipa)
+          if (( ${#ipa_files[@]} != 1 )); then
+            echo "::error title=IPA ambiguë::Une seule IPA est attendue."
             exit 1
           fi
+          ipa_path="${ipa_files[0]}"
+          unzip -tq "$ipa_path"
 
           extracted="$RUNNER_TEMP/verified-ipa"
           mkdir -p "$extracted"
           unzip -q "$ipa_path" -d "$extracted"
-          app_path="$(find "$extracted/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          app_files=("$extracted"/Payload/*.app)
+          if (( ${#app_files[@]} != 1 )); then
+            echo "::error title=Bundle ambigu::Une seule application est attendue."
+            exit 1
+          fi
+          app_path="${app_files[0]}"
 
           codesign --verify --deep --strict --verbose=2 "$app_path"
           bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$app_path/Info.plist")"
@@ -283,6 +297,8 @@ jobs:
         run: |
           set -euo pipefail
           encrypted_path="${{ steps.ipa.outputs.ipa_path }}.enc"
+          encryption_complete=false
+          trap 'if [[ "$encryption_complete" != "true" ]]; then rm -f "$encrypted_path"; fi' EXIT
           openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
             -in "${{ steps.ipa.outputs.ipa_path }}" \
             -out "$encrypted_path" \
@@ -296,6 +312,8 @@ jobs:
           cmp -s "${{ steps.ipa.outputs.ipa_path }}" "$roundtrip_path"
           rm -f "$roundtrip_path"
           echo "encrypted_path=$encrypted_path" >> "$GITHUB_OUTPUT"
+          encryption_complete=true
+          trap - EXIT
 
       - name: Publier l'IPA vérifiée et chiffrée
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -305,9 +323,77 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Valider auprès d'Apple et envoyer vers TestFlight
+        if: ${{ inputs.upload_testflight }}
+        shell: bash
+        env:
+          IPA_PATH: ${{ steps.ipa.outputs.ipa_path }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY_P8_BASE64: ${{ secrets.ASC_PRIVATE_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          for secret_name in ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY_P8_BASE64; do
+            if [[ -z "${!secret_name:-}" ]]; then
+              echo "::error title=Secret App Store Connect manquant::$secret_name n'est pas configuré."
+              exit 1
+            fi
+          done
+
+          if [[ ! "$ASC_KEY_ID" =~ ^[A-Z0-9]{10}$ ]]; then
+            echo "::error title=Identifiant de clé invalide::ASC_KEY_ID doit contenir 10 caractères alphanumériques majuscules."
+            exit 1
+          fi
+          if [[ ! "$ASC_ISSUER_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+            echo "::error title=Issuer ID invalide::ASC_ISSUER_ID doit être un UUID."
+            exit 1
+          fi
+          if [[ ! -s "$IPA_PATH" ]]; then
+            echo "::error title=IPA absente::Le fichier vérifié à envoyer est introuvable."
+            exit 1
+          fi
+
+          key_directory="$HOME/.appstoreconnect/private_keys"
+          key_path="$key_directory/AuthKey_${ASC_KEY_ID}.p8"
+          mkdir -p "$key_directory"
+          chmod 700 "$key_directory"
+          trap 'rm -f "$key_path"; rmdir "$key_directory" 2>/dev/null || true' EXIT
+
+          ASC_KEY_PATH="$key_path" python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          encoded = "".join(os.environ["ASC_PRIVATE_KEY_P8_BASE64"].split())
+          Path(os.environ["ASC_KEY_PATH"]).write_bytes(
+              base64.b64decode(encoded, validate=True)
+          )
+          PY
+
+          chmod 600 "$key_path"
+          openssl pkey -in "$key_path" -noout >/dev/null
+          xcrun --find altool >/dev/null
+          xcodebuild -version
+
+          xcrun altool --validate-app \
+            --file "$IPA_PATH" \
+            --type ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+
+          xcrun altool --upload-app \
+            --file "$IPA_PATH" \
+            --type ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+
       - name: Nettoyer la signature temporaire
         if: always()
         shell: bash
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
         run: |
           set +e
           installed_profile="${{ steps.signing.outputs.installed_profile }}"
@@ -324,6 +410,10 @@ jobs:
             "$HOME/Library/Keychains/login.keychain-db"
           security delete-keychain \
             "$RUNNER_TEMP/index-canada-signing.keychain-db" 2>/dev/null
+          if [[ -n "$ASC_KEY_ID" ]]; then
+            rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+            rmdir "$HOME/.appstoreconnect/private_keys" 2>/dev/null
+          fi
           rm -f \
             "$RUNNER_TEMP/index-canada-distribution.p12" \
             "$RUNNER_TEMP/index-canada.mobileprovision" \
@@ -334,7 +424,9 @@ jobs:
             "$RUNNER_TEMP/index-canada-roundtrip.ipa"
           rm -rf "$RUNNER_TEMP/verified-ipa"
           if [[ -n "${{ steps.ipa.outputs.ipa_path }}" ]]; then
-            rm -f "${{ steps.ipa.outputs.ipa_path }}"
+            rm -f \
+              "${{ steps.ipa.outputs.ipa_path }}" \
+              "${{ steps.ipa.outputs.ipa_path }}.enc"
           fi
           if [[ -n "${{ steps.encrypted_ipa.outputs.encrypted_path }}" ]]; then
             rm -f "${{ steps.encrypted_ipa.outputs.encrypted_path }}"
