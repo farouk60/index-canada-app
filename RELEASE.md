@@ -149,6 +149,26 @@ l'URL est non HTTPS/factice ou si la clé publique n'est pas une `pk_live_`.
 
 ### 4.2 Compiler et signer
 
+La génération reproductible utilise le workflow manuel GitHub Actions
+`iOS Release`. Il ne s'exécute que depuis `main` et attend cinq secrets
+chiffrés dans le dépôt :
+
+- `IOS_DISTRIBUTION_P12_BASE64` ;
+- `IOS_DISTRIBUTION_P12_PASSWORD` ;
+- `IOS_APP_STORE_PROFILE_BASE64` ;
+- `IOS_STRIPE_PUBLISHABLE_KEY` (clé publique `pk_live_`) ;
+- `IOS_ARTIFACT_ENCRYPTION_PASSWORD`.
+
+Le workflow vérifie l'équipe `K94TPPGBZS`, le Bundle ID
+`ca.indexcanada.app`, le profil `Index Canada – App Store (Release
+2026-2027)`, sa date d'expiration et le certificat qu'il contient. Il crée un
+trousseau temporaire, produit l'IPA, vérifie sa signature puis chiffre l'IPA
+en AES-256 avant de publier l'artefact pendant un jour. L'IPA brute, le
+trousseau et les fichiers de signature temporaires sont ensuite supprimés du
+runner.
+
+Pour une compilation manuelle sur Mac :
+
 1. Ouvrir `ios/Runner.xcworkspace` dans Xcode.
 2. Sélectionner l'équipe de signature du target `Runner` et vérifier le Bundle Identifier.
 3. Vérifier les descriptions d'accès aux photos et à la caméra ainsi que `PrivacyInfo.xcprivacy` contre les SDK réellement embarqués.

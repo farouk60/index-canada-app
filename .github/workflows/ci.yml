@@ -67,7 +67,7 @@ jobs:
 
           sensitive_files="$({
             git ls-files \
-              | grep -E '(^|/)(\.env($|\.)|key\.properties$|service-account[^/]*\.json$|[^/]+\.(jks|keystore|p12|pfx|pem|key)$)' \
+              | grep -E '(^|/)(\.env($|\.)|key\.properties$|service-account[^/]*\.json$|[^/]+\.(jks|keystore|p8|p12|pfx|pem|key|mobileprovision|provisionprofile)$)' \
               | grep -Ev '(\.example|\.sample|\.template)$'
           } || true)"
 

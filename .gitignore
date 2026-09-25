@@ -52,6 +52,14 @@ app.*.map.json
 /android/key.properties
 /android/upload-keystore.jks
 
+# Apple signing material
+*.cer
+*.p8
+*.p12
+*.pfx
+*.mobileprovision
+*.provisionprofile
+
 # Local/runtime configuration and secrets
 .env
 .env.*
