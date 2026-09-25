@@ -20,7 +20,7 @@ jobs:
   signed-ipa:
     name: IPA App Store signée
     if: github.ref == 'refs/heads/main'
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
     env:
       EXPECTED_TEAM_ID: K94TPPGBZS
@@ -33,6 +33,31 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+
+      - name: Vérifier Xcode 26 et le SDK iOS 26
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          xcode_version="$(xcodebuild -version | awk '/^Xcode / { print $2 }')"
+          ios_sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
+          xcode_major="${xcode_version%%.*}"
+          ios_sdk_major="${ios_sdk_version%%.*}"
+
+          uname -m
+          xcode-select -p
+          echo "Xcode $xcode_version"
+          echo "SDK iOS $ios_sdk_version"
+          pod --version
+
+          if [[ ! "$xcode_major" =~ ^[0-9]+$ ]] || (( xcode_major < 26 )); then
+            echo "::error title=Xcode trop ancien::Xcode 26 ou ultérieur est requis."
+            exit 1
+          fi
+          if [[ ! "$ios_sdk_major" =~ ^[0-9]+$ ]] || (( ios_sdk_major < 26 )); then
+            echo "::error title=SDK iOS trop ancien::Le SDK iOS 26 ou ultérieur est requis."
+            exit 1
+          fi
 
       - name: Vérifier les secrets de livraison
         shell: bash
@@ -262,11 +287,46 @@ jobs:
           bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$app_path/Info.plist")"
           version="$(plutil -extract CFBundleShortVersionString raw -o - "$app_path/Info.plist")"
           build="$(plutil -extract CFBundleVersion raw -o - "$app_path/Info.plist")"
+          xcode_build="$(plutil -extract DTXcode raw -o - "$app_path/Info.plist")"
+          sdk_name="$(plutil -extract DTSDKName raw -o - "$app_path/Info.plist")"
+          platform_version="$(plutil -extract DTPlatformVersion raw -o - "$app_path/Info.plist")"
+          minimum_os_version="$(plutil -extract MinimumOSVersion raw -o - "$app_path/Info.plist")"
 
           if [[ "$bundle_id" != "$EXPECTED_BUNDLE_ID" || "$version" != "1.1.0" || "$build" != "25" ]]; then
             echo "::error title=Identité IPA inattendue::Bundle, version ou build ne correspond pas à 1.1.0 (25)."
             exit 1
           fi
+
+          if [[ ! "$xcode_build" =~ ^[0-9]+$ ]] || (( 10#$xcode_build < 2600 )); then
+            echo "::error title=Toolchain IPA trop ancienne::L'IPA doit être compilée avec Xcode 26 ou ultérieur."
+            exit 1
+          fi
+          if [[ ! "$sdk_name" =~ ^iphoneos([0-9]+)(\..*)?$ ]]; then
+            echo "::error title=SDK IPA invalide::Le SDK de l'IPA est illisible."
+            exit 1
+          fi
+          sdk_major="${BASH_REMATCH[1]}"
+          platform_major="${platform_version%%.*}"
+          if (( sdk_major < 26 )) || [[ ! "$platform_major" =~ ^[0-9]+$ ]] || (( platform_major < 26 )); then
+            echo "::error title=SDK IPA trop ancien::L'IPA doit utiliser le SDK iOS 26 ou ultérieur."
+            exit 1
+          fi
+          if [[ "$minimum_os_version" != "15.0" ]]; then
+            echo "::error title=Cible iOS inattendue::La version minimale doit rester iOS 15.0."
+            exit 1
+          fi
+
+          executable="$(plutil -extract CFBundleExecutable raw -o - "$app_path/Info.plist")"
+          vtool_output="$(xcrun vtool -show-build "$app_path/$executable")"
+          binary_sdk="$(awk '$1 == "sdk" { print $2; exit }' <<< "$vtool_output")"
+          binary_sdk_major="${binary_sdk%%.*}"
+          echo "$vtool_output"
+          if [[ ! "$binary_sdk_major" =~ ^[0-9]+$ ]] || (( binary_sdk_major < 26 )); then
+            echo "::error title=SDK binaire trop ancien::Le binaire doit utiliser le SDK iOS 26 ou ultérieur."
+            exit 1
+          fi
+
+          echo "Métadonnées IPA : Xcode $xcode_build, $sdk_name, plateforme $platform_version, minimum iOS $minimum_os_version."
 
           codesign -dv --verbose=4 "$app_path" 2> "$RUNNER_TEMP/codesign-details.txt"
           if ! grep -Fq "TeamIdentifier=$EXPECTED_TEAM_ID" "$RUNNER_TEMP/codesign-details.txt"; then
