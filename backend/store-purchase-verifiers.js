@@ -1,3 +1,7 @@
+import * as appleStoreServerLibrary from "@apple/app-store-server-library";
+import * as googleAndroidPublisherLibrary from "@googleapis/androidpublisher";
+import * as googleAuthLibrary from "google-auth-library";
+
 import { APP_BUNDLE_ID } from "./store-purchase-core.js";
 
 const GOOGLE_SCOPE = "https://www.googleapis.com/auth/androidpublisher";
@@ -66,7 +70,7 @@ export async function createAppleTransactionVerifier({
   rootCertificates,
   appAppleId,
   bundleId = APP_BUNDLE_ID,
-  libraryLoader = () => import("@apple/app-store-server-library"),
+  libraryLoader = () => appleStoreServerLibrary,
 } = {}) {
   const roots = Array.isArray(rootCertificates)
     ? parseAppleRootCertificates(rootCertificates.map((entry) => Buffer.isBuffer(entry)
@@ -177,7 +181,7 @@ export function parseGoogleServiceAccount(value) {
 export async function createGooglePushTokenVerifier({
   audience,
   serviceAccountEmail,
-  libraryLoader = () => import("google-auth-library"),
+  libraryLoader = () => googleAuthLibrary,
 } = {}) {
   let audienceUrl;
   try {
@@ -271,7 +275,7 @@ function projectGoogleSubscription(data, packageName) {
 export async function createGoogleSubscriptionVerifier({
   serviceAccount,
   packageName = APP_BUNDLE_ID,
-  libraryLoader = () => import("@googleapis/androidpublisher"),
+  libraryLoader = () => googleAndroidPublisherLibrary,
 } = {}) {
   const credentials = parseGoogleServiceAccount(serviceAccount);
   let library;

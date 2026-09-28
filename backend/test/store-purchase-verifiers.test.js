@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   StoreProviderError,
   createAppleTransactionVerifier,
+  createGooglePushTokenVerifier,
   createGoogleSubscriptionVerifier,
   parseAppleRootCertificates,
   parseGoogleServiceAccount,
@@ -55,6 +56,33 @@ test("l'adaptateur Apple utilise exclusivement SignedDataVerifier officiel", asy
   assert.deepEqual(calls.map((call) => call.environment), ["PRODUCTION", "SANDBOX"]);
   assert.equal(calls.every((call) => call.online === true), true);
   assert.equal(calls.every((call) => call.bundleId === "ca.indexcanada.app"), true);
+});
+
+test("les SDK Store statiques sont disponibles sans chargeur personnalisé", async () => {
+  await assert.rejects(
+    createAppleTransactionVerifier({
+      rootCertificates: [Buffer.alloc(256, 1)],
+      appAppleId: 1234567890,
+    }),
+    (error) => error instanceof StoreProviderError
+      && error.code === "APPLE_CONFIGURATION_INVALID",
+  );
+
+  const pushVerifier = await createGooglePushTokenVerifier({
+    audience: "https://www.example.test/_functions/googlePlayRtdn",
+    serviceAccountEmail: "push@example-project.iam.gserviceaccount.com",
+  });
+  assert.equal(typeof pushVerifier.verifyAuthorization, "function");
+
+  const purchaseVerifier = await createGoogleSubscriptionVerifier({
+    serviceAccount: {
+      type: "service_account",
+      client_email: "iap-verifier@example-project.iam.gserviceaccount.com",
+      private_key: FAKE_PRIVATE_KEY,
+    },
+  });
+  assert.equal(typeof purchaseVerifier.getSubscription, "function");
+  assert.equal(typeof purchaseVerifier.acknowledgeSubscription, "function");
 });
 
 test("le compte de service Google est validé sans exposer sa clé", () => {
