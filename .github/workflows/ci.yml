@@ -343,6 +343,7 @@ jobs:
           set -euo pipefail
 
           allowed_ios_files=(
+            ios/Flutter/AppFrameworkInfo.plist
             ios/Podfile.lock
             ios/Runner.xcodeproj/project.pbxproj
             ios/Runner.xcodeproj/xcshareddata/xcschemes/Runner.xcscheme
@@ -438,7 +439,7 @@ jobs:
         if: steps.ios_migration.outputs.migration_required == 'true'
         shell: bash
         run: |
-          echo "::error title=Migration SwiftPM à intégrer::Téléchargez l'artefact de ce run, appliquez son patch sur la même révision puis versionnez les trois fichiers iOS autorisés."
+          echo "::error title=Migration SwiftPM à intégrer::Téléchargez l'artefact de ce run, appliquez son patch sur la même révision puis versionnez uniquement les fichiers iOS autorisés."
           exit 1
 
       - name: Compiler la cible iOS sans signature
