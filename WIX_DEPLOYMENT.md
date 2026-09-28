@@ -304,6 +304,33 @@ binaire mobile, dans un ticket ou dans les journaux.
 
 #### Topic et abonnement push
 
+La partie Google Cloud de cette configuration peut être provisionnée puis
+relue de façon idempotente avec le script préproduction ci-dessous. Il exige
+une session `gcloud` déjà authentifiée, cible uniquement le projet figé
+`index-immigrant-index-2025` et ne crée ni n'exporte aucune clé privée :
+
+```powershell
+pwsh -File .\tool\provision_google_rtdn_preprod.ps1 `
+  -GcloudPath 'C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd'
+
+# Relecture stricte ultérieure, sans mutation :
+pwsh -File .\tool\provision_google_rtdn_preprod.ps1 `
+  -GcloudPath 'C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd' `
+  -ValidateOnly
+```
+
+Le script couvre les étapes Google Cloud 1 à 5 ci-dessous : API, deux comptes de
+service, topic, IAM et abonnement push authentifié. Il ne configure ni Google
+Play Console ni les secrets Wix. L'invitation du compte **Play verifier** dans
+Play Console, la sélection du topic RTDN et le transfert protégé de sa clé JSON
+vers Wix restent les étapes manuelles séparées décrites ci-dessous.
+
+Le composant `gcloud beta` doit être installé, car il crée explicitement
+l'identité de service Pub/Sub après l'activation de l'API. Le principal de la
+session `gcloud` doit aussi posséder `iam.serviceAccounts.actAs` sur le seul
+compte **Push OIDC**. Le script ne s'accorde jamais cette permission : s'il lui
+manque, la création ou la mise à jour de l'abonnement échoue sans élargir IAM.
+
 1. Dans le projet Google Cloud de préproduction, activer Pub/Sub et créer le
    topic recommandé `index-canada-rtdn-preprod`, dont le nom complet est
    `projects/<PROJECT_ID>/topics/index-canada-rtdn-preprod`.
@@ -328,6 +355,13 @@ binaire mobile, dans un ticket ou dans les journaux.
    **Monétiser > Configuration de la monétisation > Notifications développeur
    en temps réel**. Activer les notifications et renseigner le nom complet du
    topic.
+
+   **Gate de sécurité :** ce topic RTDN est configuré au niveau de l'application
+   Android, pas d'une piste de diffusion. Avant de le remplacer, vérifier qu'un
+   topic de production n'est pas déjà actif pour `ca.indexcanada.app`. S'il
+   existe, ne pas le remplacer par le topic préproduction : conserver le flux
+   production et utiliser un package de préproduction distinct ou une
+   architecture Pub/Sub qui distribue explicitement vers les deux environnements.
 
 #### Valeurs exactes des quatre secrets Wix
 
