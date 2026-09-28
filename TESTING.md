@@ -1,9 +1,11 @@
 # Guide de tests
 
 La stratégie actuelle protège surtout la logique déterministe de
-l'application et du backend. Les tests n'appellent ni Wix, ni Stripe, ni
-Firebase en production. Ils sont nécessaires, mais ne remplacent pas des essais
-d'intégration sur un environnement Wix/Stripe isolé.
+l'application et du backend. Les tests n'appellent ni Wix, ni l'App Store, ni
+Google Play, ni Stripe, ni Firebase en production. Ils sont nécessaires, mais
+ne remplacent pas des achats sandbox sur iOS, des achats avec testeurs sous
+licence Google Play et une intégration sur un environnement Wix isolé. Stripe
+ne concerne que le parcours Web/legacy séparé lorsqu'il est encore déployé.
 
 ## Prérequis
 
@@ -37,14 +39,14 @@ Sur certains environnements Windows restreints, `node --test` peut échouer
 avec `spawn EPERM`. L'exécution directe de chaque fichier conserve les mêmes
 assertions `node:test` sans créer de sous-processus.
 
-## État vérifié localement
+## État à vérifier pour chaque candidate
 
-Au contrôle local du 23 septembre 2026 pour le plan ROI v1 :
-
-- suite Flutter complète : 132 tests réussis sur 132;
-- suite backend complète : 72 tests réussis sur 72;
-- analyse Flutter stricte : aucune anomalie;
-- format Dart de `lib/` et `test/` conforme.
+Les anciens totaux du plan ROI v1 ne décrivent plus la suite actuelle : les
+tests Store Billing, les notifications Apple/Google et les changements de
+forfait ont été ajoutés depuis. Pour éviter d'afficher un total rapidement
+obsolète, la preuve d'une candidate est le résultat frais des quatre commandes
+de contrôle local ci-dessus, puis des jobs GitHub Actions du commit exact. Une
+suite ciblée verte ne permet pas d'annoncer la suite complète verte.
 
 Au contrôle antérieur du 18 septembre 2026, le build Web release avait réussi,
 y compris le contrôle de compatibilité Wasm. La couverture de lignes Flutter
@@ -62,11 +64,11 @@ possible sous Windows. Les jobs GitHub Actions correspondants sont configurés,
 mais n'ont pas été exécutés ici et ne doivent pas être annoncés comme réussis
 avant un vrai passage de CI.
 
-## Preuve d'intégration préproduction du 22 septembre 2026
+## Preuve historique Stripe Web/legacy du 22 septembre 2026
 
-Un scénario Premium serveur à serveur a été exécuté avec des données
-synthétiques sur le site séparé `ImmIndex-Preprod` et le compte Stripe en mode
-test :
+Avant la migration mobile vers Store Billing, un scénario Premium serveur à
+serveur a été exécuté avec des données synthétiques sur le site séparé
+`ImmIndex-Preprod` et le compte Stripe en mode test :
 
 - création d'un checkout Premium à 4 999 cents CAD, puis répétition de la même
   requête avec réutilisation stricte du checkout et du PaymentIntent;
@@ -86,28 +88,36 @@ Une indisponibilité Wix transitoire (`Runtime is unreachable`) a été observé
 après le paiement. La reprise a réutilisé le même PaymentIntent et la même
 opération idempotente, sans recréer ni repayer le checkout.
 
-Cette preuve ferme le transport signé, la finalisation payée, la modération et
-l'idempotence côté serveur. Elle ne remplace pas les scénarios Basic, refus,
-annulation, 3-D Secure, médias, reprise réseau depuis l'application ni les tests
-sur appareils Android et iOS réels.
+Cette preuve couvre seulement le transport Stripe Web/legacy, sa finalisation,
+la modération et son idempotence côté serveur. Elle ne valide ni StoreKit, ni
+Google Play Billing, ni les restaurations, changements de forfait et
+notifications des stores. Elle ne doit donc pas servir de preuve pour une
+candidate mobile.
 
 ## Périmètre couvert
 
 | Suite | Risque principal couvert |
 |---|---|
 | `test/core/`, `test/app_test.dart` | Démarrage déterministe, configuration et journalisation sans données sensibles |
+| `test/core/config/mobile_store_policy_test.dart` | Garde anti-régression : aucune dépendance Stripe native, aucune PaymentSheet et aucun secret Stripe injecté dans les compilations mobiles |
+| `test/core/bootstrap/app_bootstrap_test.dart` | Initialisation unique du listener IAP sur iOS/Android seulement et continuité après un échec non critique |
 | `test/models/` | Parsing défensif des professionnels, catégories, partenaires, offres, coupons et avis |
 | `test/data/` | Intégrité des villes canadiennes |
 | `test/services/data_service_test.dart` | Contrat v2 Wix, parcours des curseurs, cache/rafraîchissement, concurrence, erreurs réseau et publication des seuls avis approuvés |
-| `test/services/stripe_native_payment_service_test.dart` | Contrat HTTP, forfaits serveur, images, confirmations et refus du paiement Web |
+| `test/services/store_purchase_service_test.dart` | Catalogue annuel, prix localisés, checkout sans prix client, achat et acquittement après confirmation serveur, restauration, reprise au redémarrage, états pending/canceled/error, changements Google immédiats ou différés et refus fermé des événements incohérents |
+| `test/pages/store_purchase_page_test.dart` | Informations d'abonnement, confidentialité, gestion de l'abonnement et EULA selon App Store ou Google Play |
+| `test/pages/professional_registration_page_test.dart` | Forfait Basique gratuit, avantages et prix annuels localisés des stores dans le tunnel d'inscription |
 | `test/services/review_verification_service_test.dart` | Anonymisation locale, anti-abus et purge des traces d'avis |
 | `test/services/firebase_analytics_service_test.dart` | Contrat ROI fermé, absence de données personnelles, file bornée, reprise transitoire avec le même identifiant et non-blocage de l'interface |
 | `test/pages/*analytics*`, `test/pages/roi_impression_pages_test.dart` | Attribution accueil/annuaire/détail et déclenchement uniquement après une action réussie |
 | `test/widgets/engagement_visibility_tracker_test.dart`, `test/widgets/coupon_widget_test.dart` | Impression après visibilité continue à 50 %, défilement, cycle de vie, route masquée et copie de coupon réussie |
 | `test/widgets/` | Rendu des images, états de repli et composants sans réseau réel |
-| `backend/test/security-core.test.js` | Catalogue serveur, validation, jetons, idempotence, liaison Stripe, projections publiques et médias Wix sans Base64 persisté |
+| `backend/test/security-core.test.js` | Catalogue serveur, validation, idempotence, projections publiques, médias Wix sans Base64 persisté et compatibilité Stripe Web/legacy isolée |
 | `backend/test/directory-pagination.test.js` | Pages Wix suivantes, curseurs opaques liés aux filtres, tailles bornées, ordre, propagation des erreurs et plafonds |
-| `backend/test/http-functions.test.js` | Contrats HTTP Wix v2, filtres actifs, projections publiques, alias historiques, codes d'erreur, OPTIONS et méthodes refusées |
+| `backend/test/store-purchase-core.test.js` | Validation Apple/Google, produits annuels, environnements, lignée Google hachée, politiques de changement de forfait, plan différé et refus des achats expirés/révoqués/incohérents |
+| `backend/test/store-purchase-verifiers.test.js` | Adaptateurs Apple/Google et erreurs normalisées des fournisseurs sans persistance de preuve brute |
+| `backend/test/store-notifications.test.js` | App Store Server Notifications et Google RTDN : renouvellement, changement différé, expiration, révocation, idempotence et prédécesseur remplacé |
+| `backend/test/http-functions.test.js` | Contrats HTTP Wix v2, achats/restaurations Store Billing, notifications, saga Entitlement→Professionnel, reprise idempotente et compatibilité historique |
 | `backend/test/engagement-report*.test.js` | Agrégats ROI, ratios par emplacement, plafond de rapport, permission administrateur et exclusion de la facturation |
 | `backend/test/engagement-maintenance.test.js` | Purges bornées, lots partiels, signalement du reliquat et nettoyage des limiteurs expirés |
 
@@ -116,7 +126,8 @@ initialiser de service externe ni dépendre de l'état d'un site Wix.
 
 ## Scénarios de préproduction obligatoires
 
-Utiliser des données synthétiques et les clés Stripe de test :
+Utiliser des données synthétiques, un environnement Wix isolé, le sandbox
+Apple et les testeurs sous licence Google Play :
 
 1. charger plus de 1 000 éléments dans une collection de test et confirmer
    l'absence de troncature;
@@ -134,30 +145,52 @@ Utiliser des données synthétiques et les clés Stripe de test :
 6. soumettre une inscription avec images, puis vérifier dans Wix que
    `PaymentCheckouts` et `Professionnel` contiennent seulement des `fileUrl`
    Wix et des empreintes, sans `data:image/...;base64`;
-7. interrompre puis reprendre un checkout avec la même requête et confirmer
-   qu'il n'existe ni double paiement, ni double profil, ni média public orphelin;
-8. forcer un échec d'upload/persistance et vérifier les journaux du nettoyage
+7. vérifier que le forfait Basique crée un checkout gratuit sans ouvrir
+   StoreKit ou Google Play et qu'il reste soumis à modération;
+8. confirmer que le client mobile ne contient ni SDK/configuration Stripe, ni
+   clé Apple/Google, compte de service, reçu ou secret; le prix Premium/En
+   Vedette doit venir du produit annuel retourné par le store;
+9. sur iOS sandbox, acheter chaque forfait payant puis couvrir achat en attente,
+   annulation, erreur store, reprise réseau, redémarrage et restauration sur un
+   autre appareil connecté au même compte Apple;
+10. avec un testeur Google Play, couvrir les mêmes états et confirmer qu'un
+    jeton sans `purchaseId` facultatif est quand même vérifié côté serveur;
+11. refuser sans droit tout produit, application, compte obscurci,
+    environnement, preuve, expiration ou révocation qui ne correspond pas au
+    checkout, puis vérifier qu'aucune preuve brute n'est persistée ou journalisée;
+12. vérifier Premium→En Vedette avec proratisation immédiate, puis En
+    Vedette→Premium en mode différé : l'ancien forfait reste actif avec
+    `pendingPlanId` jusqu'au renouvellement, puis la bascule se fait sans créer
+    un second droit ou profil;
+13. rejouer les notifications Apple/Google et les événements de l'ancien jeton
+    après remplacement; renouvellement, annulation, grâce, suspension,
+    expiration, remboursement et révocation doivent être idempotents;
+14. confirmer que le store n'est acquitté qu'après une réponse serveur valide;
+    pending/canceled/error ou une réponse incohérente doivent autoriser une
+    reprise sûre sans écraser un checkout actif;
+15. interrompre puis reprendre un checkout avec la même requête et confirmer
+    qu'il n'existe ni double paiement, ni double profil, ni média public orphelin;
+16. forcer un échec d'upload/persistance et vérifier les journaux du nettoyage
    compensatoire; son échec doit être surveillé et traité;
-9. envoyer deux fois le même événement webhook et confirmer que le résultat
-   fonctionnel est unique;
-10. tester montant, devise, métadonnées ou signature Stripe invalides;
-11. confirmer que les inscriptions gratuites et payantes restent
+17. confirmer que les inscriptions gratuites et payantes restent
    `pending_review`, `isActive=false` et invisibles dans le répertoire jusqu'à
    une approbation humaine dans Wix;
-12. valider les parcours bilingues et les largeurs mobile/desktop;
-13. vérifier que le Web refuse les forfaits payants avant tout checkout Stripe.
-14. rejouer un même événement ROI avec le même identifiant et confirmer une
+18. si le parcours Web/legacy Stripe est conservé, le tester séparément avec
+    clés de test et webhook signé; vérifier aussi que le client mobile ne peut
+    pas atteindre ce parcours;
+19. valider les parcours bilingues et les largeurs mobile/desktop;
+20. rejouer un même événement ROI avec le même identifiant et confirmer une
     seule écriture; réutiliser cet identifiant avec un contenu différent et
     confirmer le refus; vérifier également le rejet de `categoryId`, de tout
     champ inconnu et de toute donnée personnelle;
-15. vérifier qu'un membre ou visiteur ne peut pas appeler le rapport ROI
+21. vérifier qu'un membre ou visiteur ne peut pas appeler le rapport ROI
     administrateur, puis contrôler ses ratios sur un petit jeu connu;
-16. exécuter séparément les deux tâches de purge sur une copie de données,
+22. exécuter séparément les deux tâches de purge sur une copie de données,
     mesurer leur durée près de 25 lots et confirmer le signalement d'un reliquat;
-17. mesurer le débit public de `engagementEvent` derrière la protection edge
+23. mesurer le débit public de `engagementEvent` derrière la protection edge
     prévue et confirmer que ses données non vérifiées ne déclenchent ni
     facturation ni promesse de résultat;
-18. simuler une erreur transitoire cliente et confirmer le même `eventId` lors
+24. simuler une erreur transitoire cliente et confirmer le même `eventId` lors
     des deux reprises maximales, puis une erreur 4xx sans nouvelle tentative.
 
 Conserver l'identifiant de requête renvoyé par l'API pour relier un échec aux
@@ -168,7 +201,8 @@ journaux Wix sans journaliser de contenu personnel.
 Le workflow `.github/workflows/ci.yml` est configuré sur les demandes de
 changement, les envois vers `main` et le lancement manuel. Il doit :
 
-1. refuser les fichiers sensibles suivis et les motifs de secrets connus;
+1. refuser les fichiers sensibles suivis, les motifs de secrets connus et toute
+   réintroduction de Stripe natif dans le client mobile;
 2. exécuter les tests backend avec Node.js 22;
 3. imposer le format de `lib/` et `test/`;
 4. exécuter `flutter analyze` sans tolérer avertissement ou information;
@@ -185,8 +219,10 @@ secret exposé.
 ## Priorités QA suivantes
 
 - tests d'intégration du backend Wix et du Media Manager;
-- tests Stripe en mode test avec webhook réel et reprises réseau;
-- parcours de bout en bout Android/iOS sur appareils réels;
+- achats sandbox StoreKit et Google Play avec notifications serveur réelles,
+  restaurations, changements de forfait et reprises réseau;
+- parcours de bout en bout Android/iOS sur appareils réels; si le Web/legacy
+  Stripe est conservé, le valider dans une campagne distincte;
 - tests d'accessibilité et régressions visuelles aux points de rupture;
 - tests de charge et d'indexation des cinq routes v2 déjà utilisées, puis
   surveillance des appels résiduels à `/data` avant son retrait; `/data` reste

@@ -1,22 +1,22 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:intl/intl.dart';
 
 import '../data/canadian_cities.dart';
 import '../data_service.dart';
 import '../models.dart';
 import '../services/localization_service.dart';
-import '../services/stripe_native_payment_service.dart';
+import '../services/store_purchase_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/language_selector.dart';
-import 'native_payment_page.dart';
 import 'payment_success_page.dart';
+import 'store_purchase_page.dart';
 
 typedef PaymentPlansLoader = Future<PaymentPlanCatalog> Function();
 typedef ProfessionalCategoriesLoader = Future<List<SousCategorie>> Function();
+typedef StoreProductsLoader = Future<Map<String, StoreProductOffer>> Function();
 
 class ProfessionalRegistrationPage extends StatefulWidget {
   final String? categoryId;
@@ -24,6 +24,8 @@ class ProfessionalRegistrationPage extends StatefulWidget {
   final String? categoryNameEn;
   final PaymentPlansLoader? paymentPlansLoader;
   final ProfessionalCategoriesLoader? categoriesLoader;
+  final StoreProductsLoader? storeProductsLoader;
+  final StorePurchaseService? storePurchaseService;
 
   const ProfessionalRegistrationPage({
     super.key,
@@ -32,6 +34,8 @@ class ProfessionalRegistrationPage extends StatefulWidget {
     this.categoryNameEn,
     this.paymentPlansLoader,
     this.categoriesLoader,
+    this.storeProductsLoader,
+    this.storePurchaseService,
   });
 
   @override
@@ -85,6 +89,11 @@ class _ProfessionalRegistrationPageState
   bool _isLoadingPlans = true;
   bool _plansUnavailable = false;
   List<PaymentPlanQuote> _paymentPlans = const <PaymentPlanQuote>[];
+  bool _isLoadingStoreProducts = false;
+  bool _storeProductsUnavailable = false;
+  Map<String, StoreProductOffer> _storeProductsByPlan =
+      const <String, StoreProductOffer>{};
+  StorePurchaseService? _resolvedStorePurchaseService;
 
   // Images
   Uint8List? _profileImage;
@@ -108,10 +117,24 @@ class _ProfessionalRegistrationPageState
     return null;
   }
 
+  bool get _supportsStorePurchases {
+    if (kIsWeb) return false;
+    return StorePurchaseService.isSupportedPlatform ||
+        widget.storeProductsLoader != null ||
+        widget.storePurchaseService != null;
+  }
+
   bool _isPlanSupported(PaymentPlanQuote plan) {
-    return StripeNativePaymentService.paymentSupportFor(
-      requiresPayment: plan.requiresPayment,
-    ).isSupported;
+    if (!plan.requiresPayment) return true;
+    return _supportsStorePurchases &&
+        !_isLoadingStoreProducts &&
+        !_storeProductsUnavailable &&
+        _storeProductsByPlan.containsKey(plan.id);
+  }
+
+  StorePurchaseService get _storePurchaseService {
+    return _resolvedStorePurchaseService ??=
+        widget.storePurchaseService ?? StorePurchaseService.shared;
   }
 
   SousCategorie? get _selectedCategory {
@@ -122,23 +145,15 @@ class _ProfessionalRegistrationPageState
   }
 
   String _formatPlanPrice(PaymentPlanQuote plan, bool isEn) {
-    final amount = NumberFormat.simpleCurrency(
-      locale: isEn ? 'en_CA' : 'fr_CA',
-      name: plan.currency.toUpperCase(),
-      decimalDigits: 2,
-    ).format(plan.amount);
-    final durationDays = plan.durationDays;
-    late final String period;
-    if (durationDays >= 360 && durationDays <= 366) {
-      period = isEn ? 'year' : 'an';
-    } else if (durationDays >= 28 && durationDays <= 31) {
-      period = isEn ? 'month' : 'mois';
-    } else if (durationDays == 7) {
-      period = isEn ? 'week' : 'semaine';
-    } else {
-      period = isEn ? '$durationDays days' : '$durationDays jours';
+    if (plan.requiresPayment) {
+      final storeProduct = _storeProductsByPlan[plan.id];
+      if (storeProduct == null) {
+        return isEn ? 'Unavailable' : 'Indisponible';
+      }
+      final period = isEn ? 'year' : 'an';
+      return '${storeProduct.localizedPrice} / $period';
     }
-    return '$amount / $period';
+    return isEn ? 'Free' : 'Gratuit';
   }
 
   @override
@@ -150,6 +165,43 @@ class _ProfessionalRegistrationPageState
     }
     _loadAllCategories();
     _loadPaymentPlans();
+    _loadStoreProducts();
+  }
+
+  Future<void> _loadStoreProducts() async {
+    if (!_supportsStorePurchases) {
+      if (!mounted) return;
+      setState(() {
+        _storeProductsByPlan = const <String, StoreProductOffer>{};
+        _isLoadingStoreProducts = false;
+        _storeProductsUnavailable = true;
+      });
+      return;
+    }
+    setState(() {
+      _isLoadingStoreProducts = true;
+      _storeProductsUnavailable = false;
+    });
+    try {
+      final products =
+          await (widget.storeProductsLoader?.call() ??
+              _storePurchaseService.loadProducts());
+      if (!mounted) return;
+      setState(() {
+        _storeProductsByPlan = Map<String, StoreProductOffer>.unmodifiable(
+          products,
+        );
+        _isLoadingStoreProducts = false;
+        _storeProductsUnavailable = false;
+      });
+    } on Exception {
+      if (!mounted) return;
+      setState(() {
+        _storeProductsByPlan = const <String, StoreProductOffer>{};
+        _isLoadingStoreProducts = false;
+        _storeProductsUnavailable = true;
+      });
+    }
   }
 
   Future<void> _loadPaymentPlans() async {
@@ -162,7 +214,7 @@ class _ProfessionalRegistrationPageState
     try {
       final catalog =
           await (widget.paymentPlansLoader?.call() ??
-              StripeNativePaymentService.fetchPaymentPlans());
+              StorePurchaseService.fetchPaymentPlans());
       if (!mounted) return;
 
       final previousSelection = catalog.findPlan(_selectedPlanId ?? '');
@@ -460,6 +512,8 @@ class _ProfessionalRegistrationPageState
   // --- Form Logic ---
 
   Future<void> _submitForm() async {
+    if (_isSubmitting) return;
+
     // Validation finale au cas où
     final selectedCategory = _selectedCategory;
     if (_businessNameController.text.trim().isEmpty ||
@@ -570,72 +624,49 @@ class _ProfessionalRegistrationPageState
           isEn ? 'Creating free profile...' : 'Création du profil gratuit...',
         );
 
-        final result = await StripeNativePaymentService.processNativePayment(
-          planId: selectedPlan.id,
-          professionalId: _registrationSessionId,
-          email: _emailController.text,
-          businessName: _businessNameController.text,
-          categoryId: selectedCategory.id,
-          ville: _cityController.text,
-          phone: _phoneController.text,
-          registrationData: registrationData,
+        final result = await StorePurchaseService.submitFreeRegistration(
+          StorePurchaseRequest(
+            planId: selectedPlan.id,
+            professionalId: _registrationSessionId,
+            email: _emailController.text,
+            businessName: _businessNameController.text,
+            categoryId: selectedCategory.id,
+            ville: _cityController.text,
+            phone: _phoneController.text,
+            registrationData: registrationData,
+            maxGalleryImages: selectedPlan.capabilities.galleryMax,
+          ),
           serverQuote: selectedPlan,
         );
 
-        if (result.success && result.paymentIntentId != null) {
-          final confirm =
-              result.confirmation ??
-              await StripeNativePaymentService.confirmPaymentOnServerTyped(
-                paymentIntentId: result.paymentIntentId!,
-                checkoutId: result.checkoutId,
-              );
-
-          if (confirm.success) {
-            final realId = confirm.professionalId ?? _registrationSessionId;
-            if (!mounted) return;
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (_) => PaymentSuccessPage(
-                  professionalId: realId,
-                  businessName: _businessNameController.text,
-                  planType: selectedPlan.id,
-                  amountPaid: selectedPlan.amount,
-                  currency: selectedPlan.currency.toUpperCase(),
-                  paymentId: result.checkoutId ?? result.paymentIntentId!,
-                  professionalEmail: _emailController.text,
-                  categoryId: selectedCategory.id,
-                  categoryName: selectedCategory.title,
-                  categoryNameEn: selectedCategory.titleEn,
-                  confirmation: confirm,
-                ),
-              ),
-            );
-          } else {
-            if (!mounted) return;
-            _showErrorMessage(
-              confirm.message ??
-                  (isEn
-                      ? 'The registration could not be confirmed. Please retry.'
-                      : 'L’inscription n’a pas pu être confirmée. Veuillez réessayer.'),
-            );
-          }
-        } else {
-          if (!mounted) return;
-          _showErrorMessage(
-            result.error ??
-                (isEn
-                    ? 'The registration could not be submitted. Please retry.'
-                    : 'L’inscription n’a pas pu être envoyée. Veuillez réessayer.'),
-          );
-        }
+        final confirm = result.confirmation;
+        final realId = confirm.professionalId ?? _registrationSessionId;
+        if (!mounted) return;
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => PaymentSuccessPage(
+              professionalId: realId,
+              businessName: _businessNameController.text,
+              planType: selectedPlan.id,
+              amountPaid: selectedPlan.amount,
+              currency: selectedPlan.currency.toUpperCase(),
+              paymentId: result.checkout.checkoutId,
+              professionalEmail: _emailController.text,
+              categoryId: selectedCategory.id,
+              categoryName: selectedCategory.title,
+              categoryNameEn: selectedCategory.titleEn,
+              confirmation: confirm,
+            ),
+          ),
+        );
       } else {
         // Paid Plan
         if (!mounted) return;
         await Navigator.push<void>(
           context,
           MaterialPageRoute(
-            builder: (_) => NativePaymentPage(
+            builder: (_) => StorePurchasePage(
               businessName: _businessNameController.text,
               email: _emailController.text,
               selectedPlan: selectedPlan.id,
@@ -645,6 +676,9 @@ class _ProfessionalRegistrationPageState
               categoryName: selectedCategory.title,
               categoryNameEn: selectedCategory.titleEn,
               registrationData: registrationData,
+              purchaseService:
+                  widget.storePurchaseService ?? _resolvedStorePurchaseService,
+              initialProduct: _storeProductsByPlan[selectedPlan.id],
             ),
           ),
         );
@@ -664,52 +698,80 @@ class _ProfessionalRegistrationPageState
 
   // --- UI Building Blocks ---
 
+  Widget _buildLabeledField({
+    required String label,
+    required Widget field,
+    Key? labelKey,
+  }) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          label,
+          key: labelKey,
+          softWrap: true,
+          style: theme.textTheme.labelLarge?.copyWith(
+            color: theme.colorScheme.onSurface,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.xs),
+        field,
+      ],
+    );
+  }
+
   Widget _buildStep1Identity(bool isEn) {
     final selectedCategoryValue = _selectedCategory?.id;
     return Form(
       key: _step1Key,
       child: Column(
         children: [
-          TextFormField(
-            controller: _businessNameController,
-            decoration: InputDecoration(
-              labelText: isEn
-                  ? 'Professional/Business Name *'
-                  : 'Nom du professionnel/entreprise *',
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.business),
+          _buildLabeledField(
+            label: isEn
+                ? 'Professional/Business Name *'
+                : 'Nom du professionnel/entreprise *',
+            field: TextFormField(
+              key: const ValueKey<String>('registration-business-name-field'),
+              controller: _businessNameController,
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.business),
+              ),
+              validator: (v) => (v == null || v.trim().length < 2)
+                  ? (isEn ? 'Min 2 chars' : 'Min 2 caractères')
+                  : null,
             ),
-            validator: (v) => (v == null || v.trim().length < 2)
-                ? (isEn ? 'Min 2 chars' : 'Min 2 caractères')
-                : null,
           ),
           const SizedBox(height: 16),
-          DropdownButtonFormField<String>(
-            key: ValueKey(selectedCategoryValue),
-            initialValue: selectedCategoryValue,
-            isExpanded: true,
-            decoration: InputDecoration(
-              labelText: isEn ? 'Category *' : 'Catégorie *',
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.category),
-            ),
-            items: _getSortedCategories()
-                .map(
-                  (c) => DropdownMenuItem(
-                    value: c.id,
-                    child: Text(
-                      isEn ? c.titleEn : c.title,
-                      overflow: TextOverflow.ellipsis,
+          _buildLabeledField(
+            label: isEn ? 'Category *' : 'Catégorie *',
+            field: DropdownButtonFormField<String>(
+              key: ValueKey(selectedCategoryValue),
+              initialValue: selectedCategoryValue,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.category),
+              ),
+              items: _getSortedCategories()
+                  .map(
+                    (c) => DropdownMenuItem(
+                      value: c.id,
+                      child: Text(
+                        isEn ? c.titleEn : c.title,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                  ),
-                )
-                .toList(),
-            onChanged: _isLoadingCategories || _categoriesUnavailable
-                ? null
-                : (value) => setState(() => _selectedCategoryId = value ?? ''),
-            validator: (v) => (v == null || v.trim().isEmpty)
-                ? (isEn ? 'Required' : 'Requis')
-                : null,
+                  )
+                  .toList(),
+              onChanged: _isLoadingCategories || _categoriesUnavailable
+                  ? null
+                  : (value) =>
+                        setState(() => _selectedCategoryId = value ?? ''),
+              validator: (v) => (v == null || v.trim().isEmpty)
+                  ? (isEn ? 'Required' : 'Requis')
+                  : null,
+            ),
           ),
           if (_isLoadingCategories) ...[
             const SizedBox(height: 8),
@@ -736,14 +798,15 @@ class _ProfessionalRegistrationPageState
             ),
           ],
           const SizedBox(height: 16),
-          TextFormField(
-            controller: _descriptionController,
-            maxLines: 3,
-            decoration: InputDecoration(
-              labelText: isEn ? 'Short Description' : 'Brève description',
-              hintText: isEn ? 'What do you offer?' : 'Que proposez-vous ?',
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.description),
+          _buildLabeledField(
+            label: isEn ? 'Short Description' : 'Brève description',
+            field: TextFormField(
+              controller: _descriptionController,
+              maxLines: 3,
+              decoration: InputDecoration(
+                hintText: isEn ? 'What do you offer?' : 'Que proposez-vous ?',
+                prefixIcon: const Icon(Icons.description),
+              ),
             ),
           ),
         ],
@@ -756,111 +819,114 @@ class _ProfessionalRegistrationPageState
       key: _step2Key,
       child: Column(
         children: [
-          TextFormField(
-            controller: _emailController,
-            keyboardType: TextInputType.emailAddress,
-            decoration: InputDecoration(
-              labelText: 'Email *',
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.email),
+          _buildLabeledField(
+            label: 'Email *',
+            labelKey: const ValueKey<String>('registration-email-label'),
+            field: TextFormField(
+              key: const ValueKey<String>('registration-email-field'),
+              controller: _emailController,
+              keyboardType: TextInputType.emailAddress,
+              decoration: const InputDecoration(prefixIcon: Icon(Icons.email)),
+              validator: (value) => _validateEmail(value, isEn),
             ),
-            validator: (value) => _validateEmail(value, isEn),
           ),
           const SizedBox(height: 16),
-          TextFormField(
-            controller: _phoneController,
-            keyboardType: TextInputType.phone,
-            decoration: InputDecoration(
-              labelText: isEn ? 'Phone *' : 'Téléphone *',
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.phone),
+          _buildLabeledField(
+            label: isEn ? 'Phone *' : 'Téléphone *',
+            field: TextFormField(
+              controller: _phoneController,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(prefixIcon: Icon(Icons.phone)),
+              validator: (value) => _validatePhone(value, isEn),
             ),
-            validator: (value) => _validatePhone(value, isEn),
           ),
           const SizedBox(height: 16),
-          TextFormField(
-            controller: _addressController,
-            decoration: InputDecoration(
-              labelText: isEn ? 'Address *' : 'Adresse *',
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.location_on),
+          _buildLabeledField(
+            label: isEn ? 'Address *' : 'Adresse *',
+            field: TextFormField(
+              controller: _addressController,
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.location_on),
+              ),
+              validator: (v) => (v == null || v.trim().isEmpty)
+                  ? (isEn ? 'Required' : 'Requis')
+                  : null,
             ),
-            validator: (v) => (v == null || v.trim().isEmpty)
-                ? (isEn ? 'Required' : 'Requis')
-                : null,
           ),
           const SizedBox(height: 16),
           // Autocomplete Ville
-          RawAutocomplete<String>(
-            textEditingController: _cityController,
-            focusNode: _cityFocusNode,
-            optionsBuilder: (TextEditingValue textEditingValue) {
-              if (textEditingValue.text.isEmpty) {
-                return const Iterable<String>.empty();
-              }
-              return kCanadianCities.where((String option) {
-                final normalizedOption = _removeDiacritics(
-                  option.toLowerCase(),
-                );
-                final normalizedInput = _removeDiacritics(
-                  textEditingValue.text.toLowerCase(),
-                );
-                return normalizedOption.contains(normalizedInput);
-              });
-            },
-            fieldViewBuilder:
-                (context, controller, focusNode, onFieldSubmitted) {
-                  return TextFormField(
-                    controller: controller,
-                    focusNode: focusNode,
-                    decoration: InputDecoration(
-                      labelText: isEn ? 'City *' : 'Ville *',
-                      border: const OutlineInputBorder(),
-                      prefixIcon: const Icon(Icons.location_city),
-                      suffixIcon: const Icon(Icons.arrow_drop_down),
-                    ),
-                    validator: (v) => (v == null || v.trim().isEmpty)
-                        ? (isEn ? 'Required' : 'Requis')
-                        : null,
+          _buildLabeledField(
+            label: isEn ? 'City *' : 'Ville *',
+            field: RawAutocomplete<String>(
+              textEditingController: _cityController,
+              focusNode: _cityFocusNode,
+              optionsBuilder: (TextEditingValue textEditingValue) {
+                if (textEditingValue.text.isEmpty) {
+                  return const Iterable<String>.empty();
+                }
+                return kCanadianCities.where((String option) {
+                  final normalizedOption = _removeDiacritics(
+                    option.toLowerCase(),
                   );
-                },
-            optionsViewBuilder: (context, onSelected, options) {
-              return Align(
-                alignment: Alignment.topLeft,
-                child: Material(
-                  elevation: 4,
-                  child: Container(
-                    width:
-                        MediaQuery.of(context).size.width -
-                        64, // Ajustement largeur
-                    constraints: const BoxConstraints(maxHeight: 200),
-                    color: Colors.white,
-                    child: ListView.builder(
-                      padding: EdgeInsets.zero,
-                      itemCount: options.length,
-                      itemBuilder: (ctx, index) {
-                        final option = options.elementAt(index);
-                        return ListTile(
-                          title: Text(option),
-                          onTap: () => onSelected(option),
-                        );
-                      },
+                  final normalizedInput = _removeDiacritics(
+                    textEditingValue.text.toLowerCase(),
+                  );
+                  return normalizedOption.contains(normalizedInput);
+                });
+              },
+              fieldViewBuilder:
+                  (context, controller, focusNode, onFieldSubmitted) {
+                    return TextFormField(
+                      controller: controller,
+                      focusNode: focusNode,
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.location_city),
+                        suffixIcon: Icon(Icons.arrow_drop_down),
+                      ),
+                      validator: (v) => (v == null || v.trim().isEmpty)
+                          ? (isEn ? 'Required' : 'Requis')
+                          : null,
+                    );
+                  },
+              optionsViewBuilder: (context, onSelected, options) {
+                return Align(
+                  alignment: Alignment.topLeft,
+                  child: Material(
+                    elevation: 4,
+                    child: Container(
+                      width:
+                          MediaQuery.of(context).size.width -
+                          64, // Ajustement largeur
+                      constraints: const BoxConstraints(maxHeight: 200),
+                      color: Colors.white,
+                      child: ListView.builder(
+                        padding: EdgeInsets.zero,
+                        itemCount: options.length,
+                        itemBuilder: (ctx, index) {
+                          final option = options.elementAt(index);
+                          return ListTile(
+                            title: Text(option),
+                            onTap: () => onSelected(option),
+                          );
+                        },
+                      ),
                     ),
                   ),
-                ),
-              );
-            },
+                );
+              },
+            ),
           ),
           const SizedBox(height: 16),
-          TextFormField(
-            controller: _websiteController,
-            decoration: InputDecoration(
-              labelText: isEn ? 'Website (optional)' : 'Site Web (optionnel)',
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.language),
+          _buildLabeledField(
+            label: isEn ? 'Website (optional)' : 'Site Web (optionnel)',
+            field: TextFormField(
+              controller: _websiteController,
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.language),
+              ),
+              keyboardType: TextInputType.url,
+              validator: (value) => _validateWebsite(value, isEn),
             ),
-            keyboardType: TextInputType.url,
-            validator: (value) => _validateWebsite(value, isEn),
           ),
         ],
       ),
@@ -1041,11 +1107,13 @@ class _ProfessionalRegistrationPageState
     IconData icon,
   ) {
     final colors = Theme.of(context).colorScheme;
-    return TextFormField(
-      controller: controller,
-      decoration: InputDecoration(
-        labelText: label,
-        prefixIcon: Icon(icon, color: colors.onSurfaceVariant),
+    return _buildLabeledField(
+      label: label,
+      field: TextFormField(
+        controller: controller,
+        decoration: InputDecoration(
+          prefixIcon: Icon(icon, color: colors.onSurfaceVariant),
+        ),
       ),
     );
   }
@@ -1067,7 +1135,13 @@ class _ProfessionalRegistrationPageState
     final theme = Theme.of(context);
     final planName = isEn ? plan.labelEn : plan.labelFr;
     final price = _formatPlanPrice(plan, isEn);
-    final unavailableMessage = _localizationService.tr('paid_plan_mobile_only');
+    final unavailableMessage = !_supportsStorePurchases
+        ? _localizationService.tr('paid_plan_mobile_only')
+        : _isLoadingStoreProducts
+        ? (isEn ? 'Store price loading.' : 'Chargement du prix du store.')
+        : (isEn
+              ? 'This product is unavailable in the store.'
+              : 'Ce produit est indisponible dans le store.');
     return Semantics(
       container: true,
       button: true,
@@ -1166,6 +1240,18 @@ class _ProfessionalRegistrationPageState
                           fontWeight: FontWeight.w800,
                         ),
                       ),
+                      if (!plan.requiresPayment) ...[
+                        const SizedBox(height: AppSpacing.xxs),
+                        Text(
+                          isEn
+                              ? 'No credit card required'
+                              : 'Aucune carte requise',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: AppSpacing.sm),
                       ...features.map(
                         (feature) => Padding(
@@ -1339,7 +1425,7 @@ class _ProfessionalRegistrationPageState
           const SizedBox(height: AppSpacing.md),
           _buildPublicationReviewNotice(isEn),
           const SizedBox(height: AppSpacing.lg),
-          if (_isLoadingPlans)
+          if (_isLoadingPlans || _isLoadingStoreProducts)
             const Center(child: CircularProgressIndicator())
           else if (_plansUnavailable || _paymentPlans.isEmpty)
             Card(
@@ -1367,7 +1453,30 @@ class _ProfessionalRegistrationPageState
               ),
             )
           else ...[
-            if (hasUnsupportedPlans) _buildWebPaymentAvailabilityNotice(),
+            if (hasUnsupportedPlans && !_supportsStorePurchases)
+              _buildWebPaymentAvailabilityNotice(),
+            if (_storeProductsUnavailable && _supportsStorePurchases)
+              Card(
+                color: theme.colorScheme.errorContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(AppSpacing.md),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          isEn
+                              ? 'Store prices are temporarily unavailable. Paid plans remain disabled.'
+                              : 'Les prix du store sont temporairement indisponibles. Les forfaits payants restent désactivés.',
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: _loadStoreProducts,
+                        child: Text(isEn ? 'Retry' : 'Réessayer'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             for (final plan in _paymentPlans) _buildPlanCard(plan, isEn),
           ],
 
@@ -1389,28 +1498,23 @@ class _ProfessionalRegistrationPageState
                   padding: const EdgeInsets.all(8.0),
                   child: Column(
                     children: [
-                      TextFormField(
-                        controller: _couponTitleController,
-                        decoration: InputDecoration(
-                          labelText: isEn ? 'Coupon Title' : 'Titre du coupon',
-                          border: const OutlineInputBorder(),
+                      _buildLabeledField(
+                        label: isEn ? 'Coupon Title' : 'Titre du coupon',
+                        field: TextFormField(
+                          controller: _couponTitleController,
                         ),
                       ),
                       const SizedBox(height: 8),
-                      TextFormField(
-                        controller: _couponCodeController,
-                        decoration: InputDecoration(
-                          labelText: isEn ? 'Code' : 'Code',
-                          border: const OutlineInputBorder(),
-                        ),
+                      _buildLabeledField(
+                        label: 'Code',
+                        field: TextFormField(controller: _couponCodeController),
                       ),
                       const SizedBox(height: 8),
-                      TextFormField(
-                        controller: _couponDescriptionController,
-                        maxLines: 3,
-                        decoration: InputDecoration(
-                          labelText: isEn ? 'Description' : 'Description',
-                          border: const OutlineInputBorder(),
+                      _buildLabeledField(
+                        label: 'Description',
+                        field: TextFormField(
+                          controller: _couponDescriptionController,
+                          maxLines: 3,
                         ),
                       ),
                       const SizedBox(height: 8),
@@ -1576,11 +1680,12 @@ class _ProfessionalRegistrationPageState
                       final isLast = _currentStep == steps.length - 1;
                       final selectedPlan = _selectedPlan;
                       final canSubmit =
-                          !isLast ||
-                          (!_isLoadingPlans &&
-                              !_plansUnavailable &&
-                              selectedPlan != null &&
-                              _isPlanSupported(selectedPlan));
+                          !_isSubmitting &&
+                          (!isLast ||
+                              (!_isLoadingPlans &&
+                                  !_plansUnavailable &&
+                                  selectedPlan != null &&
+                                  _isPlanSupported(selectedPlan)));
                       return Padding(
                         padding: const EdgeInsets.only(top: AppSpacing.lg),
                         child: Row(

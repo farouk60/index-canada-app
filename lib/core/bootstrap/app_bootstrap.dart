@@ -1,13 +1,12 @@
 import 'dart:async';
 
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
-import 'package:flutter_stripe/flutter_stripe.dart';
 
 import '../../services/firebase_analytics_service.dart';
 import '../../services/ios_optimization_service.dart';
 import '../../services/localization_service.dart';
+import '../../services/store_purchase_service.dart';
 import '../config/app_config.dart';
 import '../logging/app_logger.dart';
 
@@ -73,10 +72,21 @@ final class AppBootstrap {
   factory AppBootstrap.production({
     required AppConfig config,
     required AppLogger logger,
+    bool? storePurchasesSupported,
+    BootstrapAction? initializeStorePurchases,
   }) {
+    final supportsStorePurchases =
+        storePurchasesSupported ?? StorePurchaseService.isSupportedPlatform;
     return AppBootstrap(
       logger: logger,
       steps: [
+        if (supportsStorePurchases)
+          BootstrapStep(
+            name: 'achats intégrés mobiles',
+            initialize:
+                initializeStorePurchases ??
+                StorePurchaseService.initializeShared,
+          ),
         const BootstrapStep(
           name: 'optimisations de la plateforme',
           initialize: IOSOptimizationService.configureIOSOptimizations,
@@ -88,10 +98,6 @@ final class AppBootstrap {
         BootstrapStep(
           name: 'préférences linguistiques',
           initialize: LocalizationService().loadSavedLanguage,
-        ),
-        BootstrapStep(
-          name: 'paiement Stripe',
-          initialize: () => _configureStripe(config, logger),
         ),
         BootstrapStep(
           name: 'cache d\'images',
@@ -136,29 +142,6 @@ final class AppBootstrap {
     }
 
     return BootstrapResult(issues: issues);
-  }
-
-  static Future<void> _configureStripe(
-    AppConfig config,
-    AppLogger logger,
-  ) async {
-    if (kIsWeb) {
-      logger.info(
-        'PaymentSheet Stripe est désactivé sur Web; le forfait gratuit reste disponible.',
-      );
-      return;
-    }
-
-    if (!config.hasValidStripeConfiguration) {
-      logger.warning(
-        'Configuration Stripe absente ou invalide; le paiement sera indisponible.',
-      );
-      return;
-    }
-
-    Stripe.publishableKey = config.stripePublishableKey.trim();
-    Stripe.urlScheme = config.stripeUrlScheme.trim();
-    await Stripe.instance.applySettings();
   }
 
   static void _configureImageCache(AppConfig config) {

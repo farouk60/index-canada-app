@@ -3,7 +3,10 @@
 Index Canada est une application Flutter bilingue (français/anglais) qui
 permet de découvrir des professionnels, services, partenaires et offres au
 Canada. Wix fournit le CMS et le backend privé; Stripe traite les paiements sur
-Android et iOS.
+le Web ou les parcours backend historiques qui sont encore activés. Sur iOS et
+Android, le forfait Basique reste gratuit et les forfaits annuels payants sont
+achetés exclusivement avec StoreKit ou Google Play Billing, puis validés côté
+serveur avant l'attribution d'un droit.
 
 Le dépôt a été renforcé pour rendre le code reproductible, limiter
 l'exposition des données et sécuriser le parcours inscription → paiement →
@@ -67,10 +70,17 @@ par défaut et au plus 100. Le client courant demande des pages de 100 et suit
 - Accessibilité native : mise à l'échelle du texte, zones tactiles suffisantes
   et libellés sémantiques.
 - Configuration publique injectée au build, sans secret dans l'application.
-- Paiement Stripe PaymentSheet sur Android et iOS. Les forfaits payants sont
-  volontairement désactivés sur le Web tant qu'un parcours Stripe Web dédié
-  n'est pas livré; le forfait gratuit reste disponible.
-- Tests déterministes sans accès à Stripe, Firebase ou Wix en production.
+- Forfait Basique gratuit, sans achat auprès d'un store. Les forfaits Premium
+  et En Vedette sont des abonnements annuels renouvelables achetés avec
+  StoreKit sur iOS et Google Play Billing sur Android; leur prix affiché vient
+  toujours du store de l'utilisateur.
+- Aucun SDK, clé publiable ou secret Stripe n'est embarqué dans le client
+  mobile. Stripe demeure limité à un éventuel parcours Web/legacy séparé.
+- Un achat mobile n'active jamais directement un profil : le backend vérifie la
+  transaction auprès d'Apple ou Google, gère le droit et maintient la fiche en
+  modération jusqu'à son approbation dans Wix.
+- Tests déterministes sans accès à Apple, Google Play, Stripe, Firebase ou Wix
+  en production.
 
 ## Démarrage local
 
@@ -82,34 +92,48 @@ Plugin `8.11.1` et Kotlin Gradle Plugin `2.2.21`.
 flutter pub get --enforce-lockfile
 flutter run \
   --dart-define=APP_ENVIRONMENT=development \
-  --dart-define=API_BASE_URL=https://votre-domaine/_functions \
-  --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_votre_cle
+  --dart-define=API_BASE_URL=https://votre-domaine/_functions
 ```
 
 Le fichier `.env.example` documente les valeurs disponibles; Flutter ne le lit
 pas automatiquement. Ne commettez jamais de fichier `.env` réel.
 
-La configuration est validée au démarrage. En `production`,
-`API_BASE_URL` doit être une URL HTTPS réelle et non une valeur d'exemple. Sur
-Android et iOS, `STRIPE_PUBLISHABLE_KEY` doit commencer par `pk_live_`; une clé
-`pk_test_` est permise en préproduction seulement. Le Web n'exige pas de clé
-Stripe tant que les forfaits payants y sont désactivés.
+La configuration est validée au démarrage. En `production`, `API_BASE_URL` doit
+être une URL HTTPS réelle et non une valeur d'exemple. Les identifiants publics
+des produits annuels sont versionnés par l'application, mais aucun secret
+Apple, Google Play ou Stripe ne doit être transmis au client, dans un fichier
+`.env` ou par `--dart-define`. Les justificatifs d'achat sont envoyés au backend
+pour vérification; les identifiants de service et certificats restent dans le
+gestionnaire de secrets Wix.
 
-## Backend Wix et Stripe
+## Backend Wix, Store Billing et compatibilité Stripe
 
-Le gestionnaire de secrets Wix doit contenir :
+Pour les achats mobiles, le gestionnaire de secrets Wix doit contenir les
+valeurs propres à l'environnement documentées dans
+[WIX_DEPLOYMENT.md](WIX_DEPLOYMENT.md), notamment :
 
-- `STRIPE_SECRET_KEY` : clé Stripe secrète de l'environnement;
-- `STRIPE_WEBHOOK_SECRET` : secret de signature du webhook correspondant;
 - `CHECKOUT_SIGNING_SECRET` : valeur aléatoire d'au moins 32 octets pour les
-  confirmations gratuites et les empreintes anti-abus.
+  confirmations et les empreintes anti-abus;
+- `CHECKOUT_SIGNING_SECRET_PREVIOUS` : anciennes valeurs encore acceptées
+  pendant une rotation contrôlée;
+- `APPLE_APP_ID` et `APPLE_ROOT_CERTIFICATES_BASE64` pour la validation Apple;
+- `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` et les paramètres `GOOGLE_RTDN_*` pour la
+  validation Google Play et les notifications temps réel;
+- `STORE_ALLOW_SANDBOX=true` uniquement en préproduction.
+
+`STRIPE_SECRET_KEY` et `STRIPE_WEBHOOK_SECRET` ne sont requis que si le parcours
+Web/legacy Stripe correspondant reste déployé. Ils ne servent jamais à un
+achat natif iOS ou Android et ne doivent jamais être copiés dans l'application.
 
 Les collections de contenu et les collections techniques
-`PaymentCheckouts`/`ApiRateLimits`/`EngagementEvents` doivent être privées. Le webhook Stripe
-`POST /_functions/stripeWebhook` doit recevoir au minimum
-`payment_intent.succeeded`. La confirmation est idempotente : le checkout,
-l'intention Stripe et le profil final portent des identifiants et empreintes
-déterministes, et le webhook revalide statut, montant, devise et métadonnées.
+`PaymentCheckouts`, `Entitlements`, `PaymentEvents`, `ApiRateLimits` et
+`EngagementEvents` doivent être privées. Le backend valide les transactions
+auprès d'Apple ou Google, traite les renouvellements, restaurations,
+changements de formule, expirations et révocations, puis applique ces événements
+de manière idempotente. Aucun reçu, jeton d'achat brut ou secret de service ne
+doit être persisté ou journalisé. Si la compatibilité Stripe Web/legacy est
+conservée, son webhook `POST /_functions/stripeWebhook` et sa vérification de
+signature restent un flux séparé.
 
 Le limiteur persiste ses compteurs dans Wix. Il échoue en mode fermé pour les
 écritures sensibles, mais une séquence lecture/mise à jour Wix n'est pas un
@@ -155,10 +179,12 @@ configuration présente n'est pas une preuve de pipeline vert. Consultez
 
 ## Règles avant publication
 
-1. Déployer et tester d'abord avec les clés Stripe de test et un environnement
-   Wix isolé.
-2. Exécuter les parcours recherche, avis, inscription gratuite, paiement,
-   webhook, reprise idempotente et modération.
+1. Déployer d'abord dans un environnement Wix isolé, avec le sandbox Apple et
+   les testeurs sous licence Google Play; `STORE_ALLOW_SANDBOX` doit rester
+   désactivé en production.
+2. Exécuter les parcours recherche, avis, inscription Basique gratuite, achats
+   annuels StoreKit/Google Play, restauration, changement de forfait,
+   notifications store, reprise idempotente et modération.
 3. Confirmer que toute inscription, gratuite ou payante, reste
    `pending_review` et inactive jusqu'à validation humaine dans Wix.
 4. Valider la politique de confidentialité bilingue et le consentement pour les
@@ -166,7 +192,12 @@ configuration présente n'est pas une preuve de pipeline vert. Consultez
 5. Configurer la signature Android (`android/key.properties`) et la signature
    iOS. Le contournement `-PindexCanada.allowUnsignedRelease=true` est réservé
    à la CI et produit un artefact non distribuable.
-6. Révoquer et remplacer toute ancienne clé Wix réelle qui aurait figuré dans
+6. Configurer les produits annuels, les notifications App Store Server et
+   Google RTDN, puis vérifier renouvellement, annulation, expiration,
+   remboursement et révocation avant une soumission publique.
+7. Si un paiement Web/legacy Stripe est maintenu, le tester séparément en mode
+   test avec son propre webhook; ce flux ne valide pas les achats mobiles.
+8. Révoquer et remplacer toute ancienne clé Wix réelle qui aurait figuré dans
    `.env.production` ou l'historique Git; supprimer le fichier courant ne
    révoque pas la clé et ne nettoie pas l'historique.
 

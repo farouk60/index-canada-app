@@ -10,8 +10,8 @@ Ce document décrit les valeurs vérifiées dans le dépôt et propose des texte
 | --- | --- |
 | Nom de l'application | Index Canada |
 | Package Android | `ca.indexcanada.app` |
-| Version | `1.0.3` |
-| Code de version | `21` |
+| Version candidate | `1.1.0` |
+| Code de version candidat | `26` |
 | Firebase Analytics | Désactivé (stub) |
 | Artefact Android CI | AAB non signé, vérification seulement |
 
@@ -87,7 +87,7 @@ does not guarantee approval or publication of a profile.
 
 | Permission | Usage actuel |
 | --- | --- |
-| `android.permission.INTERNET` | Appels du backend Wix, paiement et chargement des médias. |
+| `android.permission.INTERNET` | Appels du backend Wix, Google Play Billing et chargement des médias. |
 | `android.permission.ACCESS_NETWORK_STATE` | Détection de l'état réseau. |
 | `android.permission.CAMERA` | Prise d'une photo de profil ou de galerie pendant l'inscription. |
 
@@ -101,17 +101,17 @@ La galerie utilise le sélecteur système. Les liens `tel:`, cartes et itinérai
 
 ## 4. Sécurité des données — inventaire préliminaire
 
-**Ne pas copier cet inventaire tel quel dans Play Console.** Le formulaire final doit provenir d'une observation de la version signée connectée au backend Wix/Stripe de production, y compris les SDK tiers. Google précise que le développeur est responsable de l'exactitude complète de la déclaration.
+**Ne pas copier cet inventaire tel quel dans Play Console.** Le formulaire final doit provenir d'une observation de la version signée connectée au backend Wix et à Google Play Billing, y compris les SDK tiers. Google précise que le développeur est responsable de l'exactitude complète de la déclaration.
 
 | Type potentiel | Observation actuelle | Validation requise avant soumission |
 | --- | --- | --- |
 | Coordonnées professionnelles | Le parcours d'inscription peut transmettre à Wix le nom, l'entreprise, le courriel, le téléphone, l'adresse, le site et la description fournis par l'utilisateur. | Confirmer les champs exacts, leur caractère obligatoire/facultatif, la finalité, la conservation et la suppression. |
 | Photos et vidéos | Des photos choisies ou prises peuvent être envoyées à Wix Media Manager pour le profil/la galerie. | Confirmer qu'aucun Base64 n'est stocké en collection, documenter conservation et suppression. |
-| Paiement | Stripe traite le paiement natif ; Wix conserve des identifiants et statuts nécessaires au rapprochement. L'application ne doit pas enregistrer les données complètes de carte. | Observer les données envoyées par le SDK Stripe et déclarer les catégories/finalités exigées par Google Play. |
+| Paiement | Google Play traite l'abonnement numérique natif; Wix reçoit une preuve d'achat, la valide auprès de Google et conserve uniquement les références hachées, statuts et dates nécessaires au droit. L'application ne reçoit ni ne conserve les données complètes de carte. | Valider le comportement du SDK Play Billing, la conservation serveur et les catégories/finalités exigées par Google Play. |
 | Localisation de l'appareil | Aucune permission Android de localisation n'est déclarée. | Vérifier qu'aucun SDK ou appel réseau ne collecte une position ou une localisation approximative. |
 | Activité dans l'application | Firebase Analytics est désactivé et ne doit pas être déclaré actif. | Vérifier les autres SDK, journaux serveur et données de diagnostic avant de répondre « non collecté ». |
 | Favoris | Le comportement doit être vérifié pour déterminer s'ils restent uniquement sur l'appareil ou sont transmis. | Observer le trafic et documenter le stockage réel. |
-| Identifiants de l'appareil et diagnostics | Non déterminé par la seule lecture des permissions. | Auditer Flutter, Stripe, Wix et tout SDK présent dans l'artefact signé. |
+| Identifiants de l'appareil et diagnostics | Non déterminé par la seule lecture des permissions. | Auditer Flutter, Google Play Billing, Wix et tout SDK présent dans l'artefact signé. |
 
 Avant de remplir le formulaire :
 
@@ -154,8 +154,12 @@ Référence officielle : [Ajouter des éléments d'aperçu à la fiche Play Stor
 
 - [ ] Vérifier le profil développeur et les coordonnées publiques.
 - [ ] Créer ou confirmer l'application avec le package `ca.indexcanada.app`.
-- [ ] Activer Play App Signing et protéger la clé d'envoi.
-- [ ] Produire un AAB **signé** avec les valeurs Wix/Stripe de production approuvées.
+- [x] Play App Signing est actif.
+- [ ] Résoudre la demande de réinitialisation de la clé d'envoi et confirmer que le certificat local correspond au certificat d'importation attendu par Play Console.
+- [ ] Produire un AAB `1.1.0+26` **signé** avec l'URL Wix de production approuvée et sans clé Stripe.
+- [ ] Importer d'abord cet AAB dans le canal interne; Play Console exige un APK/AAB compatible avant de permettre la création des abonnements.
+- [ ] Créer les abonnements annuels `ca.indexcanada.app.premium.annual` et `ca.indexcanada.app.professional.annual`, leurs offres de base, prix CAD et localisations FR/EN.
+- [ ] Configurer Google Real-time Developer Notifications et valider le topic/compte de service côté Wix.
 - [ ] Tester cet AAB depuis le canal interne sur un appareil Android réel.
 - [ ] Ajouter les fiches locales français (Canada) et anglais (Canada).
 - [ ] Ajouter l'icône, la bannière, les captures et leurs textes alternatifs.

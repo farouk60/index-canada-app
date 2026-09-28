@@ -35,18 +35,20 @@ class _LanguageSelectorState extends State<LanguageSelector> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final foregroundColor =
+        IconTheme.of(context).color ??
+        DefaultTextStyle.of(context).style.color ??
+        colorScheme.onSurface;
     return PopupMenuButton<String>(
       icon: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.language, color: colorScheme.onSurface, size: 20),
+          const Icon(Icons.language, size: 20),
           const SizedBox(width: 4),
           Text(
             _localizationService.currentLanguage.toUpperCase(),
-            style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              color: colorScheme.onSurface,
-              fontWeight: FontWeight.bold,
-            ),
+            style: Theme.of(context).textTheme.labelMedium
+                ?.copyWith(color: foregroundColor, fontWeight: FontWeight.bold),
           ),
         ],
       ),

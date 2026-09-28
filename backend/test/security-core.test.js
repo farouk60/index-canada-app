@@ -19,6 +19,7 @@ import {
   evaluateRateLimit,
   getPlan,
   isCategoryEnabled,
+  isProfessionalPubliclyVisible,
   isReviewPublic,
   normalizeEngagementEvent,
   normalizeImageDataUrl,
@@ -129,6 +130,13 @@ test("la projection publique des forfaits expose uniquement le devis et les capa
     coupon: true,
     featured: false,
   });
+  assert.deepEqual(plans.find((plan) => plan.id === "premium")?.store_products, {
+    app_store: "ca.indexcanada.app.premium.annual",
+    google_play: "ca.indexcanada.app.premium.annual",
+  });
+  assert.equal(plans.find((plan) => plan.id === "premium")?.billing_period, "P1Y");
+  assert.equal(plans.find((plan) => plan.id === "premium")?.auto_renewing, true);
+  assert.equal(Object.hasOwn(plans.find((plan) => plan.id === "basic"), "store_products"), false);
   assert.equal(JSON.stringify(plans).includes("amountCents"), false);
   assert.equal(JSON.stringify(plans).includes("secret"), false);
 });
@@ -784,6 +792,34 @@ test("les filtres publics featured, professionnel et catégorie sont stricts", (
   assert.equal(isCategoryEnabled({ _id: "cat-1", isActive: true }), true);
   assert.equal(isCategoryEnabled({ _id: "cat-1", isActive: false }), false);
   assert.equal(isCategoryEnabled({ _id: "cat-1", disabled: true }), false);
+});
+
+test("la visibilité publique combine modération et droit magasin non expiré", () => {
+  const future = new Date(NOW + 60_000).toISOString();
+  const past = new Date(NOW - 1).toISOString();
+  const approvedApple = {
+    isActive: true,
+    paymentProvider: "apple",
+    entitlementStatus: "active",
+    entitlementExpiresAt: future,
+  };
+
+  assert.equal(isProfessionalPubliclyVisible(approvedApple, NOW), true);
+  assert.equal(isProfessionalPubliclyVisible({
+    ...approvedApple,
+    entitlementStatus: "grace_period",
+  }, NOW), true);
+  assert.equal(isProfessionalPubliclyVisible({ ...approvedApple, isActive: false }, NOW), false);
+  assert.equal(isProfessionalPubliclyVisible({ ...approvedApple, entitlementExpiresAt: past }, NOW), false);
+  assert.equal(isProfessionalPubliclyVisible({ ...approvedApple, entitlementStatus: "revoked" }, NOW), false);
+  assert.equal(isProfessionalPubliclyVisible({ ...approvedApple, entitlementStatus: "expired" }, NOW), false);
+  assert.equal(isProfessionalPubliclyVisible({
+    isActive: true,
+    paymentProvider: "google",
+  }, NOW), false);
+  assert.equal(isProfessionalPubliclyVisible({ isActive: true, paymentProvider: "stripe" }, NOW), true);
+  assert.equal(isProfessionalPubliclyVisible({ isActive: true, paymentProvider: "free" }, NOW), true);
+  assert.equal(isProfessionalPubliclyVisible({ isActive: true }, NOW), true);
 });
 
 test("les avis exigent une note entière entre 1 et 5", () => {

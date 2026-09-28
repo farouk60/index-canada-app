@@ -40,6 +40,12 @@ export const PLAN_CATALOG = Object.freeze({
     currency: "cad",
     requiresPayment: true,
     durationDays: 365,
+    billingPeriod: "P1Y",
+    autoRenewing: true,
+    storeProducts: Object.freeze({
+      app_store: "ca.indexcanada.app.premium.annual",
+      google_play: "ca.indexcanada.app.premium.annual",
+    }),
     labelFr: "Plan Premium",
     labelEn: "Premium Plan",
     capabilities: Object.freeze({
@@ -69,6 +75,12 @@ export const PLAN_CATALOG = Object.freeze({
     currency: "cad",
     requiresPayment: true,
     durationDays: 365,
+    billingPeriod: "P1Y",
+    autoRenewing: true,
+    storeProducts: Object.freeze({
+      app_store: "ca.indexcanada.app.professional.annual",
+      google_play: "ca.indexcanada.app.professional.annual",
+    }),
     labelFr: "Plan En Vedette",
     labelEn: "Featured Plan",
     capabilities: Object.freeze({
@@ -334,6 +346,11 @@ export function projectPaymentPlans() {
       fr: Object.freeze([...plan.featuresFr]),
       en: Object.freeze([...plan.featuresEn]),
     }),
+    ...(plan.storeProducts ? {
+      store_products: Object.freeze({ ...plan.storeProducts }),
+      billing_period: plan.billingPeriod,
+      auto_renewing: plan.autoRenewing,
+    } : {}),
   }));
 }
 
@@ -613,6 +630,7 @@ export function createCheckoutDraft(rawBody, nowMs = Date.now()) {
     images: Object.freeze({ profile: images.profile, gallery: Object.freeze([...images.gallery]) }),
     imageHashes,
     coupon,
+    paymentProvider: plan.requiresPayment ? "stripe" : "free",
     paymentIntentId: "",
     professionalId: "",
     paymentAttempt: 0,
@@ -665,9 +683,11 @@ export function validatePaymentIntentBinding(paymentIntent, checkout) {
     throw new InputError("UNTRUSTED_PAYMENT_INTENT");
   }
   const plan = getPlan(checkout.planId);
+  const paymentProvider = checkout.paymentProvider ?? "stripe";
   const metadata = paymentIntent.metadata ?? {};
   if (
     !plan.requiresPayment
+    || paymentProvider !== "stripe"
     || typeof paymentIntent.id !== "string"
     || !PAYMENT_INTENT_PATTERN.test(paymentIntent.id)
     || (checkout.paymentIntentId && checkout.paymentIntentId !== paymentIntent.id)
@@ -1010,6 +1030,18 @@ function imageHashManifestsEqual(left, right) {
     && left.gallery.every((hash, index) => hash === right.gallery[index]);
 }
 
+function validateCheckoutPaymentProvider(checkout, plan) {
+  const provider = checkout.paymentProvider
+    ?? (plan.requiresPayment ? "stripe" : "free");
+  if (
+    (!plan.requiresPayment && provider !== "free")
+    || (plan.requiresPayment && !["stripe", "apple", "google"].includes(provider))
+  ) {
+    throw new InputError("INVALID_CHECKOUT");
+  }
+  return provider;
+}
+
 function validateTransientCheckout(checkout) {
   const transientCheckout = assertPlainObject(checkout);
   if (
@@ -1021,6 +1053,7 @@ function validateTransientCheckout(checkout) {
     throw new InputError("INVALID_CHECKOUT");
   }
   const plan = getPlan(transientCheckout.planId);
+  validateCheckoutPaymentProvider(transientCheckout, plan);
   const registration = normalizeRegistrationInput(transientCheckout.registration);
   const images = transientCheckout.images;
   if (
@@ -1161,6 +1194,7 @@ export function validatePersistedCheckout(checkout) {
     throw new InputError("INVALID_CHECKOUT");
   }
   const plan = getPlan(storedCheckout.planId);
+  validateCheckoutPaymentProvider(storedCheckout, plan);
   const registration = normalizeRegistrationInput(storedCheckout.registration);
   const imageHashes = normalizeImageHashManifest(storedCheckout.imageHashes);
   const media = normalizeUploadedImageReferences(imageHashes, storedCheckout.images);
@@ -1190,6 +1224,7 @@ export function buildProfessionalRecord(
   checkout,
   paymentId,
   nowMs = Date.now(),
+  { entitlement = null } = {},
 ) {
   const storedCheckout = assertPlainObject(checkout);
   const plan = validatePersistedCheckout(storedCheckout);
@@ -1198,27 +1233,50 @@ export function buildProfessionalRecord(
     storedCheckout.imageHashes,
     storedCheckout.images,
   );
+  const paymentProvider = storedCheckout.paymentProvider
+    ?? (plan.requiresPayment ? "stripe" : "free");
+  const stripePayment = paymentProvider === "stripe" && PAYMENT_INTENT_PATTERN.test(paymentId ?? "");
+  const storePayment = ["apple", "google"].includes(paymentProvider)
+    && new RegExp(`^store:${paymentProvider}:[a-f0-9]{64}$`, "u").test(paymentId ?? "");
+  const expectedProfessionalId = buildProfessionalId(`checkout:${storedCheckout._id}`);
+  const hasValidEntitlement = storePayment
+    && entitlement
+    && typeof entitlement === "object"
+    && !Array.isArray(entitlement)
+    && /^ent_[a-f0-9]{32}$/u.test(entitlement._id ?? "")
+    && entitlement.checkoutId === storedCheckout._id
+    && entitlement.professionalId === expectedProfessionalId
+    && entitlement.planId === plan.id
+    && entitlement.provider === paymentProvider
+    && ["active", "grace_period"].includes(entitlement.status)
+    && /^[a-f0-9]{64}$/u.test(entitlement.lastTransactionHash ?? "")
+    && paymentId === `store:${paymentProvider}:${entitlement.lastTransactionHash}`
+    && Number.isFinite(Date.parse(entitlement.expiresAt))
+    && Date.parse(entitlement.expiresAt) > nowMs;
   if (
     typeof storedCheckout._id !== "string"
     || !/^chk_[a-f0-9]{32}$/u.test(storedCheckout._id)
     || typeof paymentId !== "string"
     || paymentId.length > 120
-    || (plan.requiresPayment && !PAYMENT_INTENT_PATTERN.test(paymentId))
+    || (plan.requiresPayment && !stripePayment && !hasValidEntitlement)
     || (!plan.requiresPayment && paymentId !== `free:${storedCheckout._id}`)
   ) {
     throw new InputError("INVALID_CHECKOUT");
   }
   const now = new Date(nowMs);
   if (!Number.isFinite(now.getTime())) throw new InputError("INVALID_CHECKOUT");
-  const expiryDate = new Date(now.getTime() + plan.durationDays * 24 * 60 * 60 * 1000);
+  const expiryDate = hasValidEntitlement
+    ? new Date(entitlement.expiresAt)
+    : new Date(now.getTime() + plan.durationDays * 24 * 60 * 60 * 1000);
   const record = {
-    _id: buildProfessionalId(`checkout:${storedCheckout._id}`),
+    _id: expectedProfessionalId,
     checkoutId: storedCheckout._id,
     title: registration.businessName,
     email: registration.email,
     plan: plan.id,
     isActive: false,
     paymentId,
+    paymentProvider,
     paymentStatus: plan.requiresPayment ? "paid" : "not_required",
     registrationStatus: "pending_review",
     amountPaid: plan.amountCents / 100,
@@ -1242,6 +1300,11 @@ export function buildProfessionalRecord(
     registrationFingerprint: storedCheckout.fingerprint,
     sourceRegistrationId: storedCheckout.sourceRegistrationId,
   };
+  if (hasValidEntitlement) {
+    record.entitlementId = entitlement._id;
+    record.entitlementStatus = entitlement.status;
+    record.entitlementExpiresAt = entitlement.expiresAt;
+  }
   media.gallery.forEach((image, index) => {
     record[`galerieImage${index + 1}`] = image;
   });
@@ -1376,6 +1439,16 @@ export function toPublicProfessional(item) {
     "lienFacebook", "lienInstagram", "linkedin", "lienWhatsapp", "lienTiktok", "lienYoutube",
     "isActive", "sponsor",
   ]);
+}
+
+export function isProfessionalPubliclyVisible(item, nowMs = Date.now()) {
+  if (!item || typeof item !== "object" || Array.isArray(item) || item.isActive !== true) {
+    return false;
+  }
+  if (!["apple", "google"].includes(item.paymentProvider)) return true;
+  if (!["active", "grace_period"].includes(item.entitlementStatus)) return false;
+  const expiresAt = Date.parse(item.entitlementExpiresAt ?? "");
+  return Number.isFinite(nowMs) && Number.isFinite(expiresAt) && expiresAt > nowMs;
 }
 
 export function isReviewPublic(item) {

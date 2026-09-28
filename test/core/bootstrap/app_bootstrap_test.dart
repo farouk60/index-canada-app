@@ -1,8 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:index_canada/core/bootstrap/app_bootstrap.dart';
+import 'package:index_canada/core/config/app_config.dart';
 import 'package:index_canada/core/logging/app_logger.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('AppBootstrap', () {
     test('continue après l’échec d’une étape non critique', () async {
       final executionOrder = <String>[];
@@ -105,5 +108,45 @@ void main() {
         expect(executionOrder, ['critique']);
       },
     );
+
+    test('initialise l’écoute IAP au bootstrap mobile supporté', () async {
+      var initializations = 0;
+      final bootstrap = AppBootstrap.production(
+        config: _config,
+        logger: AppLogger(enabled: false),
+        storePurchasesSupported: true,
+        initializeStorePurchases: () => initializations += 1,
+      );
+
+      await bootstrap.initialize();
+
+      expect(initializations, 1);
+    });
+
+    test(
+      'n’initialise jamais le SDK IAP sur une plateforme non supportée',
+      () async {
+        var initializations = 0;
+        final bootstrap = AppBootstrap.production(
+          config: _config,
+          logger: AppLogger(enabled: false),
+          storePurchasesSupported: false,
+          initializeStorePurchases: () => initializations += 1,
+        );
+
+        await bootstrap.initialize();
+
+        expect(initializations, 0);
+      },
+    );
   });
 }
+
+const _config = AppConfig(
+  environment: AppEnvironment.development,
+  appName: 'Index Canada Test',
+  apiBaseUrl: 'https://example.invalid',
+  imageCacheMaximumSize: 10,
+  imageCacheMaximumSizeBytes: 1024,
+  loggingEnabled: false,
+);

@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
@@ -21,7 +20,7 @@ Future<void> main() async {
       WidgetsFlutterBinding.ensureInitialized();
       errorHandler.install();
 
-      config.validateForRuntime(supportsNativePayments: !kIsWeb);
+      config.validateForRuntime();
 
       final bootstrap = AppBootstrap.production(config: config, logger: logger);
       await bootstrap.initialize();

@@ -4,6 +4,7 @@ import 'package:index_canada/core/config/app_config.dart';
 import 'package:index_canada/main.dart';
 import 'package:index_canada/pages/payment_success_page.dart';
 import 'package:index_canada/services/localization_service.dart';
+import 'package:index_canada/widgets/language_selector.dart';
 import 'package:index_canada/widgets/main_navigation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -17,8 +18,6 @@ void main() {
         environment: AppEnvironment.development,
         appName: 'Index Canada Test',
         apiBaseUrl: 'https://example.invalid',
-        stripePublishableKey: '',
-        stripeUrlScheme: AppConfig.requiredStripeUrlScheme,
         imageCacheMaximumSize: 10,
         imageCacheMaximumSizeBytes: 1024,
         loggingEnabled: false,
@@ -56,6 +55,40 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('le sélecteur de langue reste blanc dans une AppBar rouge', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    await LocalizationService().setLanguage('fr');
+    addTearDown(() => LocalizationService().setLanguage('fr'));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          appBar: AppBar(
+            backgroundColor: Colors.red,
+            foregroundColor: Colors.white,
+            actions: const [LanguageSelector()],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final iconFinder = find.byIcon(Icons.language);
+    final labelFinder = find.text('FR');
+    final icon = tester.widget<Icon>(iconFinder);
+    final label = tester.widget<Text>(labelFinder);
+    final effectiveIconColor =
+        icon.color ?? IconTheme.of(tester.element(iconFinder)).color;
+    final effectiveLabelColor =
+        label.style?.color ??
+        DefaultTextStyle.of(tester.element(labelFinder)).style.color;
+
+    expect(effectiveIconColor, Colors.white);
+    expect(effectiveLabelColor, Colors.white);
+  });
 
   testWidgets(
     'un onglet déjà monté se reconstruit après un changement de langue',

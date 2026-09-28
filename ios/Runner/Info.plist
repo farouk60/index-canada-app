@@ -51,17 +51,6 @@
     <key>UIApplicationSupportsIndirectInputEvents</key>
     <true/>
 
-    <!-- Stripe 3DS return URL scheme -->
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>flutterstripe</string>
-            </array>
-        </dict>
-    </array>
-
     <!-- Permissions photos et caméra -->
     <key>NSPhotoLibraryUsageDescription</key>
     <string>Cette application a besoin d'accéder à vos photos pour vous permettre de sélectionner votre photo de profil et vos images de galerie.</string>

@@ -2,18 +2,19 @@
 
 ## Statut actuel : NO-GO production
 
-Le dépôt permet de vérifier et de compiler l'application, mais il ne démontre pas encore qu'une version distribuable fonctionne de bout en bout avec Wix et Stripe. Une publication ne doit être autorisée qu'après la fermeture de tous les critères bloquants de ce document et de [`production_checklist.md`](production_checklist.md).
+La version candidate migre les achats numériques mobiles vers StoreKit et Google Play Billing. Elle ne doit pas être publiée avant la validation de bout en bout des achats, restaurations, renouvellements, expirations et révocations avec le backend Wix. Stripe demeure réservé au Web et aux anciens clients compatibles.
 
 État vérifié dans le dépôt :
 
-- version Flutter candidate : `1.1.0+25` ;
+- version Flutter cible : `1.1.0+26` ;
 - versions déjà utilisées dans les stores : iOS `1.0.4 (24)` et Android `1.0.3 (21)` ;
 - identifiant Android et iOS : `ca.indexcanada.app` ;
 - nom affiché : `Index Canada` ;
 - la CI Android produit volontairement un AAB **non signé et non distribuable** ;
 - la CI iOS compile avec `--no-codesign` et ne produit donc pas une livraison App Store ;
 - Firebase Analytics est un service désactivé (stub) : aucun suivi Firebase ne doit être annoncé ;
-- un paiement Premium serveur à serveur est consigné comme réussi en préproduction Wix/Stripe de test, avec webhook et rejeu idempotent; les parcours natifs Android/iOS restent non validés.
+- le build iOS `1.1.0 (25)` validé par TestFlight contient encore l'ancien parcours Stripe natif et ne doit pas être soumis ;
+- le build `26` doit remplacer Stripe natif par les produits annuels `ca.indexcanada.app.premium.annual` et `ca.indexcanada.app.professional.annual`.
 
 ## 1. Critères bloquants avant une release
 
@@ -24,7 +25,7 @@ Le dépôt permet de vérifier et de compiler l'application, mais il ne démontr
 - Vérifier que les fichiers sont enregistrés dans Wix Media Manager et qu'aucune image encodée en Base64 n'est persistée dans une collection.
 - Valider la pagination réelle des professionnels, catégories, avis, partenaires et offres, y compris au-delà d'une première page de résultats.
 - Vérifier les limites de sécurité prévues pour chaque collection et le comportement explicite quand une limite est atteinte.
-- Installer dans le Package Manager Wix la version exacte `stripe@22.6.2`, identique à `backend/package-lock.json`, puis prouver son chargement en préproduction.
+- Installer dans le Package Manager Wix les versions exactes verrouillées dans `backend/package-lock.json` : `stripe@22.6.2`, `@apple/app-store-server-library@3.1.0`, `@googleapis/androidpublisher@38.0.0` et `google-auth-library@10.5.0`, puis prouver leur chargement en préproduction.
 - Confirmer que toute inscription, gratuite ou payante, reste inactive et `pending_review` jusqu'à l'approbation humaine dans Wix.
 - Valider les routes v2 déjà livrées (`/categories`, `/professionals`,
   `/reviews`, `/partners`, `/offers`) sur plusieurs pages et avec chaque
@@ -32,17 +33,18 @@ Le dépôt permet de vérifier et de compiler l'application, mais il ne démontr
 - Vérifier en préproduction les index Wix des états de visibilité, de la
   catégorie, du professionnel associé et de l'ordre `_id`; corriger tout scan
   lent ou erreur d'index avant promotion.
-- Configurer les secrets Wix/Stripe côté serveur seulement. Aucun secret Stripe ou Wix ne doit être intégré à l'application Flutter.
+- Configurer les secrets Apple, Google, Wix et Stripe côté serveur seulement. Aucun secret ne doit être intégré à l'application Flutter.
 
-### 1.2 Paiement Stripe
+### 1.2 Abonnements Apple et Google
 
-- Configurer l'URL et le secret du webhook Stripe de production dans Wix.
-- Vérifier qu'un paiement réussi ne publie pas automatiquement le profil et ne contourne pas la modération.
-- Tester sur un environnement de préproduction : forfait gratuit, paiement réussi, paiement refusé, annulation, authentification 3-D Secure, webhook retardé et webhook envoyé plusieurs fois.
-- Confirmer l'idempotence : une relance ne doit ni créer plusieurs paiements ni plusieurs profils.
-- Vérifier que le montant, la devise, le forfait et les capacités sont toujours déterminés côté serveur.
-- Tester la restauration après une erreur d'envoi de média ou de persistance Wix.
-- Ne pas annoncer de paiement Web : le paiement payant est volontairement indisponible sur Web tant qu'une intégration Stripe Web dédiée n'existe pas.
+- Créer dans App Store Connect et Google Play les deux abonnements annuels avec exactement les identifiants `ca.indexcanada.app.premium.annual` et `ca.indexcanada.app.professional.annual`.
+- Valider chaque transaction côté serveur auprès d'Apple ou Google avant d'accorder le droit Premium ou En Vedette.
+- Ne jamais accepter le prix, le produit, l'expiration, l'état ou le jeton comme une preuve fournie uniquement par le client.
+- Tester : achat réussi, achat en attente, refus, annulation, restauration, renouvellement, expiration, remboursement/révocation, changement de formule, réseau interrompu et notification rejouée.
+- Confirmer l'idempotence : une même transaction ou notification ne crée ni double droit, ni double profil, ni double événement financier.
+- Vérifier qu'un abonnement actif ne publie pas automatiquement le profil et ne contourne jamais la modération Wix.
+- Configurer App Store Server Notifications V2 et Google Real-time Developer Notifications vers les routes serveur prévues.
+- Conserver Stripe uniquement pour le Web/legacy ; aucun PaymentSheet, schéma `flutterstripe` ou clé Stripe ne doit être requis par le binaire Android/iOS.
 
 ### 1.3 Validation fonctionnelle et appareils
 
@@ -55,7 +57,7 @@ Le dépôt permet de vérifier et de compiler l'application, mais il ne démontr
 ### 1.4 Confidentialité et conformité
 
 - Publier une politique de confidentialité propre à Index Canada, accessible dans l'application et sur une URL publique stable.
-- Inventorier les données réellement envoyées à Wix, Stripe et tout autre prestataire, puis faire correspondre exactement les déclarations Google Play « Sécurité des données » et App Store « App Privacy ».
+- Inventorier les données réellement envoyées à Wix, Apple, Google, Stripe Web et tout autre prestataire, puis faire correspondre exactement les déclarations Google Play « Sécurité des données » et App Store « App Privacy ».
 - Définir la conservation, la suppression et le support des demandes d'accès/suppression des données.
 - Vérifier si le parcours d'inscription constitue une création de compte au sens des politiques des stores ; si oui, fournir les mécanismes de suppression exigés.
 - Faire valider les conditions d'utilisation et la politique de confidentialité par une personne compétente avant publication.
@@ -64,10 +66,7 @@ Le dépôt permet de vérifier et de compiler l'application, mais il ne démontr
 
 1. Fermer les critères bloquants ci-dessus.
 2. Choisir un numéro de version et augmenter `version:` dans `pubspec.yaml`. Ne jamais réutiliser un code de version déjà envoyé à un store.
-3. Geler l'URL HTTPS de production et la clé Stripe **publique** correspondant
-   au bon compte. La validation de démarrage exige une URL réelle; Android et
-   iOS exigent une clé `pk_live_`. Le Web peut omettre cette clé tant que le
-   paiement payant y reste désactivé.
+3. Geler l'URL HTTPS de production. Les binaires Android et iOS ne reçoivent aucune clé Stripe ni aucun secret Apple/Google ; leurs achats utilisent les SDK des stores et la validation serveur.
 4. Exécuter l'analyse statique et tous les tests automatisés.
 5. Compiler les deux plateformes avec la configuration de production.
 6. Installer les artefacts signés sur de vrais appareils et rejouer le contrôle de fumée.
@@ -125,7 +124,7 @@ flutter clean
 flutter pub get
 flutter analyze --fatal-infos --fatal-warnings
 flutter test
-flutter build appbundle --release --dart-define=APP_ENVIRONMENT=production --dart-define=API_BASE_URL=https://VOTRE_DOMAINE/_functions --dart-define=STRIPE_PUBLISHABLE_KEY=pk_live_VOTRE_CLE_PUBLIQUE
+flutter build appbundle --release --dart-define=APP_ENVIRONMENT=production --dart-define=API_BASE_URL=https://VOTRE_DOMAINE/_functions
 ```
 
 Artefact attendu : `build/app/outputs/bundle/release/app-release.aab`.
@@ -136,7 +135,7 @@ Les `--dart-define` sont injectés pendant la compilation, mais
 `AppConfig.validateForRuntime` les contrôle au démarrage de l'application, pas
 pendant `flutter build`. Une compilation réussie ne prouve donc pas la
 configuration : l'application native de production refuse de démarrer si
-l'URL est non HTTPS/factice ou si la clé publique n'est pas une `pk_live_`.
+l'URL est non HTTPS ou factice.
 
 ## 4. iOS
 
@@ -146,17 +145,17 @@ l'URL est non HTTPS/factice ou si la clé publique n'est pas une `pk_live_`.
 - adhésion Apple Developer active ;
 - App ID `ca.indexcanada.app`, certificats et profils de provisionnement valides ;
 - accès App Store Connect et contrats requis acceptés.
+- compte bancaire et formulaires fiscaux App Store Connect complétés pour les abonnements payants.
 
 ### 4.2 Compiler et signer
 
 La génération reproductible utilise le workflow manuel GitHub Actions
-`iOS Release`. Il ne s'exécute que depuis `main` et attend cinq secrets
+`iOS Release`. Il ne s'exécute que depuis `main` et attend quatre secrets
 chiffrés dans le dépôt :
 
 - `IOS_DISTRIBUTION_P12_BASE64` ;
 - `IOS_DISTRIBUTION_P12_PASSWORD` ;
 - `IOS_APP_STORE_PROFILE_BASE64` ;
-- `IOS_STRIPE_PUBLISHABLE_KEY` (clé publique `pk_live_`) ;
 - `IOS_ARTIFACT_ENCRYPTION_PASSWORD`.
 
 Le workflow vérifie l'équipe `K94TPPGBZS`, le Bundle ID
@@ -166,6 +165,10 @@ trousseau temporaire, produit l'IPA, vérifie sa signature puis chiffre l'IPA
 en AES-256 avant de publier l'artefact pendant un jour. L'IPA brute, le
 trousseau et les fichiers de signature temporaires sont ensuite supprimés du
 runner.
+
+Si l'option d'envoi TestFlight est activée, trois secrets App Store Connect
+supplémentaires sont obligatoires : `ASC_KEY_ID`, `ASC_ISSUER_ID` et
+`ASC_PRIVATE_KEY_P8_BASE64`.
 
 Pour une compilation manuelle sur Mac :
 
@@ -194,14 +197,14 @@ iOS fournit actuellement des descriptions d'usage pour la caméra et la phototh�
 - iOS : TestFlight interne/externe avant soumission App Store.
 - Conserver la version précédente disponible pour un retour arrière côté store.
 - Prévoir une procédure pour désactiver un forfait, un webhook ou une fonctionnalité côté serveur sans publier immédiatement une nouvelle application.
-- Surveiller les erreurs Wix/Stripe, Android vitals, les métriques App Store et les demandes support. Firebase Crashlytics et Firebase Analytics ne sont pas actifs dans l'état actuel.
+- Surveiller les erreurs Wix, les validations Apple/Google, les notifications de renouvellement, Android vitals, les métriques App Store et les demandes support. Surveiller Stripe séparément pour le Web/legacy.
 
 ## 7. Approbation finale
 
 La décision GO exige au minimum :
 
 - un backend Wix de production validé selon `WIX_DEPLOYMENT.md` ;
-- un paiement Stripe réel réussi et rapproché avec le webhook ;
+- un achat réel ou sandbox validé et rapproché sur chaque store, incluant restauration et révocation ;
 - des parcours critiques réussis sur appareils Android et iOS réels ;
 - des artefacts signés installés depuis les canaux bêta des stores ;
 - des déclarations de confidentialité approuvées et cohérentes avec le comportement observé ;
