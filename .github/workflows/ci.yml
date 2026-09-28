@@ -349,34 +349,40 @@ jobs:
             ios/Runner.xcodeproj/xcshareddata/xcschemes/Runner.xcscheme
           )
           changed_ios_files=()
+          changed_ios_file_count=0
           while IFS= read -r changed_file; do
             if [[ -n "$changed_file" ]]; then
               changed_ios_files+=("$changed_file")
+              changed_ios_file_count=$((changed_ios_file_count + 1))
             fi
           done < <(git diff --name-only HEAD -- ios)
 
           unexpected_ios_files=()
-          for changed_file in "${changed_ios_files[@]}"; do
-            allowed=false
-            for allowed_file in "${allowed_ios_files[@]}"; do
-              if [[ "$changed_file" == "$allowed_file" ]]; then
-                allowed=true
-                break
+          unexpected_ios_file_count=0
+          if (( changed_ios_file_count > 0 )); then
+            for changed_file in "${changed_ios_files[@]}"; do
+              allowed=false
+              for allowed_file in "${allowed_ios_files[@]}"; do
+                if [[ "$changed_file" == "$allowed_file" ]]; then
+                  allowed=true
+                  break
+                fi
+              done
+              if [[ "$allowed" != "true" ]]; then
+                unexpected_ios_files+=("$changed_file")
+                unexpected_ios_file_count=$((unexpected_ios_file_count + 1))
               fi
             done
-            if [[ "$allowed" != "true" ]]; then
-              unexpected_ios_files+=("$changed_file")
-            fi
-          done
+          fi
 
-          if (( ${#unexpected_ios_files[@]} > 0 )); then
+          if (( unexpected_ios_file_count > 0 )); then
             printf '::error title=Fichiers iOS inattendus::La migration a modifié des fichiers suivis hors liste : %s\n' "${unexpected_ios_files[*]}"
             git diff --stat HEAD -- ios
             exit 1
           fi
 
           if [[ "$IOS_DEPENDENCY_MODE" == "verification" ]]; then
-            if (( ${#changed_ios_files[@]} > 0 )); then
+            if (( changed_ios_file_count > 0 )); then
               git diff --check HEAD -- "${allowed_ios_files[@]}"
               git diff HEAD -- "${allowed_ios_files[@]}"
               echo "::error title=Dépendances iOS non reproductibles::pod install --deployment et la préparation SwiftPM doivent laisser le projet intact."
@@ -400,20 +406,24 @@ jobs:
 
           required_migration_files=("$project_file" "$scheme_file")
           missing_migration_files=()
+          missing_migration_file_count=0
           for required_file in "${required_migration_files[@]}"; do
             found=false
-            for changed_file in "${changed_ios_files[@]}"; do
-              if [[ "$changed_file" == "$required_file" ]]; then
-                found=true
-                break
-              fi
-            done
+            if (( changed_ios_file_count > 0 )); then
+              for changed_file in "${changed_ios_files[@]}"; do
+                if [[ "$changed_file" == "$required_file" ]]; then
+                  found=true
+                  break
+                fi
+              done
+            fi
             if [[ "$found" != "true" ]]; then
               missing_migration_files+=("$required_file")
+              missing_migration_file_count=$((missing_migration_file_count + 1))
             fi
           done
 
-          if (( ${#missing_migration_files[@]} > 0 )); then
+          if (( missing_migration_file_count > 0 )); then
             printf "::error title=Patch SwiftPM incomplet::Ces fichiers de migration obligatoires n'ont pas été modifiés : %s\n" "${missing_migration_files[*]}"
             git diff --stat HEAD -- "${allowed_ios_files[@]}"
             exit 1
