@@ -335,16 +335,17 @@ Enregistrer les valeurs suivantes dans le gestionnaire de secrets Wix de la
 préproduction :
 
 ```text
-GOOGLE_PLAY_SERVICE_ACCOUNT_JSON={"type":"service_account",...,"client_email":"index-canada-play-verifier-preprod@<PROJECT_ID>.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",...}
+GOOGLE_PLAY_SERVICE_ACCOUNT_JSON={"type":"service_account",...,"client_email":"index-canada-play-verifier-preprod@<PROJECT_ID>.iam.gserviceaccount.com","private_key":"<CLÉ_PRIVÉE_PEM_FOURNIE_PAR_GOOGLE>",...}
 GOOGLE_RTDN_AUDIENCE=https://immigrantindex.wixsite.com/website-1/_functions/googlePlayRtdn
 GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL=index-canada-rtdn-push-preprod@<PROJECT_ID>.iam.gserviceaccount.com
 GOOGLE_RTDN_SUBSCRIPTION=projects/<PROJECT_ID>/subscriptions/index-canada-rtdn-preprod-push
 ```
 
 `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` est l'objet JSON original complet exporté
-par Google, sur une ou plusieurs lignes, avec ses séquences `\n` intactes dans
-`private_key`; ce n'est ni un chemin de fichier ni une valeur Base64. Les deux
-adresses de compte de service doivent être différentes.
+par Google, sur une ou plusieurs lignes, avec les en-têtes PEM et les séquences
+`\n` de `private_key` laissés exactement tels que Google les fournit; ce n'est
+ni un chemin de fichier ni une valeur Base64. Les deux adresses de compte de
+service doivent être différentes.
 
 #### Validation avant promotion
 
