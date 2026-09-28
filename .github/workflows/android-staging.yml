@@ -1,0 +1,544 @@
+name: Android Staging
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-staging-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  APP_ENVIRONMENT: staging
+  API_BASE_URL: https://immigrantindex.wixsite.com/website-1/_functions
+
+jobs:
+  gate:
+    name: Gate candidate Android staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Refuser tout déclenchement ou branche hors candidate
+        shell: bash
+        env:
+          MOBILE_STAGING_APPROVED_SHA: ${{ vars.MOBILE_STAGING_APPROVED_SHA }}
+        run: |
+          set -euo pipefail
+
+          required_ref='refs/heads/candidate/store-billing-entitlements-2026-09-28'
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+            echo "::error title=Déclenchement interdit::Ce workflow est strictement manuel."
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != "$required_ref" ]]; then
+            echo "::error title=Branche interdite::Exécutez ce workflow uniquement depuis candidate/store-billing-entitlements-2026-09-28."
+            exit 1
+          fi
+          if [[ -z "$MOBILE_STAGING_APPROVED_SHA" ]]; then
+            echo "::error title=Révision non approuvée::La variable GitHub MOBILE_STAGING_APPROVED_SHA est absente ou vide."
+            exit 1
+          fi
+          if [[ ! "$MOBILE_STAGING_APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=SHA approuvé invalide::MOBILE_STAGING_APPROVED_SHA doit contenir exactement 40 caractères hexadécimaux minuscules."
+            exit 1
+          fi
+          if [[ "$GITHUB_SHA" != "$MOBILE_STAGING_APPROVED_SHA" ]]; then
+            echo "::error title=Révision refusée::GITHUB_SHA ne correspond pas à la révision staging explicitement approuvée."
+            exit 1
+          fi
+
+      - name: Récupérer la candidate verrouillée
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Vérifier la version candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version_value="$(awk '$1 == "version:" { print $2; exit }' pubspec.yaml)"
+          if [[ "$version_value" != "1.1.0+26" ]]; then
+            echo "::error title=Version candidate inattendue::La seule version autorisée est 1.1.0+26."
+            exit 1
+          fi
+
+  quality:
+    name: Qualité et tests Flutter
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Installer Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: "3.47.4"
+          channel: stable
+          cache: true
+
+      - name: Installer les dépendances verrouillées
+        run: flutter pub get --enforce-lockfile
+
+      - name: Refuser les fichiers sensibles suivis
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sensitive_files="$({
+            git ls-files -- lib android ios backend pubspec.yaml pubspec.lock \
+              | grep -E '(^|/)(\.env($|\.)|key\.properties$|service-account[^/]*\.json$|[^/]+\.(jks|keystore|p8|p12|pfx|pem|key|mobileprovision|provisionprofile)$)' \
+              | grep -Ev '(\.example|\.sample|\.template)$'
+          } || true)"
+
+          if [[ -n "$sensitive_files" ]]; then
+            echo "::error title=Fichier sensible suivi::Un fichier sensible est versionné."
+            printf '%s\n' "$sensitive_files"
+            exit 1
+          fi
+
+      - name: Refuser les secrets intégrés au code mobile ou backend
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          secret_files="$({
+            git grep -Il -E \
+              '(sk_(live|test)_[[:alnum:]]{16,}|rk_(live|test)_[[:alnum:]]{16,}|whsec_[[:alnum:]]{16,}|AIza[[:alnum:]_-]{30,}|AKIA[0-9A-Z]{16}|gh[pousr]_[[:alnum:]]{20,}|-----BEGIN ((RSA|EC|OPENSSH) )?PRIVATE KEY-----)' \
+              -- lib android ios backend pubspec.yaml pubspec.lock
+          } || true)"
+
+          if [[ -n "$secret_files" ]]; then
+            echo "::error title=Secret potentiel détecté::Le contenu sensible n'est jamais affiché; seuls les fichiers concernés suivent."
+            printf '%s\n' "$secret_files"
+            exit 1
+          fi
+
+      - name: Bloquer Stripe dans le binaire mobile
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          stripe_files="$({
+            git grep -Il -E \
+              'flutter_stripe|stripe_native_payment_service|StripeNativePaymentService|Stripe\.(instance|publishableKey|urlScheme)|STRIPE_(PUBLISHABLE_KEY|URL_SCHEME)|PaymentSheet|flutterstripe' \
+              -- \
+              lib \
+              pubspec.yaml \
+              android/app/src/main/AndroidManifest.xml \
+              ios/Runner/Info.plist
+          } || true)"
+
+          if [[ -n "$stripe_files" ]]; then
+            echo "::error title=Paiement Stripe natif interdit::La livraison mobile doit utiliser les achats intégrés des stores."
+            printf '%s\n' "$stripe_files"
+            exit 1
+          fi
+
+      - name: Vérifier le format
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Analyser l'application et les tests
+        run: flutter analyze --fatal-infos --fatal-warnings
+
+      - name: Exécuter les tests Flutter
+        run: flutter test --coverage --reporter expanded
+
+  backend-store-billing-quality:
+    name: Backend Store Billing vérifié
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Installer Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "18.19.0"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Installer les dépendances backend verrouillées
+        run: npm ci --prefix backend
+
+      - name: Vérifier la syntaxe Store Billing
+        run: |
+          node --check backend/http-functions.js
+          node --check backend/security-core.js
+          node --check backend/store-purchase-core.js
+          node --check backend/store-purchase-service.js
+          node --check backend/store-purchase-verifiers.js
+          node --check backend/store-notification-core.js
+          node --check backend/store-notification-service.js
+
+      - name: Auditer les dépendances backend de production
+        run: npm audit --prefix backend --omit=dev --audit-level=high
+
+      - name: Exécuter les tests backend
+        run: npm test --prefix backend
+
+  android-staging-bundle:
+    name: AAB Android staging signé
+    needs:
+      - gate
+      - quality
+      - backend-store-billing-quality
+    environment: mobile-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Installer Java 17
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Installer Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: "3.47.4"
+          channel: stable
+          cache: true
+
+      - name: Installer les dépendances verrouillées
+        run: flutter pub get --enforce-lockfile
+
+      - name: Autoriser le wrapper Gradle
+        run: chmod +x android/gradlew
+
+      - name: Verrouiller la configuration de préproduction
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          expected_url='https://immigrantindex.wixsite.com/website-1/_functions'
+          if [[ "$APP_ENVIRONMENT" != "staging" ]]; then
+            echo "::error title=Environnement interdit::Le bundle de préproduction doit utiliser APP_ENVIRONMENT=staging."
+            exit 1
+          fi
+          if [[ "$API_BASE_URL" != "$expected_url" ]]; then
+            echo "::error title=URL de préproduction inattendue::Le workflow refuse toute URL autre que celle du site Wix isolé."
+            exit 1
+          fi
+          if [[ "$API_BASE_URL" == *'ci.index-canada.example'* || \
+                "$API_BASE_URL" =~ ^https://([^/]+\.)?immigrantindex\.com(/|$) ]]; then
+            echo "::error title=Backend interdit::Une URL de CI ou de production ne peut pas entrer dans l'AAB staging."
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import os
+          from urllib.parse import urlsplit
+
+          expected = "https://immigrantindex.wixsite.com/website-1/_functions"
+          value = os.environ["API_BASE_URL"]
+          parsed = urlsplit(value)
+          if value != expected or parsed.scheme != "https":
+              raise SystemExit("Configuration staging non canonique")
+          if parsed.hostname != "immigrantindex.wixsite.com":
+              raise SystemExit("Hôte staging non autorisé")
+          if parsed.path != "/website-1/_functions" or parsed.query or parsed.fragment:
+              raise SystemExit("Chemin staging non autorisé")
+          PY
+
+      - name: Lire la version de l'application
+        id: app_version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version_value="$(awk '$1 == "version:" { print $2; exit }' pubspec.yaml)"
+          if [[ ! "$version_value" =~ ^[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+$ ]]; then
+            echo "::error title=Version invalide::pubspec.yaml doit déclarer une version de la forme X.Y.Z+N."
+            exit 1
+          fi
+          echo "version_name=${version_value%%+*}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${version_value##*+}" >> "$GITHUB_OUTPUT"
+
+      - name: Exiger le secret de chiffrement de l'artefact
+        shell: bash
+        env:
+          ANDROID_ARTIFACT_ENCRYPTION_PASSWORD: ${{ secrets.ANDROID_ARTIFACT_ENCRYPTION_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$ANDROID_ARTIFACT_ENCRYPTION_PASSWORD" ]]; then
+            echo "::error title=Secret de chiffrement manquant::ANDROID_ARTIFACT_ENCRYPTION_PASSWORD doit être configuré dans l'environnement mobile-staging."
+            exit 1
+          fi
+          if (( ${#ANDROID_ARTIFACT_ENCRYPTION_PASSWORD} < 32 )); then
+            echo "::error title=Secret de chiffrement trop court::ANDROID_ARTIFACT_ENCRYPTION_PASSWORD doit contenir au moins 32 caractères."
+            exit 1
+          fi
+
+      - name: Préparer la signature Android
+        id: signing
+        shell: bash
+        env:
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          ANDROID_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+          ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_CERT_SHA256: ${{ secrets.ANDROID_UPLOAD_CERT_SHA256 }}
+          KEYSTORE_PATH: ${{ runner.temp }}/index-canada-upload.jks
+        run: |
+          set -euo pipefail
+          umask 077
+
+          required_secrets=(
+            ANDROID_UPLOAD_KEYSTORE_BASE64
+            ANDROID_UPLOAD_STORE_PASSWORD
+            ANDROID_UPLOAD_KEY_PASSWORD
+            ANDROID_UPLOAD_KEY_ALIAS
+            ANDROID_UPLOAD_CERT_SHA256
+          )
+          missing_secrets=()
+          for secret_name in "${required_secrets[@]}"; do
+            if [[ -z "${!secret_name:-}" ]]; then
+              missing_secrets+=("$secret_name")
+            fi
+          done
+          if (( ${#missing_secrets[@]} > 0 )); then
+            printf '::error title=Secrets Android manquants::Configurez ces secrets sans créer de clé de remplacement : %s\n' "${missing_secrets[*]}"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          def required(name: str) -> str:
+              value = os.environ[name]
+              if not value or any(char in value for char in "\r\n\0"):
+                  raise SystemExit(f"{name} est vide ou contient un caractère interdit")
+              return value
+
+          encoded = "".join(required("ANDROID_UPLOAD_KEYSTORE_BASE64").split())
+          try:
+              keystore = base64.b64decode(encoded, validate=True)
+          except (ValueError, base64.binascii.Error) as error:
+              raise SystemExit("ANDROID_UPLOAD_KEYSTORE_BASE64 n'est pas un Base64 valide") from error
+          if len(keystore) < 256:
+              raise SystemExit("Le keystore décodé est anormalement court")
+
+          keystore_path = Path(required("KEYSTORE_PATH"))
+          keystore_path.write_bytes(keystore)
+
+          def property_value(name: str) -> str:
+              return required(name).replace("\\", "\\\\")
+
+          Path("android/key.properties").write_text(
+              "\n".join(
+                  (
+                      f"storePassword={property_value('ANDROID_UPLOAD_STORE_PASSWORD')}",
+                      f"keyPassword={property_value('ANDROID_UPLOAD_KEY_PASSWORD')}",
+                      f"keyAlias={property_value('ANDROID_UPLOAD_KEY_ALIAS')}",
+                      f"storeFile={str(keystore_path)}",
+                      "",
+                  )
+              ),
+              encoding="utf-8",
+          )
+          PY
+
+          chmod 600 "$KEYSTORE_PATH" android/key.properties
+          expected_sha256="$(
+            LC_ALL=C keytool -list -v \
+              -keystore "$KEYSTORE_PATH" \
+              -storepass:env ANDROID_UPLOAD_STORE_PASSWORD \
+              -alias "$ANDROID_UPLOAD_KEY_ALIAS" \
+              | sed -n 's/^[[:space:]]*SHA256: //p' \
+              | head -n 1
+          )"
+          if [[ -z "$expected_sha256" ]]; then
+            echo "::error title=Keystore invalide::L'alias de signature ou le mot de passe du keystore est invalide."
+            exit 1
+          fi
+
+          normalized_expected="$(printf '%s' "$expected_sha256" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]')"
+          normalized_canonical="$(printf '%s' "$ANDROID_UPLOAD_CERT_SHA256" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]')"
+          if [[ ! "$normalized_canonical" =~ ^[0-9A-F]{64}$ ]]; then
+            echo "::error title=Empreinte canonique invalide::ANDROID_UPLOAD_CERT_SHA256 doit être une empreinte SHA-256 de 64 caractères hexadécimaux."
+            exit 1
+          fi
+          if [[ "$normalized_expected" != "$normalized_canonical" ]]; then
+            echo "::error title=Identité Android refusée::Le certificat du keystore ne correspond pas à l'empreinte canonique approuvée."
+            exit 1
+          fi
+          echo "certificate_sha256=$expected_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Compiler l'AAB de préproduction signé
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          flutter build appbundle --release --no-pub \
+            --dart-define=APP_ENVIRONMENT=staging \
+            --dart-define=API_BASE_URL=https://immigrantindex.wixsite.com/website-1/_functions
+
+      - name: Vérifier l'AAB, sa signature et sa configuration
+        id: bundle
+        shell: bash
+        env:
+          EXPECTED_CERTIFICATE_SHA256: ${{ steps.signing.outputs.certificate_sha256 }}
+          CANONICAL_CERTIFICATE_SHA256: ${{ secrets.ANDROID_UPLOAD_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          bundle_files=(build/app/outputs/bundle/release/*.aab)
+          if (( ${#bundle_files[@]} != 1 )); then
+            echo "::error title=AAB ambigu::Un seul bundle release est attendu."
+            exit 1
+          fi
+          bundle_path="${bundle_files[0]}"
+          unzip -tq "$bundle_path"
+          jarsigner -verify -strict "$bundle_path" >/dev/null
+
+          actual_sha256="$(
+            LC_ALL=C keytool -printcert -jarfile "$bundle_path" \
+              | sed -n 's/^[[:space:]]*SHA256: //p' \
+              | head -n 1
+          )"
+          normalized_actual="$(printf '%s' "$actual_sha256" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]')"
+          normalized_expected="$(printf '%s' "$EXPECTED_CERTIFICATE_SHA256" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]')"
+          normalized_canonical="$(printf '%s' "$CANONICAL_CERTIFICATE_SHA256" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]')"
+          if [[ -z "$normalized_actual" || \
+                "$normalized_actual" != "$normalized_expected" || \
+                "$normalized_actual" != "$normalized_canonical" ]]; then
+            echo "::error title=Signature Android inattendue::Le certificat de l'AAB ne correspond pas au keystore d'envoi configuré."
+            exit 1
+          fi
+
+          extracted="$RUNNER_TEMP/android-staging-aab"
+          rm -rf "$extracted"
+          mkdir -p "$extracted"
+          unzip -q "$bundle_path" -d "$extracted"
+
+          app_strings="$RUNNER_TEMP/android-staging-app-strings.txt"
+          find "$extracted" -type f -name 'libapp.so' -print0 \
+            | xargs -0 -r strings > "$app_strings"
+          if ! grep -Fq "$API_BASE_URL" "$app_strings"; then
+            echo "::error title=URL staging absente::Le binaire ne contient pas l'URL préproduction attendue."
+            exit 1
+          fi
+          if grep -Eq 'https://([^/]+\.)?immigrantindex\.com/_functions|https://ci\.index-canada\.example/_functions' "$app_strings"; then
+            echo "::error title=URL interdite intégrée::Le binaire staging contient une URL de production ou de CI."
+            exit 1
+          fi
+
+          embedded_secret_files="$({
+            grep -aRIlE \
+              '(sk_(live|test)_[[:alnum:]]{16,}|rk_(live|test)_[[:alnum:]]{16,}|whsec_[[:alnum:]]{16,}|AIza[[:alnum:]_-]{30,}|AKIA[0-9A-Z]{16}|gh[pousr]_[[:alnum:]]{20,}|-----BEGIN ((RSA|EC|OPENSSH) )?PRIVATE KEY-----)' \
+              "$extracted"
+          } || true)"
+          if [[ -n "$embedded_secret_files" ]]; then
+            echo "::error title=Secret potentiel dans l'AAB::Le contenu sensible n'est pas affiché; seuls les fichiers concernés suivent."
+            printf '%s\n' "$embedded_secret_files"
+            exit 1
+          fi
+
+          if ! git diff --quiet HEAD -- .; then
+            git diff --stat HEAD -- .
+            echo "::error title=Dépôt modifié::La compilation staging ne doit modifier aucun fichier suivi."
+            exit 1
+          fi
+
+          echo "bundle_path=$bundle_path" >> "$GITHUB_OUTPUT"
+
+      - name: Chiffrer et vérifier l'AAB staging
+        id: encrypted_bundle
+        shell: bash
+        env:
+          ANDROID_ARTIFACT_ENCRYPTION_PASSWORD: ${{ secrets.ANDROID_ARTIFACT_ENCRYPTION_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          bundle_path="${{ steps.bundle.outputs.bundle_path }}"
+          encrypted_path="${bundle_path}.enc"
+          roundtrip_path="$RUNNER_TEMP/index-canada-android-staging-roundtrip.aab"
+          encryption_complete=false
+          trap 'rm -f "$roundtrip_path"; if [[ "$encryption_complete" != "true" ]]; then rm -f "$encrypted_path"; fi' EXIT
+
+          if [[ -z "$ANDROID_ARTIFACT_ENCRYPTION_PASSWORD" ]]; then
+            echo "::error title=Secret de chiffrement manquant::Impossible de protéger l'AAB staging."
+            exit 1
+          fi
+          if [[ ! -s "$bundle_path" ]]; then
+            echo "::error title=AAB staging absent::Le bundle signé vérifié est introuvable."
+            exit 1
+          fi
+
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+            -in "$bundle_path" \
+            -out "$encrypted_path" \
+            -pass env:ANDROID_ARTIFACT_ENCRYPTION_PASSWORD
+          test -s "$encrypted_path"
+
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -in "$encrypted_path" \
+            -out "$roundtrip_path" \
+            -pass env:ANDROID_ARTIFACT_ENCRYPTION_PASSWORD
+          cmp -s "$bundle_path" "$roundtrip_path"
+
+          rm -f "$roundtrip_path" "$bundle_path"
+          echo "encrypted_path=$encrypted_path" >> "$GITHUB_OUTPUT"
+          encryption_complete=true
+          trap - EXIT
+
+      - name: Publier uniquement l'AAB staging chiffré
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: index-canada-android-staging-${{ steps.app_version.outputs.version_name }}-${{ steps.app_version.outputs.build_number }}-${{ github.run_id }}-${{ github.run_attempt }}-encrypted
+          path: ${{ steps.encrypted_bundle.outputs.encrypted_path }}
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Confirmer l'absence d'envoi Google Play
+        shell: bash
+        run: |
+          echo 'AAB staging vérifié, chiffré et archivé sans version en clair. Aucun envoi Google Play n’est configuré dans ce workflow.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Nettoyer les éléments de signature temporaires
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          rm -f \
+            android/key.properties \
+            "$RUNNER_TEMP/index-canada-upload.jks" \
+            "$RUNNER_TEMP/android-staging-app-strings.txt" \
+            "$RUNNER_TEMP/index-canada-android-staging-roundtrip.aab"
+          if [[ -n "${{ steps.bundle.outputs.bundle_path }}" ]]; then
+            rm -f \
+              "${{ steps.bundle.outputs.bundle_path }}" \
+              "${{ steps.bundle.outputs.bundle_path }}.enc"
+          fi
+          if [[ -n "${{ steps.encrypted_bundle.outputs.encrypted_path }}" ]]; then
+            rm -f "${{ steps.encrypted_bundle.outputs.encrypted_path }}"
+          fi
+          rm -rf "$RUNNER_TEMP/android-staging-aab"
+
+# Ce workflow s'arrête volontairement après l'artefact. Aucun job d'envoi vers
+# Google Play, aucune promotion de piste et aucune publication n'y sont permis.
