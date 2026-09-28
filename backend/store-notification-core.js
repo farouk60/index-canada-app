@@ -41,6 +41,8 @@ const GOOGLE_NOTIFICATION_TYPE = Object.freeze({
   11: "SUBSCRIPTION_PAUSE_SCHEDULE_CHANGED",
   12: "SUBSCRIPTION_REVOKED",
   13: "SUBSCRIPTION_EXPIRED",
+  17: "SUBSCRIPTION_ITEMS_CHANGED",
+  18: "SUBSCRIPTION_CANCELLATION_SCHEDULED",
   19: "SUBSCRIPTION_PRICE_CHANGE_UPDATED",
   20: "SUBSCRIPTION_PENDING_PURCHASE_CANCELED",
   22: "SUBSCRIPTION_PRICE_STEP_UP_CONSENT_UPDATED",
@@ -246,18 +248,104 @@ export function decodeGoogleRtdnEnvelope(rawBody, {
     eventAt,
     packageName: APP_BUNDLE_ID,
   };
-  if (payload.testNotification) {
+  const notificationFamilies = [
+    ["subscription", payload.subscriptionNotification],
+    ["one_time_product", payload.oneTimeProductNotification],
+    ["voided_purchase", payload.voidedPurchaseNotification],
+    ["pending_refund_review", payload.pendingRefundReviewNotification],
+    ["test", payload.testNotification],
+  ].filter(([, value]) => value !== undefined && value !== null);
+  if (notificationFamilies.length !== 1) throw new InputError("INVALID_GOOGLE_RTDN");
+  const [notificationFamily, notificationValue] = notificationFamilies[0];
+  const notification = record(notificationValue, "INVALID_GOOGLE_RTDN");
+
+  if (notificationFamily === "test") {
+    if (notification.version !== "1.0") throw new InputError("INVALID_GOOGLE_RTDN");
     return Object.freeze({ ...base, test: true, eventType: "TEST_NOTIFICATION" });
   }
-  const notification = record(payload.subscriptionNotification, "INVALID_GOOGLE_RTDN");
+  if (notificationFamily === "one_time_product") {
+    if (notification.version !== "1.0") throw new InputError("INVALID_GOOGLE_RTDN");
+    const notificationType = Number(notification.notificationType);
+    const eventType = {
+      1: "ONE_TIME_PRODUCT_PURCHASED",
+      2: "ONE_TIME_PRODUCT_CANCELED",
+    }[notificationType];
+    if (!eventType || !Number.isInteger(notificationType)) {
+      throw new InputError("INVALID_GOOGLE_RTDN");
+    }
+    opaque(notification.purchaseToken, {
+      code: "INVALID_GOOGLE_RTDN",
+      min: 8,
+      max: 20_000,
+    });
+    opaque(notification.sku, { code: "INVALID_GOOGLE_RTDN", max: 160 });
+    return Object.freeze({
+      ...base,
+      test: false,
+      ignored: true,
+      notificationFamily,
+      eventType,
+    });
+  }
+  if (notificationFamily === "voided_purchase") {
+    opaque(notification.purchaseToken, {
+      code: "INVALID_GOOGLE_RTDN",
+      min: 8,
+      max: 20_000,
+    });
+    opaque(notification.orderId, { code: "INVALID_GOOGLE_RTDN", max: 200 });
+    const productType = Number(notification.productType);
+    const refundType = Number(notification.refundType);
+    if (
+      !Number.isInteger(productType)
+      || ![1, 2].includes(productType)
+      || !Number.isInteger(refundType)
+      || ![1, 2].includes(refundType)
+    ) {
+      throw new InputError("INVALID_GOOGLE_RTDN");
+    }
+    const productLabel = productType === 1 ? "SUBSCRIPTION" : "ONE_TIME_PRODUCT";
+    const refundLabel = refundType === 1 ? "FULL_REFUND" : "QUANTITY_PARTIAL_REFUND";
+    return Object.freeze({
+      ...base,
+      test: false,
+      ignored: true,
+      notificationFamily,
+      eventType: `VOIDED_${productLabel}_${refundLabel}`,
+    });
+  }
+  if (notificationFamily === "pending_refund_review") {
+    if (notification.version !== "1.0") throw new InputError("INVALID_GOOGLE_RTDN");
+    opaque(notification.pendingRefundToken, {
+      code: "INVALID_GOOGLE_RTDN",
+      min: 8,
+      max: 20_000,
+    });
+    opaque(notification.orderId, { code: "INVALID_GOOGLE_RTDN", max: 200 });
+    const refundReason = Number(notification.refundReason);
+    if (!Number.isInteger(refundReason) || refundReason < 1 || refundReason > 1_000) {
+      throw new InputError("INVALID_GOOGLE_RTDN");
+    }
+    for (const optionalId of ["obfuscatedAccountId", "obfuscatedProfileId"]) {
+      if (notification[optionalId] !== undefined && notification[optionalId] !== null) {
+        opaque(notification[optionalId], { code: "INVALID_GOOGLE_RTDN", max: 256 });
+      }
+    }
+    return Object.freeze({
+      ...base,
+      test: false,
+      ignored: true,
+      notificationFamily,
+      eventType: "PENDING_REFUND_REVIEW",
+    });
+  }
+
   if (notification.version !== "1.0") throw new InputError("INVALID_GOOGLE_RTDN");
   const notificationType = Number(notification.notificationType);
   const eventType = GOOGLE_NOTIFICATION_TYPE[notificationType];
-  if (!eventType) throw new InputError("INVALID_GOOGLE_RTDN");
-  const productId = opaque(notification.subscriptionId, {
-    code: "INVALID_GOOGLE_RTDN",
-    max: 160,
-  });
+  if (!eventType || !Number.isInteger(notificationType)) {
+    throw new InputError("INVALID_GOOGLE_RTDN");
+  }
   const purchaseToken = opaque(notification.purchaseToken, {
     code: "INVALID_GOOGLE_RTDN",
     min: 8,
@@ -266,11 +354,43 @@ export function decodeGoogleRtdnEnvelope(rawBody, {
   return Object.freeze({
     ...base,
     test: false,
+    ignored: false,
+    notificationFamily,
     notificationType,
     eventType,
-    productId,
     purchaseToken,
   });
+}
+
+export function validateGooglePendingPurchaseCanceled(rtdnValue, responseValue) {
+  const rtdn = record(rtdnValue, "INVALID_GOOGLE_RTDN");
+  const response = record(responseValue, "UNTRUSTED_STORE_NOTIFICATION");
+  if (rtdn.test || rtdn.notificationType !== 20) {
+    throw new InputError("INVALID_GOOGLE_RTDN");
+  }
+  if (rtdn.packageName !== APP_BUNDLE_ID || response.packageName !== APP_BUNDLE_ID) {
+    throw new InputError("STORE_APP_MISMATCH");
+  }
+  if (response.subscriptionState !== "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED") {
+    throw new InputError("UNTRUSTED_STORE_NOTIFICATION");
+  }
+  const purchaseToken = opaque(rtdn.purchaseToken, {
+    code: "INVALID_GOOGLE_RTDN",
+    min: 8,
+    max: 20_000,
+  });
+  const linkedPurchaseToken = response.linkedPurchaseToken === undefined
+    || response.linkedPurchaseToken === null
+    ? ""
+    : opaque(response.linkedPurchaseToken, {
+      code: "UNTRUSTED_STORE_NOTIFICATION",
+      min: 8,
+      max: 20_000,
+    });
+  if (linkedPurchaseToken === purchaseToken) {
+    throw new InputError("STORE_PURCHASE_LINEAGE_INVALID");
+  }
+  return Object.freeze({ ignored: true });
 }
 
 export function normalizeGoogleLifecycleEvent(rtdnValue, responseValue, {
@@ -282,7 +402,6 @@ export function normalizeGoogleLifecycleEvent(rtdnValue, responseValue, {
     throw new InputError("STORE_APP_MISMATCH");
   }
   const selection = selectGoogleSubscriptionLineItem(response, {
-    productId: rtdn.productId,
     nowMs,
     allowExpired: true,
     expectedRole: "effective",
@@ -369,7 +488,7 @@ export function normalizeGoogleLifecycleEvent(rtdnValue, responseValue, {
     accountToken,
     purchase,
     verificationData: rtdn.purchaseToken,
-    acknowledgementProductId: rtdn.productId,
+    acknowledgementProductId: lineItem.productId,
   });
 }
 

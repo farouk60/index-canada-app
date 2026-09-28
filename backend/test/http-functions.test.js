@@ -1254,7 +1254,6 @@ test("post_googlePlayRtdn traite une révocation une seule fois sans modifier l'
       version: "1.0",
       notificationType: 12,
       purchaseToken: confirmation.verificationData,
-      subscriptionId: confirmation.productId,
     },
   }), "utf8").toString("base64");
   const pushBody = {
@@ -1318,6 +1317,207 @@ test("post_googlePlayRtdn traite une révocation une seule fois sans modifier l'
   assert.equal(persisted.includes(accountToken), false);
 });
 
+test("post_googlePlayRtdn acquitte les familles non-abonnement sans appel fournisseur ni mutation", async () => {
+  const subscriptionName = "projects/index-canada/subscriptions/play-rtdn";
+  const notifications = [{
+    oneTimeProductNotification: {
+      version: "1.0",
+      notificationType: 1,
+      purchaseToken: "one-time-token-never-persisted",
+      sku: "one.time.product",
+    },
+  }, {
+    voidedPurchaseNotification: {
+      purchaseToken: "voided-token-never-persisted",
+      orderId: "GPA.1234-5678-9012-34567",
+      productType: 1,
+      refundType: 1,
+    },
+  }, {
+    pendingRefundReviewNotification: {
+      version: "1.0",
+      pendingRefundToken: "pending-refund-token-never-persisted",
+      orderId: "GPA.1234-5678-9012-34567",
+      refundReason: 7,
+    },
+  }];
+  let pushVerifications = 0;
+  let providerCalls = 0;
+
+  for (const [index, notification] of notifications.entries()) {
+    const data = Buffer.from(JSON.stringify({
+      version: "1.0",
+      packageName: APP_BUNDLE_ID,
+      eventTimeMillis: String(Date.now() - 1_000),
+      ...notification,
+    }), "utf8").toString("base64");
+    const push = storePostRequest({
+      message: {
+        data,
+        messageId: `ignored-rtdn-${index}-1234567890`,
+        publishTime: new Date().toISOString(),
+      },
+      subscription: subscriptionName,
+    });
+    push.headers.authorization = "Bearer header.payload.signature";
+    const result = await post_googlePlayRtdn(push, {
+      expectedSubscription: subscriptionName,
+      verifyGooglePush: async () => { pushVerifications += 1; },
+      verifyGoogle: async () => { providerCalls += 1; },
+      acknowledgeGoogle: async () => assert.fail("aucun abonnement à acquitter"),
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.received, true);
+    assert.equal(result.body.ignored, true);
+  }
+
+  assert.equal(pushVerifications, notifications.length);
+  assert.equal(providerCalls, 0);
+  assert.equal(__wixDataTest.items("PaymentEvents").length, 0);
+  assert.equal(__wixDataTest.items("Entitlements").length, 0);
+  assert.equal(__wixDataTest.items("Professionnel").length, 0);
+});
+
+test("post_googlePlayRtdn ignore le type 20 initial et de remplacement sans mutation ni acquittement", async () => {
+  const subscriptionName = "projects/index-canada/subscriptions/play-rtdn";
+  const initialToken = "pending-initial-token-never-persisted";
+  const replacementToken = "pending-replacement-token-never-persisted";
+  const linkedToken = "pending-linked-token-never-reread";
+  const providerResponses = new Map([
+    [initialToken, {
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED",
+    }],
+    [replacementToken, {
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED",
+      linkedPurchaseToken: linkedToken,
+    }],
+  ]);
+  const verifiedTokens = [];
+  const forbidden = () => assert.fail("le type 20 ne doit déclencher aucune mutation ni acquittement");
+  const dependencies = {
+    expectedSubscription: subscriptionName,
+    verifyGooglePush: async () => {},
+    verifyGoogle: async (purchaseToken) => {
+      verifiedTokens.push(purchaseToken);
+      return providerResponses.get(purchaseToken);
+    },
+    acknowledgeGoogle: forbidden,
+    beginEvent: forbidden,
+    completeEvent: forbidden,
+    persistEntitlement: forbidden,
+    projectProfessional: forbidden,
+    projectReplacementProfessional: forbidden,
+  };
+
+  for (const [index, purchaseToken] of [initialToken, replacementToken].entries()) {
+    const data = Buffer.from(JSON.stringify({
+      version: "1.0",
+      packageName: APP_BUNDLE_ID,
+      eventTimeMillis: String(Date.now() - 1_000),
+      subscriptionNotification: {
+        version: "1.0",
+        notificationType: 20,
+        purchaseToken,
+      },
+    }), "utf8").toString("base64");
+    const push = storePostRequest({
+      message: {
+        data,
+        messageId: `pending-canceled-${index}-1234567890`,
+        publishTime: new Date().toISOString(),
+      },
+      subscription: subscriptionName,
+    });
+    push.headers.authorization = "Bearer header.payload.signature";
+    const result = await post_googlePlayRtdn(push, dependencies);
+    assert.equal(result.status, 200);
+    assert.equal(result.body.received, true);
+    assert.equal(result.body.ignored, true);
+  }
+
+  assert.deepEqual(verifiedTokens, [initialToken, replacementToken]);
+  assert.equal(verifiedTokens.includes(linkedToken), false);
+  assert.equal(__wixDataTest.items("PaymentEvents").length, 0);
+  assert.equal(__wixDataTest.items("Entitlements").length, 0);
+  assert.equal(__wixDataTest.items("Professionnel").length, 0);
+});
+
+test("post_googlePlayRtdn refuse les réponses type 20 incohérentes sans mutation", async () => {
+  const subscriptionName = "projects/index-canada/subscriptions/play-rtdn";
+  const purchaseToken = "pending-invalid-token-never-persisted";
+  const cases = [{
+    name: "package",
+    response: {
+      packageName: "ca.example.other",
+      subscriptionState: "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED",
+    },
+    code: "STORE_APP_MISMATCH",
+  }, {
+    name: "state",
+    response: {
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+    },
+    code: "UNTRUSTED_STORE_NOTIFICATION",
+  }, {
+    name: "self-link",
+    response: {
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED",
+      linkedPurchaseToken: purchaseToken,
+    },
+    code: "STORE_PURCHASE_LINEAGE_INVALID",
+  }];
+  let mutationCalls = 0;
+
+  for (const [index, fixture] of cases.entries()) {
+    const data = Buffer.from(JSON.stringify({
+      version: "1.0",
+      packageName: APP_BUNDLE_ID,
+      eventTimeMillis: String(Date.now() - 1_000),
+      subscriptionNotification: {
+        version: "1.0",
+        notificationType: 20,
+        purchaseToken,
+      },
+    }), "utf8").toString("base64");
+    const push = storePostRequest({
+      message: {
+        data,
+        messageId: `pending-invalid-${fixture.name}-${index}-1234567890`,
+        publishTime: new Date().toISOString(),
+      },
+      subscription: subscriptionName,
+    });
+    push.headers.authorization = "Bearer header.payload.signature";
+    const forbidden = () => {
+      mutationCalls += 1;
+      assert.fail("une réponse type 20 invalide ne doit jamais muter ni être acquittée");
+    };
+    const result = await post_googlePlayRtdn(push, {
+      expectedSubscription: subscriptionName,
+      verifyGooglePush: async () => {},
+      verifyGoogle: async () => fixture.response,
+      acknowledgeGoogle: forbidden,
+      beginEvent: forbidden,
+      completeEvent: forbidden,
+      persistEntitlement: forbidden,
+      projectProfessional: forbidden,
+      projectReplacementProfessional: forbidden,
+    });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.success, false);
+    assert.equal(result.body.code, fixture.code);
+  }
+
+  assert.equal(mutationCalls, 0);
+  assert.equal(__wixDataTest.items("PaymentEvents").length, 0);
+  assert.equal(__wixDataTest.items("Entitlements").length, 0);
+  assert.equal(__wixDataTest.items("Professionnel").length, 0);
+});
+
 test("un RTDN-first répare la fiche manquante après une panne post-Entitlement", async () => {
   const draft = createStoreCheckoutDraft({
     ...storeRegistration({ professionalId: "temp_1758812400302" }),
@@ -1337,7 +1537,6 @@ test("un RTDN-first répare la fiche manquante après une panne post-Entitlement
       version: "1.0",
       notificationType: 4,
       purchaseToken: rawToken,
-      subscriptionId: checkout.storeProductId,
     },
   }), "utf8").toString("base64");
   const push = storePostRequest({
@@ -1383,6 +1582,7 @@ test("un RTDN-first répare la fiche manquante après une panne post-Entitlement
 
   const repaired = await post_googlePlayRtdn(push, providerDependencies);
   assert.equal(repaired.status, 200);
+  assert.equal(repaired.body.ignored, false);
   assert.equal(__wixDataTest.items("Entitlements").length, 1);
   assert.equal(__wixDataTest.items("Professionnel").length, 1);
   assert.equal(__wixDataTest.items("PaymentEvents")[0].status, "processed");
@@ -1479,7 +1679,6 @@ test("un remplacement RTDN répare la fiche initiale manquante depuis le checkou
       version: "1.0",
       notificationType: 4,
       purchaseToken: replacementToken,
-      subscriptionId: professionalProduct,
     },
   }), "utf8").toString("base64");
   const push = storePostRequest({
@@ -1634,7 +1833,6 @@ test("Google RTDN migre un remplacement différé sans doubler la fiche et ignor
   };
   const deliverRtdn = async ({
     token,
-    subscriptionId,
     notificationType,
     messageId,
     eventTime,
@@ -1650,7 +1848,6 @@ test("Google RTDN migre un remplacement différé sans doubler la fiche et ignor
         version: "1.0",
         notificationType,
         purchaseToken: token,
-        subscriptionId,
       },
     }), "utf8").toString("base64");
     const push = storePostRequest({
@@ -1675,7 +1872,6 @@ test("Google RTDN migre un remplacement différé sans doubler la fiche et ignor
   const acknowledgements = [];
   const failedDeferred = await deliverRtdn({
     token: replacementToken,
-    subscriptionId: professionalProduct,
     notificationType: 4,
     messageId: "deferred-replacement-message-123456",
     eventTime: firstEventAt,
@@ -1693,7 +1889,6 @@ test("Google RTDN migre un remplacement différé sans doubler la fiche et ignor
   assert.deepEqual(acknowledgements, []);
   const deferred = await deliverRtdn({
     token: replacementToken,
-    subscriptionId: professionalProduct,
     notificationType: 4,
     messageId: "deferred-replacement-message-123456",
     eventTime: firstEventAt,
@@ -1758,7 +1953,6 @@ test("Google RTDN migre un remplacement différé sans doubler la fiche et ignor
   };
   const renewed = await deliverRtdn({
     token: replacementToken,
-    subscriptionId: premiumProduct,
     notificationType: 2,
     messageId: "effective-renewal-message-123456",
     eventTime: firstEventAt + 1_000,
@@ -1778,7 +1972,6 @@ test("Google RTDN migre un remplacement différé sans doubler la fiche et ignor
 
   const expiredOldToken = await deliverRtdn({
     token: initialToken,
-    subscriptionId: professionalProduct,
     notificationType: 13,
     messageId: "expired-old-token-message-123456",
     eventTime: firstEventAt + 2_000,
@@ -1829,7 +2022,6 @@ test("Google RTDN migre un remplacement différé sans doubler la fiche et ignor
   const secondAcknowledgements = [];
   const failedSecondReplacement = await deliverRtdn({
     token: secondReplacementToken,
-    subscriptionId: professionalProduct,
     notificationType: 4,
     messageId: "second-replacement-message-123456",
     eventTime: firstEventAt + 3_000,
@@ -1865,7 +2057,6 @@ test("Google RTDN migre un remplacement différé sans doubler la fiche et ignor
   assert.deepEqual(secondAcknowledgements, []);
   const secondReplacement = await deliverRtdn({
     token: secondReplacementToken,
-    subscriptionId: professionalProduct,
     notificationType: 4,
     messageId: "second-replacement-message-123456",
     eventTime: firstEventAt + 3_000,
@@ -1906,7 +2097,6 @@ test("Google RTDN migre un remplacement différé sans doubler la fiche et ignor
 
   const expiredMiddleToken = await deliverRtdn({
     token: replacementToken,
-    subscriptionId: premiumProduct,
     notificationType: 13,
     messageId: "expired-middle-token-message-123456",
     eventTime: firstEventAt + 4_000,

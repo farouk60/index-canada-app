@@ -114,10 +114,10 @@ Ajouter dans le gestionnaire de secrets, sans les placer dans le code :
 | `APPLE_ROOT_CERTIFICATE_G1_BASE64`  | Certificat Apple Inc. Root DER encodé en Base64, téléchargé depuis Apple                               |
 | `APPLE_ROOT_CERTIFICATE_G2_BASE64`  | Certificat Apple Root CA - G2 DER encodé en Base64, téléchargé depuis Apple                            |
 | `APPLE_ROOT_CERTIFICATE_G3_BASE64`  | Certificat Apple Root CA - G3 DER encodé en Base64, téléchargé depuis Apple                            |
-| `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`  | JSON du compte de service minimal autorisé à valider les achats du package `ca.indexcanada.app`        |
-| `GOOGLE_RTDN_AUDIENCE`              | URL HTTPS exacte déclarée comme audience du push Pub/Sub                                               |
-| `GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL` | Adresse du compte de service autorisé à signer le jeton OIDC Pub/Sub                                   |
-| `GOOGLE_RTDN_SUBSCRIPTION`          | Nom complet `projects/.../subscriptions/...` de l'abonnement Pub/Sub attendu                           |
+| `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`  | Objet JSON brut complet de la clé du compte **Play verifier**, limité à `ca.indexcanada.app`; ne pas l'encoder en Base64 |
+| `GOOGLE_RTDN_AUDIENCE`              | `https://immigrantindex.wixsite.com/website-1/_functions/googlePlayRtdn`                                |
+| `GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL` | Adresse du compte **Push OIDC** sans clé, distinct du compte Play verifier                              |
+| `GOOGLE_RTDN_SUBSCRIPTION`          | `projects/<PROJECT_ID>/subscriptions/index-canada-rtdn-preprod-push`                                   |
 | `STORE_ALLOW_SANDBOX`               | `true` uniquement en préproduction; absent ou `false` en production afin de refuser tout droit sandbox |
 
 Pour faire tourner `CHECKOUT_SIGNING_SECRET` sans casser les restaurations ni
@@ -265,7 +265,116 @@ dépasse 10 000 événements et exige alors une période plus courte.
     checkout prédécesseur doit déjà prouver exactement le même
     `entitlementId` et `professionalId` avant toute migration.
 
-## 6.1 Conserver Stripe pour le Web/legacy
+## 6.1 Google RTDN en préproduction
+
+Le package Android autorisé est exclusivement `ca.indexcanada.app`. Le point de
+terminaison et l'audience OIDC doivent être exactement, sans barre finale :
+
+```text
+https://immigrantindex.wixsite.com/website-1/_functions/googlePlayRtdn
+```
+
+Google recommande de relire l'achat avec la Google Play Developer API après une
+RTDN : la notification indique un changement, mais ne contient pas à elle seule
+l'état complet de l'abonnement. Voir la documentation officielle sur la
+[préparation de Google Play Billing](https://developer.android.com/google/play/billing/getting-ready)
+et la [référence RTDN](https://developer.android.com/google/play/billing/rtdn-reference).
+
+#### Deux comptes de service séparés
+
+Ne pas réutiliser la même identité pour valider les achats et signer les pushes :
+
+1. **Play verifier** — par exemple
+   `index-canada-play-verifier-preprod@<PROJECT_ID>.iam.gserviceaccount.com`.
+   Activer la Google Play Android Developer API, créer une clé JSON pour ce
+   compte, puis l'inviter dans **Google Play Console > Utilisateurs et
+   autorisations** avec un accès limité à l'application `ca.indexcanada.app` et
+   seulement les permissions **View financial data, orders, and cancellation
+   survey responses** et **Manage orders and subscriptions**. Ces deux
+   permissions sont celles prescrites par le
+   [guide officiel Google Play Developer API](https://developers.google.com/android-publisher/getting_started).
+2. **Push OIDC** — par exemple
+   `index-canada-rtdn-push-preprod@<PROJECT_ID>.iam.gserviceaccount.com`.
+   Ce compte sert uniquement de sujet `email` du jeton OIDC Pub/Sub. Ne créer,
+   télécharger ni stocker aucune clé JSON pour lui.
+
+La clé privée du compte Play verifier va uniquement dans le gestionnaire de
+secrets Wix. Ne jamais la placer dans Git, dans un fichier `.env`, dans un
+binaire mobile, dans un ticket ou dans les journaux.
+
+#### Topic et abonnement push
+
+1. Dans le projet Google Cloud de préproduction, activer Pub/Sub et créer le
+   topic recommandé `index-canada-rtdn-preprod`, dont le nom complet est
+   `projects/<PROJECT_ID>/topics/index-canada-rtdn-preprod`.
+2. Sur ce topic, accorder le rôle **Pub/Sub Publisher** à l'identité système
+   Google Play
+   `google-play-developer-notifications@system.gserviceaccount.com`, comme
+   l'exige la [procédure RTDN officielle](https://developer.android.com/google/play/billing/getting-ready#configure-rtdn).
+3. Créer l'abonnement push `index-canada-rtdn-preprod-push` vers l'URL exacte
+   indiquée ci-dessus. Activer l'authentification, sélectionner le compte
+   **Push OIDC** et utiliser la même URL comme audience.
+4. Conserver l'enveloppe Pub/Sub : **ne pas activer le déballage du contenu**.
+   Le backend vérifie le nom complet de l'abonnement, puis lit
+   `message.data` encodé en Base64 dans l'enveloppe standard.
+5. Autoriser le service agent Pub/Sub
+   `service-<PROJECT_NUMBER>@gcp-sa-pubsub.iam.gserviceaccount.com` à créer les
+   jetons OIDC pour le compte Push OIDC avec
+   `roles/iam.serviceAccountTokenCreator`. Restreindre de préférence ce rôle au
+   compte Push OIDC. La procédure et les contrôles `aud`, `email` et
+   `email_verified` sont décrits dans
+   [Authentifier les abonnements push](https://cloud.google.com/pubsub/docs/authenticate-push-subscriptions).
+6. Dans Google Play Console, ouvrir l'application `ca.indexcanada.app`, puis
+   **Monétiser > Configuration de la monétisation > Notifications développeur
+   en temps réel**. Activer les notifications et renseigner le nom complet du
+   topic.
+
+#### Valeurs exactes des quatre secrets Wix
+
+Enregistrer les valeurs suivantes dans le gestionnaire de secrets Wix de la
+préproduction :
+
+```text
+GOOGLE_PLAY_SERVICE_ACCOUNT_JSON={"type":"service_account",...,"client_email":"index-canada-play-verifier-preprod@<PROJECT_ID>.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n",...}
+GOOGLE_RTDN_AUDIENCE=https://immigrantindex.wixsite.com/website-1/_functions/googlePlayRtdn
+GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL=index-canada-rtdn-push-preprod@<PROJECT_ID>.iam.gserviceaccount.com
+GOOGLE_RTDN_SUBSCRIPTION=projects/<PROJECT_ID>/subscriptions/index-canada-rtdn-preprod-push
+```
+
+`GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` est l'objet JSON original complet exporté
+par Google, sur une ou plusieurs lignes, avec ses séquences `\n` intactes dans
+`private_key`; ce n'est ni un chemin de fichier ni une valeur Base64. Les deux
+adresses de compte de service doivent être différentes.
+
+#### Validation avant promotion
+
+1. Envoyer **Send test message** dans Play Console et confirmer une réponse 2xx.
+   Cela valide uniquement le chemin Play → Pub/Sub → Wix, l'audience OIDC,
+   l'adresse du compte Push OIDC et l'enveloppe.
+2. Effectuer ensuite un véritable achat sandbox de l'abonnement Premium ou
+   Professional avec un compte test. Vérifier la confirmation serveur, le
+   document `Entitlements`, puis au moins une véritable
+   `subscriptionNotification` de renouvellement, d'expiration ou de révocation.
+3. Ne pas conclure sur la base du seul `testNotification` : il ne contient pas
+   de jeton d'achat et ne prouve ni la relecture Play Developer API ni la mise à
+   jour d'un droit.
+4. Avec le correctif backend en cours, après authentification, les familles RTDN
+   non liées aux abonnements (`oneTimeProductNotification`,
+   `voidedPurchaseNotification` et autres familles non prises en charge) sont
+   acquittées avec HTTP 200 et marquées ignorées. Elles ne doivent jamais créer,
+   prolonger, expirer ou révoquer un droit d'abonnement. La révocation d'un
+   droit reste fondée sur une `subscriptionNotification` vérifiée puis relue
+   auprès de Google Play.
+5. Une `SUBSCRIPTION_PENDING_PURCHASE_CANCELED` (type 20) est relue auprès de
+   Google puis acquittée sans créer, modifier ni révoquer un droit : un achat
+   initial resté en attente n'a jamais accordé d'accès, tandis qu'un remplacement
+   en attente annulé ne doit pas expirer l'abonnement existant.
+6. Le catalogue actuel ne propose ni bundle ni add-on Google Play. Le backend
+   échoue volontairement fermé si plusieurs `lineItems` actives rendent le
+   produit effectif ambigu; ajouter un contrat et des tests dédiés avant toute
+   introduction de bundle ou d'add-on.
+
+## 6.2 Conserver Stripe pour le Web/legacy
 
 1. Créer un endpoint vers
    `https://<domaine-wix>/_functions/stripeWebhook`.

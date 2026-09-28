@@ -487,12 +487,20 @@ export function selectGoogleSubscriptionLineItem(responseValue, {
   expectedRole = "requested",
 } = {}) {
   const response = assertRecord(responseValue, "UNTRUSTED_STORE_PURCHASE");
-  const expectedProductId = cleanOpaqueString(productId, {
-    code: "STORE_PRODUCT_MISMATCH",
-    max: 160,
-  });
-  getStorePlanForProduct("google_play", expectedProductId);
+  const hasExpectedProduct = productId !== undefined
+    && productId !== null
+    && productId !== "";
+  const expectedProductId = hasExpectedProduct
+    ? cleanOpaqueString(productId, {
+      code: "STORE_PRODUCT_MISMATCH",
+      max: 160,
+    })
+    : "";
+  if (expectedProductId) getStorePlanForProduct("google_play", expectedProductId);
   if (!["requested", "effective"].includes(expectedRole)) {
+    throw new InputError("STORE_PRODUCT_MISMATCH");
+  }
+  if (!expectedProductId && expectedRole !== "effective") {
     throw new InputError("STORE_PRODUCT_MISMATCH");
   }
   if (
@@ -518,8 +526,16 @@ export function selectGoogleSubscriptionLineItem(responseValue, {
       "STORE_PRODUCT_MISMATCH",
     );
     if (
-      (expectedRole === "requested" && pendingItem.productId !== expectedProductId)
-      || (expectedRole === "effective" && effectiveItem.productId !== expectedProductId)
+      (
+        expectedProductId
+        && expectedRole === "requested"
+        && pendingItem.productId !== expectedProductId
+      )
+      || (
+        expectedProductId
+        && expectedRole === "effective"
+        && effectiveItem.productId !== expectedProductId
+      )
       || effectiveItem.productId === pendingItem.productId
       || replacement.productId !== pendingItem.productId
       || !effectiveItem.autoRenewingPlan
@@ -540,9 +556,30 @@ export function selectGoogleSubscriptionLineItem(responseValue, {
     }
     replacementMode = "DEFERRED";
   } else if (withoutExpiry.length === 0) {
-    const matching = items.filter((item) => item.productId === expectedProductId);
-    if (matching.length !== 1) throw new InputError("STORE_PRODUCT_MISMATCH");
-    [effectiveItem] = matching;
+    if (expectedProductId) {
+      const matching = items.filter((item) => item.productId === expectedProductId);
+      if (matching.length !== 1) throw new InputError("STORE_PRODUCT_MISMATCH");
+      [effectiveItem] = matching;
+    } else if (items.length === 1) {
+      [effectiveItem] = items;
+    } else {
+      const candidates = items.map((item) => ({
+        item,
+        expiresAtMs: timestampMs(item.expiryTime, "UNTRUSTED_STORE_PURCHASE"),
+      }));
+      const active = candidates.filter(({ expiresAtMs }) => expiresAtMs > nowMs);
+      if (active.length === 1) {
+        effectiveItem = active[0].item;
+      } else if (active.length === 0 && allowExpired) {
+        candidates.sort((left, right) => right.expiresAtMs - left.expiresAtMs);
+        if (candidates[0].expiresAtMs === candidates[1].expiresAtMs) {
+          throw new InputError("STORE_PRODUCT_MISMATCH");
+        }
+        effectiveItem = candidates[0].item;
+      } else {
+        throw new InputError("STORE_PRODUCT_MISMATCH");
+      }
+    }
     if (!effectiveItem.autoRenewingPlan) throw new InputError("STORE_PRODUCT_MISMATCH");
     if (items.length === 2) {
       const [historicalItem] = items.filter((item) => item !== effectiveItem);

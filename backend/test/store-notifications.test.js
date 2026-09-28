@@ -18,6 +18,7 @@ import {
   decodeGoogleRtdnEnvelope,
   normalizeAppleLifecycleEvent,
   normalizeGoogleLifecycleEvent,
+  validateGooglePendingPurchaseCanceled,
 } from "../store-notification-core.js";
 import { processStoreLifecycleEvent } from "../store-notification-service.js";
 import {
@@ -72,26 +73,31 @@ function googleResponse(accountToken, overrides = {}) {
   };
 }
 
-function rtdnEnvelope(notificationType = 2) {
+function googleRtdnEnvelope(notification, messageId = "1234567890123456") {
   const data = Buffer.from(JSON.stringify({
     version: "1.0",
     packageName: APP_BUNDLE_ID,
     eventTimeMillis: String(NOW - 1_000),
-    subscriptionNotification: {
-      version: "1.0",
-      notificationType,
-      purchaseToken: "google-token-never-persisted",
-      subscriptionId: PRODUCT,
-    },
+    ...notification,
   }), "utf8").toString("base64");
   return {
     message: {
       data,
-      messageId: "1234567890123456",
+      messageId,
       publishTime: new Date(NOW).toISOString(),
     },
     subscription: "projects/index-canada/subscriptions/play-rtdn",
   };
+}
+
+function rtdnEnvelope(notificationType = 2) {
+  return googleRtdnEnvelope({
+    subscriptionNotification: {
+      version: "1.0",
+      notificationType,
+      purchaseToken: "google-token-never-persisted",
+    },
+  });
 }
 
 test("Apple V2 normalise renouvellement, révocation et expiration sans conserver les JWS", () => {
@@ -173,12 +179,31 @@ test("Google RTDN valide l'enveloppe et normalise renouvellement, révocation et
     nowMs: NOW,
   });
   assert.equal(decoded.notificationType, 2);
-  assert.equal(decoded.productId, PRODUCT);
+  assert.equal(Object.hasOwn(decoded, "productId"), false);
   assert.equal(decoded.purchaseToken, "google-token-never-persisted");
 
   const renewed = normalizeGoogleLifecycleEvent(decoded, googleResponse(ACCOUNT_TOKEN), { nowMs: NOW });
   assert.equal(renewed.purchase.status, "active");
+  assert.equal(renewed.purchase.productId, PRODUCT);
+  assert.equal(renewed.acknowledgementProductId, PRODUCT);
   assert.equal(renewed.eventType, "SUBSCRIPTION_RENEWED");
+
+  for (const [notificationType, eventType] of [
+    [17, "SUBSCRIPTION_ITEMS_CHANGED"],
+    [18, "SUBSCRIPTION_CANCELLATION_SCHEDULED"],
+  ]) {
+    const lifecycle = normalizeGoogleLifecycleEvent(
+      decodeGoogleRtdnEnvelope(rtdnEnvelope(notificationType), {
+        expectedSubscription: "projects/index-canada/subscriptions/play-rtdn",
+        nowMs: NOW,
+      }),
+      googleResponse(ACCOUNT_TOKEN),
+      { nowMs: NOW },
+    );
+    assert.equal(lifecycle.eventType, eventType);
+    assert.equal(lifecycle.purchase.productId, PRODUCT);
+    assert.equal(lifecycle.purchase.status, "active");
+  }
 
   const deferredExpiry = new Date(NOW + 60_000).toISOString();
   const deferred = normalizeGoogleLifecycleEvent({
@@ -284,6 +309,122 @@ test("Google RTDN valide l'enveloppe et normalise renouvellement, révocation et
   unsupportedVersion.message.data = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
   assert.throws(() => decodeGoogleRtdnEnvelope(unsupportedVersion, {
     expectedSubscription: unsupportedVersion.subscription,
+    nowMs: NOW,
+  }), (error) => error instanceof InputError && error.code === "INVALID_GOOGLE_RTDN");
+});
+
+test("Google RTDN type 20 valide l'annulation en attente sans normaliser de lineItem", () => {
+  const rtdn = decodeGoogleRtdnEnvelope(rtdnEnvelope(20), {
+    expectedSubscription: "projects/index-canada/subscriptions/play-rtdn",
+    nowMs: NOW,
+  });
+  const initial = validateGooglePendingPurchaseCanceled(rtdn, {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED",
+  });
+  assert.deepEqual(initial, { ignored: true });
+
+  const replacement = validateGooglePendingPurchaseCanceled({
+    ...rtdn,
+    purchaseToken: "current-pending-token-never-persisted",
+  }, {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED",
+    linkedPurchaseToken: "linked-predecessor-token-never-persisted",
+  });
+  assert.deepEqual(replacement, { ignored: true });
+  assert.equal(
+    JSON.stringify(replacement).includes("linked-predecessor-token-never-persisted"),
+    false,
+  );
+
+  assert.throws(() => validateGooglePendingPurchaseCanceled(rtdn, {
+    packageName: "ca.example.other",
+    subscriptionState: "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED",
+  }), (error) => error instanceof InputError && error.code === "STORE_APP_MISMATCH");
+  assert.throws(() => validateGooglePendingPurchaseCanceled(rtdn, {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+  }), (error) => error instanceof InputError && error.code === "UNTRUSTED_STORE_NOTIFICATION");
+  assert.throws(() => validateGooglePendingPurchaseCanceled(rtdn, {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED",
+    linkedPurchaseToken: "",
+  }), (error) => error instanceof InputError && error.code === "UNTRUSTED_STORE_NOTIFICATION");
+  assert.throws(() => validateGooglePendingPurchaseCanceled(rtdn, {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED",
+    linkedPurchaseToken: rtdn.purchaseToken,
+  }), (error) => error instanceof InputError && error.code === "STORE_PURCHASE_LINEAGE_INVALID");
+});
+
+test("Google RTDN acquitte sans mutation les familles non-abonnement validées", () => {
+  const expectedSubscription = "projects/index-canada/subscriptions/play-rtdn";
+  const fixtures = [{
+    notification: {
+      oneTimeProductNotification: {
+        version: "1.0",
+        notificationType: 1,
+        purchaseToken: "one-time-token-never-persisted",
+        sku: "one.time.product",
+      },
+    },
+    family: "one_time_product",
+    eventType: "ONE_TIME_PRODUCT_PURCHASED",
+  }, {
+    notification: {
+      voidedPurchaseNotification: {
+        purchaseToken: "voided-token-never-persisted",
+        orderId: "GPA.1234-5678-9012-34567",
+        productType: 1,
+        refundType: 1,
+      },
+    },
+    family: "voided_purchase",
+    eventType: "VOIDED_SUBSCRIPTION_FULL_REFUND",
+  }, {
+    notification: {
+      pendingRefundReviewNotification: {
+        version: "1.0",
+        pendingRefundToken: "pending-refund-token-never-persisted",
+        orderId: "GPA.1234-5678-9012-34567",
+        refundReason: 7,
+        obfuscatedAccountId: ACCOUNT_TOKEN,
+      },
+    },
+    family: "pending_refund_review",
+    eventType: "PENDING_REFUND_REVIEW",
+  }];
+
+  for (const [index, fixture] of fixtures.entries()) {
+    const decoded = decodeGoogleRtdnEnvelope(
+      googleRtdnEnvelope(fixture.notification, `ignored-${index}-1234567890`),
+      { expectedSubscription, nowMs: NOW },
+    );
+    assert.equal(decoded.ignored, true);
+    assert.equal(decoded.notificationFamily, fixture.family);
+    assert.equal(decoded.eventType, fixture.eventType);
+    const serialized = JSON.stringify(decoded);
+    assert.equal(serialized.includes("token-never-persisted"), false);
+    assert.equal(serialized.includes("GPA.1234-5678-9012-34567"), false);
+    assert.equal(serialized.includes(ACCOUNT_TOKEN), false);
+  }
+
+  const mutuallyExclusive = googleRtdnEnvelope({
+    subscriptionNotification: {
+      version: "1.0",
+      notificationType: 2,
+      purchaseToken: "subscription-token-never-persisted",
+    },
+    oneTimeProductNotification: {
+      version: "1.0",
+      notificationType: 1,
+      purchaseToken: "one-time-token-never-persisted",
+      sku: "one.time.product",
+    },
+  });
+  assert.throws(() => decodeGoogleRtdnEnvelope(mutuallyExclusive, {
+    expectedSubscription,
     nowMs: NOW,
   }), (error) => error instanceof InputError && error.code === "INVALID_GOOGLE_RTDN");
 });

@@ -75,6 +75,7 @@ import {
   decodeGoogleRtdnEnvelope,
   normalizeAppleLifecycleEvent,
   normalizeGoogleLifecycleEvent,
+  validateGooglePendingPurchaseCanceled,
 } from "backend/store-notification-core";
 import { processStoreLifecycleEvent } from "backend/store-notification-service";
 import {
@@ -2382,22 +2383,32 @@ export async function post_googlePlayRtdn(request, dependencies = {}) {
       ?? await getGoogleRtdnSubscription();
     const rtdn = decodeGoogleRtdnEnvelope(body, { expectedSubscription });
     if (rtdn.test) return jsonResponse(200, { received: true, test: true });
+    // Le cycle de vie des droits traite uniquement SubscriptionNotification
+    // après relecture subscriptionsv2. Les autres familles sont authentifiées
+    // et validées, puis acquittées sans corrélation risquée : les jetons bruts
+    // ne sont jamais persistés et aucun droit ne doit être deviné.
+    if (rtdn.ignored) return jsonResponse(200, { received: true, ignored: true });
 
+    let verifier;
     let verifyGoogle = dependencies.verifyGoogle;
-    let acknowledgeGoogle = dependencies.acknowledgeGoogle;
-    if (typeof verifyGoogle !== "function" || typeof acknowledgeGoogle !== "function") {
-      const verifier = await getGoogleStoreVerifier();
-      if (typeof verifyGoogle !== "function") {
-        verifyGoogle = (purchaseToken) => verifier.getSubscription(purchaseToken);
-      }
-      if (typeof acknowledgeGoogle !== "function") {
-        acknowledgeGoogle = ({ purchaseToken, productId }) => verifier.acknowledgeSubscription({
-          purchaseToken,
-          productId,
-        });
-      }
+    if (typeof verifyGoogle !== "function") {
+      verifier = await getGoogleStoreVerifier();
+      verifyGoogle = (purchaseToken) => verifier.getSubscription(purchaseToken);
     }
     const subscription = await verifyGoogle(rtdn.purchaseToken);
+    if (rtdn.notificationType === 20) {
+      validateGooglePendingPurchaseCanceled(rtdn, subscription);
+      return jsonResponse(200, { received: true, ignored: true });
+    }
+
+    let acknowledgeGoogle = dependencies.acknowledgeGoogle;
+    if (typeof acknowledgeGoogle !== "function") {
+      verifier ??= await getGoogleStoreVerifier();
+      acknowledgeGoogle = ({ purchaseToken, productId }) => verifier.acknowledgeSubscription({
+        purchaseToken,
+        productId,
+      });
+    }
     const event = normalizeGoogleLifecycleEvent(rtdn, subscription);
     const processed = await processStoreLifecycleEvent({
       event,

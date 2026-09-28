@@ -19,6 +19,7 @@ import {
   normalizeApplePurchase,
   normalizeGooglePurchase,
   reconcileEntitlement,
+  selectGoogleSubscriptionLineItem,
   selectLatestStoreEntitlement,
   validateStoreCheckout,
   validateStoreConfirmation,
@@ -311,6 +312,51 @@ test("Google contrôle package, produit, compte obscurci, état, échéance et r
       nowMs: NOW,
     }), code);
   }
+});
+
+test("Google dérive le produit RTDN depuis subscriptionsv2 sans subscriptionId", () => {
+  const current = {
+    productId: PREMIUM_PRODUCT,
+    expiryTime: new Date(NOW + 365 * 24 * 60 * 60 * 1000).toISOString(),
+    latestSuccessfulOrderId: "GPA.1234-5678-9012-34567",
+    autoRenewingPlan: { autoRenewEnabled: true },
+  };
+  const single = selectGoogleSubscriptionLineItem({ lineItems: [current] }, {
+    expectedRole: "effective",
+    allowExpired: true,
+    nowMs: NOW,
+  });
+  assert.equal(single.effectiveItem.productId, PREMIUM_PRODUCT);
+
+  const historical = {
+    productId: PROFESSIONAL_PRODUCT,
+    expiryTime: new Date(NOW - 1_000).toISOString(),
+    latestSuccessfulOrderId: "GPA.1111-1111-1111-11111",
+    autoRenewingPlan: { autoRenewEnabled: false },
+  };
+  const transitioned = selectGoogleSubscriptionLineItem({
+    lineItems: [historical, current],
+  }, {
+    expectedRole: "effective",
+    allowExpired: true,
+    nowMs: NOW,
+  });
+  assert.equal(transitioned.effectiveItem.productId, PREMIUM_PRODUCT);
+
+  expectInputError(() => selectGoogleSubscriptionLineItem({
+    lineItems: [
+      current,
+      {
+        ...current,
+        productId: PROFESSIONAL_PRODUCT,
+        latestSuccessfulOrderId: "GPA.2222-2222-2222-22222",
+      },
+    ],
+  }, {
+    expectedRole: "effective",
+    allowExpired: true,
+    nowMs: NOW,
+  }), "STORE_PRODUCT_MISMATCH");
 });
 
 test("l'Entitlement est distinct de la modération et ne contient que des références hachées", () => {
