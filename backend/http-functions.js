@@ -97,7 +97,11 @@ const STRIPE_WEBHOOK_SECRET_NAME = "STRIPE_WEBHOOK_SECRET";
 const CHECKOUT_SIGNING_SECRET_NAME = "CHECKOUT_SIGNING_SECRET";
 const CHECKOUT_SIGNING_SECRET_PREVIOUS_NAME = "CHECKOUT_SIGNING_SECRET_PREVIOUS";
 const APPLE_APP_ID_SECRET_NAME = "APPLE_APP_ID";
-const APPLE_ROOT_CERTIFICATES_SECRET_NAME = "APPLE_ROOT_CERTIFICATES_BASE64";
+const APPLE_ROOT_CERTIFICATE_SECRET_NAMES = Object.freeze([
+  "APPLE_ROOT_CERTIFICATE_G1_BASE64",
+  "APPLE_ROOT_CERTIFICATE_G2_BASE64",
+  "APPLE_ROOT_CERTIFICATE_G3_BASE64",
+]);
 const GOOGLE_PLAY_SERVICE_ACCOUNT_SECRET_NAME = "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON";
 const GOOGLE_RTDN_AUDIENCE_SECRET_NAME = "GOOGLE_RTDN_AUDIENCE";
 const GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL_SECRET_NAME = "GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL";
@@ -391,11 +395,16 @@ async function getStoreSigningKeyring() {
 async function getAppleStoreVerifier() {
   if (!appleStoreVerifierPromise) {
     appleStoreVerifierPromise = Promise.all([
-      readSecret(APPLE_ROOT_CERTIFICATES_SECRET_NAME),
+      ...APPLE_ROOT_CERTIFICATE_SECRET_NAMES.map((name) => readSecret(name)),
       readSecret(APPLE_APP_ID_SECRET_NAME),
     ])
-      .then(([rootCertificates, appAppleId]) => createAppleTransactionVerifier({
-        rootCertificates,
+      .then(([
+        rootCertificateG1,
+        rootCertificateG2,
+        rootCertificateG3,
+        appAppleId,
+      ]) => createAppleTransactionVerifier({
+        rootCertificates: [rootCertificateG1, rootCertificateG2, rootCertificateG3],
         appAppleId,
       }))
       .catch((error) => {

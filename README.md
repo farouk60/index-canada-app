@@ -116,7 +116,10 @@ valeurs propres à l'environnement documentées dans
   confirmations et les empreintes anti-abus;
 - `CHECKOUT_SIGNING_SECRET_PREVIOUS` : anciennes valeurs encore acceptées
   pendant une rotation contrôlée;
-- `APPLE_APP_ID` et `APPLE_ROOT_CERTIFICATES_BASE64` pour la validation Apple;
+- `APPLE_APP_ID` et les trois secrets `APPLE_ROOT_CERTIFICATE_G1_BASE64`,
+  `APPLE_ROOT_CERTIFICATE_G2_BASE64` et `APPLE_ROOT_CERTIFICATE_G3_BASE64`
+  pour les certificats racine Apple officiels, séparés afin que chaque valeur
+  respecte la limite de taille d'un secret Wix;
 - `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` et les paramètres `GOOGLE_RTDN_*` pour la
   validation Google Play et les notifications temps réel;
 - `STORE_ALLOW_SANDBOX=true` uniquement en préproduction.

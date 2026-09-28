@@ -16,12 +16,14 @@ const FAKE_PRIVATE_KEY = [
   "",
 ].join("\n");
 
-test("les certificats Apple sont décodés en DER sans accepter une configuration vide", () => {
-  const certificate = Buffer.alloc(256, 7).toString("base64");
-  const roots = parseAppleRootCertificates(JSON.stringify([certificate]));
-  assert.equal(roots.length, 1);
-  assert.equal(Buffer.isBuffer(roots[0]), true);
-  assert.equal(roots[0].length, 256);
+test("les certificats Apple distincts sont décodés en DER sans accepter une configuration vide", () => {
+  const certificates = [1, 2, 3]
+    .map((value) => Buffer.alloc(256, value).toString("base64"));
+  const roots = parseAppleRootCertificates(certificates);
+  assert.equal(roots.length, 3);
+  assert.equal(roots.every((root) => Buffer.isBuffer(root)), true);
+  assert.deepEqual(roots.map((root) => root[0]), [1, 2, 3]);
+  assert.equal(roots.every((root) => root.length === 256), true);
   assert.throws(() => parseAppleRootCertificates("[]"), StoreProviderError);
   assert.throws(() => parseAppleRootCertificates("not-json"), StoreProviderError);
 });

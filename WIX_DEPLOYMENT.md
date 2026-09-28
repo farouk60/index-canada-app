@@ -111,7 +111,9 @@ Ajouter dans le gestionnaire de secrets, sans les placer dans le code :
 | `CHECKOUT_SIGNING_SECRET`           | Valeur aléatoire d'au moins 32 octets, propre à l'environnement                                        |
 | `CHECKOUT_SIGNING_SECRET_PREVIOUS`  | Tableau JSON de 0 à 8 anciens secrets; configurer `[]` avant le premier déploiement                     |
 | `APPLE_APP_ID`                      | Identifiant numérique de l'application dans App Store Connect                                          |
-| `APPLE_ROOT_CERTIFICATES_BASE64`    | Tableau JSON des certificats racine Apple DER encodés en Base64, provenant d'Apple                     |
+| `APPLE_ROOT_CERTIFICATE_G1_BASE64`  | Certificat Apple Inc. Root DER encodé en Base64, téléchargé depuis Apple                               |
+| `APPLE_ROOT_CERTIFICATE_G2_BASE64`  | Certificat Apple Root CA - G2 DER encodé en Base64, téléchargé depuis Apple                            |
+| `APPLE_ROOT_CERTIFICATE_G3_BASE64`  | Certificat Apple Root CA - G3 DER encodé en Base64, téléchargé depuis Apple                            |
 | `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`  | JSON du compte de service minimal autorisé à valider les achats du package `ca.indexcanada.app`        |
 | `GOOGLE_RTDN_AUDIENCE`              | URL HTTPS exacte déclarée comme audience du push Pub/Sub                                               |
 | `GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL` | Adresse du compte de service autorisé à signer le jeton OIDC Pub/Sub                                   |
