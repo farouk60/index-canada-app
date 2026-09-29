@@ -413,7 +413,11 @@ jobs:
           fi
           bundle_path="${bundle_files[0]}"
           unzip -tq "$bundle_path"
-          jarsigner -verify -strict "$bundle_path" >/dev/null
+          # Les certificats d'envoi Android sont auto-signés par conception :
+          # -strict transforme cet état attendu en code de sortie 4. La validité
+          # cryptographique est vérifiée ici, puis l'identité exacte du signataire
+          # est imposée juste après avec l'empreinte SHA-256 canonique Google Play.
+          jarsigner -verify "$bundle_path" >/dev/null
 
           actual_sha256="$(
             LC_ALL=C keytool -printcert -jarfile "$bundle_path" \
