@@ -9,6 +9,13 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/u;
 const SAFE_PROVIDER_DIAGNOSTICS = new Set([
   "authorization_missing_or_oversize",
   "authorization_format_invalid",
+  "id_token_certificate_fetch_failed",
+  "id_token_key_unknown",
+  "id_token_signature_invalid",
+  "id_token_time_invalid",
+  "id_token_issuer_invalid",
+  "id_token_audience_mismatch",
+  "id_token_format_invalid",
   "id_token_verification_failed",
   "claim_payload_missing",
   "claim_email_mismatch",
@@ -39,6 +46,44 @@ export class StoreProviderError extends Error {
 
 function providerConfigError(code) {
   return new StoreProviderError(code, { retryable: true });
+}
+
+function googlePushVerificationDiagnostic(error) {
+  const message = typeof error?.message === "string" ? error.message : "";
+  if (message.startsWith("Failed to retrieve verification certificates:")) {
+    return "id_token_certificate_fetch_failed";
+  }
+  if (message.startsWith("No pem found for envelope:")) {
+    return "id_token_key_unknown";
+  }
+  if (message.startsWith("Invalid token signature:")) {
+    return "id_token_signature_invalid";
+  }
+  if (message.startsWith("Invalid issuer,")) {
+    return "id_token_issuer_invalid";
+  }
+  if (message === "Wrong recipient, payload audience != requiredAudience") {
+    return "id_token_audience_mismatch";
+  }
+  if ([
+    "No issue time in token:",
+    "No expiration time in token:",
+    "iat field using invalid format",
+    "exp field using invalid format",
+    "Expiration time too far in future:",
+    "Token used too early,",
+    "Token used too late,",
+  ].some((prefix) => message.startsWith(prefix))) {
+    return "id_token_time_invalid";
+  }
+  if ([
+    "Wrong number of segments in token:",
+    "Can't parse token envelope:",
+    "Can't parse token payload",
+  ].some((prefix) => message.startsWith(prefix))) {
+    return "id_token_format_invalid";
+  }
+  return "id_token_verification_failed";
 }
 
 function opaqueString(value, code, max = 20_000) {
@@ -255,8 +300,8 @@ export async function createGooglePushTokenVerifier({
           audience: audienceUrl.toString(),
         });
         payload = ticket?.getPayload?.();
-      } catch (_error) {
-        throw unauthorized("id_token_verification_failed");
+      } catch (error) {
+        throw unauthorized(googlePushVerificationDiagnostic(error));
       }
       if (!payload) throw unauthorized("claim_payload_missing");
       if (payload.email !== serviceAccountEmail) throw unauthorized("claim_email_mismatch");

@@ -142,6 +142,13 @@ test("le diagnostic OIDC accepte uniquement les catégories internes autorisées
   const diagnostics = [
     "authorization_missing_or_oversize",
     "authorization_format_invalid",
+    "id_token_certificate_fetch_failed",
+    "id_token_key_unknown",
+    "id_token_signature_invalid",
+    "id_token_time_invalid",
+    "id_token_issuer_invalid",
+    "id_token_audience_mismatch",
+    "id_token_format_invalid",
     "id_token_verification_failed",
     "claim_payload_missing",
     "claim_email_mismatch",
@@ -237,6 +244,60 @@ test("le vérificateur OIDC expurge l'échec brut de verifyIdToken", async () =>
     idToken: GOOGLE_PUSH_TOKEN,
     audience: GOOGLE_PUSH_AUDIENCE,
   }]);
+});
+
+test("le vérificateur OIDC classe les échecs Google sans journaliser leur contenu", async (t) => {
+  const cases = [{
+    name: "certificats indisponibles",
+    providerMessage: "Failed to retrieve verification certificates: upstream-sensitive-detail",
+    diagnostic: "id_token_certificate_fetch_failed",
+  }, {
+    name: "clé inconnue",
+    providerMessage: "No pem found for envelope: sensitive-jwt-header",
+    diagnostic: "id_token_key_unknown",
+  }, {
+    name: "signature invalide",
+    providerMessage: `Invalid token signature: ${GOOGLE_PUSH_TOKEN}`,
+    diagnostic: "id_token_signature_invalid",
+  }, {
+    name: "horloge ou expiration invalide",
+    providerMessage: "Token used too late, sensitive-time-claims",
+    diagnostic: "id_token_time_invalid",
+  }, {
+    name: "issuer invalide",
+    providerMessage: "Invalid issuer, expected one of [sensitive-issuers]",
+    diagnostic: "id_token_issuer_invalid",
+  }, {
+    name: "audience invalide",
+    providerMessage: "Wrong recipient, payload audience != requiredAudience",
+    diagnostic: "id_token_audience_mismatch",
+  }, {
+    name: "format interne invalide",
+    providerMessage: "Can't parse token payload 'sensitive-token-fragment",
+    diagnostic: "id_token_format_invalid",
+  }];
+
+  for (const current of cases) {
+    await t.test(current.name, async () => {
+      const verifier = await createGooglePushTokenVerifier({
+        audience: GOOGLE_PUSH_AUDIENCE,
+        serviceAccountEmail: GOOGLE_PUSH_EMAIL,
+        libraryLoader: async () => googlePushLibrary({
+          failure: new Error(current.providerMessage),
+        }),
+      });
+      await assertSafePushRejection(
+        () => verifier.verifyAuthorization(`Bearer ${GOOGLE_PUSH_TOKEN}`),
+        current.diagnostic,
+        [
+          current.providerMessage,
+          GOOGLE_PUSH_TOKEN,
+          GOOGLE_PUSH_EMAIL,
+          GOOGLE_PUSH_AUDIENCE,
+        ],
+      );
+    });
+  }
 });
 
 test("le vérificateur OIDC distingue les claims invalides sans les recopier", async (t) => {
