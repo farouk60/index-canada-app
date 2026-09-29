@@ -462,8 +462,16 @@ jobs:
             exit 1
           fi
 
-          if ! git diff --quiet HEAD -- .; then
-            git diff --stat HEAD -- .
+          # Flutter régénère ce fichier Windows pendant `pub get`, même pour un
+          # build Android, et le wrapper Gradle change seulement de mode après
+          # le chmod explicite. Ces deux changements temporaires sont attendus;
+          # toute autre modification d'un fichier suivi reste bloquante.
+          if ! git diff --quiet HEAD -- . \
+            ':(exclude)android/gradlew' \
+            ':(exclude)windows/flutter/generated_plugins.cmake'; then
+            git diff --stat HEAD -- . \
+              ':(exclude)android/gradlew' \
+              ':(exclude)windows/flutter/generated_plugins.cmake'
             echo "::error title=Dépôt modifié::La compilation staging ne doit modifier aucun fichier suivi."
             exit 1
           fi
