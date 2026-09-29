@@ -6,13 +6,34 @@ import { APP_BUNDLE_ID } from "./store-purchase-core.js";
 
 const GOOGLE_SCOPE = "https://www.googleapis.com/auth/androidpublisher";
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/u;
+const SAFE_PROVIDER_DIAGNOSTICS = new Set([
+  "authorization_missing_or_oversize",
+  "authorization_format_invalid",
+  "id_token_verification_failed",
+  "claim_payload_missing",
+  "claim_email_mismatch",
+  "claim_email_unverified",
+  "claim_subject_missing",
+]);
+
+export function safeStoreProviderDiagnostic(value) {
+  return typeof value === "string" && SAFE_PROVIDER_DIAGNOSTICS.has(value) ? value : "";
+}
 
 export class StoreProviderError extends Error {
-  constructor(code, { retryable = false } = {}) {
+  constructor(code, { retryable = false, diagnostic = "" } = {}) {
     super(code);
     this.name = "StoreProviderError";
     this.code = code;
     this.retryable = retryable;
+    const safeDiagnostic = safeStoreProviderDiagnostic(diagnostic);
+    if (safeDiagnostic) {
+      Object.defineProperty(this, "diagnostic", {
+        value: safeDiagnostic,
+        enumerable: false,
+        writable: false,
+      });
+    }
   }
 }
 
@@ -210,34 +231,40 @@ export async function createGooglePushTokenVerifier({
     throw providerConfigError("GOOGLE_AUTH_LIBRARY_UNAVAILABLE");
   }
   const client = new library.OAuth2Client();
+  const unauthorized = (diagnostic) => new StoreProviderError(
+    "GOOGLE_PUSH_UNAUTHORIZED",
+    { diagnostic },
+  );
 
   return Object.freeze({
     async verifyAuthorization(authorizationValue) {
-      if (typeof authorizationValue !== "string" || authorizationValue.length > 16_384) {
-        throw new StoreProviderError("GOOGLE_PUSH_UNAUTHORIZED");
+      if (
+        typeof authorizationValue !== "string"
+        || authorizationValue.length === 0
+        || authorizationValue.length > 16_384
+      ) {
+        throw unauthorized("authorization_missing_or_oversize");
       }
-      const match = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/u.exec(authorizationValue);
-      if (!match) throw new StoreProviderError("GOOGLE_PUSH_UNAUTHORIZED");
+      const match = /^[\t ]*Bearer[\t ]+([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)[\t ]*$/iu
+        .exec(authorizationValue);
+      if (!match) throw unauthorized("authorization_format_invalid");
+      let payload;
       try {
         const ticket = await client.verifyIdToken({
           idToken: match[1],
           audience: audienceUrl.toString(),
         });
-        const payload = ticket?.getPayload?.();
-        if (
-          !payload
-          || payload.email !== serviceAccountEmail
-          || payload.email_verified !== true
-          || typeof payload.sub !== "string"
-          || !payload.sub
-        ) {
-          throw new StoreProviderError("GOOGLE_PUSH_UNAUTHORIZED");
-        }
-        return Object.freeze({ verified: true });
-      } catch (error) {
-        if (error instanceof StoreProviderError) throw error;
-        throw new StoreProviderError("GOOGLE_PUSH_UNAUTHORIZED");
+        payload = ticket?.getPayload?.();
+      } catch (_error) {
+        throw unauthorized("id_token_verification_failed");
       }
+      if (!payload) throw unauthorized("claim_payload_missing");
+      if (payload.email !== serviceAccountEmail) throw unauthorized("claim_email_mismatch");
+      if (payload.email_verified !== true) throw unauthorized("claim_email_unverified");
+      if (typeof payload.sub !== "string" || !payload.sub) {
+        throw unauthorized("claim_subject_missing");
+      }
+      return Object.freeze({ verified: true });
     },
   });
 }

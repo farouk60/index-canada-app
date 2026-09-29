@@ -40,6 +40,7 @@ const {
   createStoreCheckoutDraft,
   deriveStoreAccountToken,
 } = await import("../store-purchase-core.js");
+const { StoreProviderError } = await import("../store-purchase-verifiers.js");
 
 const TEST_SIGNING_SECRET = "test-only-CHECKOUT_SIGNING_SECRET-secret-with-more-than-thirty-two-characters";
 
@@ -1195,6 +1196,49 @@ test("post_restoreStorePurchase refuse une référence de compte CMS ambiguë", 
   assert.equal(result.body.code, "STORE_ACCOUNT_REFERENCE_AMBIGUOUS");
   assert.equal(__wixDataTest.items("Entitlements").length, 0);
   assert.equal(__wixDataTest.items("Professionnel").length, 0);
+});
+
+test("post_googlePlayRtdn journalise seulement le diagnostic OIDC autorisé et répond 401 générique", async (t) => {
+  const token = "sensitive-header.sensitive-payload.sensitive-signature";
+  const email = "push-sensitive@example-project.iam.gserviceaccount.com";
+  const audience = "https://sensitive.example.test/_functions/googlePlayRtdn";
+  const rawMessage = `raw-provider-message ${token} ${email} ${audience}`;
+  const providerError = new StoreProviderError("GOOGLE_PUSH_UNAUTHORIZED", {
+    diagnostic: "id_token_verification_failed",
+  });
+  providerError.message = rawMessage;
+  providerError.authorization = `Bearer ${token}`;
+  providerError.expectedEmail = email;
+  providerError.audience = audience;
+
+  const logs = [];
+  const originalConsoleError = console.error;
+  console.error = (...values) => logs.push(values.map(String).join(" "));
+  t.after(() => { console.error = originalConsoleError; });
+
+  const push = storePostRequest({});
+  push.headers.authorization = `Bearer ${token}`;
+  const result = await post_googlePlayRtdn(push, {
+    verifyGooglePush: async () => { throw providerError; },
+  });
+
+  assert.equal(result.status, 401);
+  assert.equal(result.body.success, false);
+  assert.equal(result.body.code, "GOOGLE_PUSH_UNAUTHORIZED");
+  assert.equal("diagnostic" in result.body, false);
+  assert.equal(logs.length, 1);
+
+  const log = JSON.parse(logs[0]);
+  assert.equal(log.event, "api_failure");
+  assert.equal(log.scope, "post_googlePlayRtdn");
+  assert.equal(log.errorCode, "GOOGLE_PUSH_UNAUTHORIZED");
+  assert.equal(log.diagnostic, "id_token_verification_failed");
+  assert.equal(typeof log.requestId, "string");
+
+  const publicSurface = `${JSON.stringify(result.body)}\n${logs.join("\n")}`;
+  for (const forbidden of [token, email, audience, rawMessage, "Bearer "]) {
+    assert.equal(publicSurface.includes(forbidden), false);
+  }
 });
 
 test("post_googlePlayRtdn traite une révocation une seule fois sans modifier l'approbation", async () => {

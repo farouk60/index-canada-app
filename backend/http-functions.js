@@ -83,6 +83,7 @@ import {
   createAppleTransactionVerifier,
   createGooglePushTokenVerifier,
   createGoogleSubscriptionVerifier,
+  safeStoreProviderDiagnostic,
 } from "backend/store-purchase-verifiers";
 
 const DATA_OPTIONS = Object.freeze({ suppressAuth: true });
@@ -194,11 +195,13 @@ function requestId() {
 
 function logFailure(scope, error, correlationId) {
   const errorCode = typeof error?.code === "string" ? error.code : "UNEXPECTED_ERROR";
+  const diagnostic = safeStoreProviderDiagnostic(error?.diagnostic);
   console.error(JSON.stringify({
     event: "api_failure",
     scope,
     requestId: correlationId,
     errorCode,
+    ...(diagnostic ? { diagnostic } : {}),
   }));
 }
 

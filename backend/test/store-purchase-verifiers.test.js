@@ -8,6 +8,7 @@ import {
   createGoogleSubscriptionVerifier,
   parseAppleRootCertificates,
   parseGoogleServiceAccount,
+  safeStoreProviderDiagnostic,
 } from "../store-purchase-verifiers.js";
 
 const FAKE_PRIVATE_KEY = [
@@ -16,6 +17,58 @@ const FAKE_PRIVATE_KEY = [
   ["-----END ", "PRIVATE KEY-----"].join(""),
   "",
 ].join("\n");
+
+const GOOGLE_PUSH_AUDIENCE = "https://www.example.test/_functions/googlePlayRtdn";
+const GOOGLE_PUSH_EMAIL = "push@example-project.iam.gserviceaccount.com";
+const GOOGLE_PUSH_TOKEN = "sensitive-header.sensitive-payload.sensitive-signature";
+
+async function rejectedError(action) {
+  let rejection;
+  try {
+    await action();
+  } catch (error) {
+    rejection = error;
+  }
+  assert.ok(rejection, "l'action devait être rejetée");
+  return rejection;
+}
+
+async function assertSafePushRejection(action, diagnostic, forbiddenValues = []) {
+  const error = await rejectedError(action);
+  assert.equal(error instanceof StoreProviderError, true);
+  assert.equal(error.code, "GOOGLE_PUSH_UNAUTHORIZED");
+  assert.equal(error.message, "GOOGLE_PUSH_UNAUTHORIZED");
+  assert.equal(error.retryable, false);
+  assert.equal(error.diagnostic, diagnostic);
+  assert.equal(Object.prototype.propertyIsEnumerable.call(error, "diagnostic"), false);
+
+  const accidentalSurface = [
+    error.message,
+    error.stack,
+    JSON.stringify(error),
+    ...Object.values(error).map(String),
+  ].join("\n");
+  for (const forbidden of forbiddenValues) {
+    assert.equal(
+      accidentalSurface.includes(forbidden),
+      false,
+      `la valeur sensible ne doit pas fuiter : ${forbidden}`,
+    );
+  }
+  return error;
+}
+
+function googlePushLibrary({ payload, failure, calls = [] } = {}) {
+  return {
+    OAuth2Client: class {
+      async verifyIdToken(parameters) {
+        calls.push(parameters);
+        if (failure) throw failure;
+        return { getPayload: () => payload };
+      }
+    },
+  };
+}
 
 test("les certificats Apple distincts sont décodés en DER sans accepter une configuration vide", () => {
   const certificates = [1, 2, 3]
@@ -83,6 +136,186 @@ test("les SDK Store statiques sont disponibles sans chargeur personnalisé", asy
   });
   assert.equal(typeof purchaseVerifier.getSubscription, "function");
   assert.equal(typeof purchaseVerifier.acknowledgeSubscription, "function");
+});
+
+test("le diagnostic OIDC accepte uniquement les catégories internes autorisées", () => {
+  const diagnostics = [
+    "authorization_missing_or_oversize",
+    "authorization_format_invalid",
+    "id_token_verification_failed",
+    "claim_payload_missing",
+    "claim_email_mismatch",
+    "claim_email_unverified",
+    "claim_subject_missing",
+  ];
+  for (const diagnostic of diagnostics) {
+    assert.equal(safeStoreProviderDiagnostic(diagnostic), diagnostic);
+  }
+
+  const sensitiveDiagnostic = `id_token_verification_failed:${GOOGLE_PUSH_TOKEN}`;
+  assert.equal(safeStoreProviderDiagnostic(sensitiveDiagnostic), "");
+  const error = new StoreProviderError("GOOGLE_PUSH_UNAUTHORIZED", {
+    diagnostic: sensitiveDiagnostic,
+  });
+  assert.equal("diagnostic" in error, false);
+  assert.equal(JSON.stringify(error).includes(GOOGLE_PUSH_TOKEN), false);
+});
+
+test("le vérificateur OIDC classe un header absent ou surdimensionné sans appeler Google", async () => {
+  let googleCalls = 0;
+  const verifier = await createGooglePushTokenVerifier({
+    audience: GOOGLE_PUSH_AUDIENCE,
+    serviceAccountEmail: GOOGLE_PUSH_EMAIL,
+    libraryLoader: async () => ({
+      OAuth2Client: class {
+        async verifyIdToken() {
+          googleCalls += 1;
+          assert.fail("Google ne doit pas être appelé pour un header rejeté localement");
+        }
+      },
+    }),
+  });
+  const oversizeFragment = "oversized-sensitive-fragment";
+  const oversizeHeader = `Bearer ${oversizeFragment.repeat(700)}`;
+
+  for (const value of [undefined, "", oversizeHeader]) {
+    await assertSafePushRejection(
+      () => verifier.verifyAuthorization(value),
+      "authorization_missing_or_oversize",
+      [GOOGLE_PUSH_EMAIL, GOOGLE_PUSH_AUDIENCE, oversizeFragment],
+    );
+  }
+  assert.equal(googleCalls, 0);
+});
+
+test("le vérificateur OIDC classe un format Bearer invalide sans fuite", async () => {
+  const malformedToken = "malformed-sensitive-token-without-jwt-shape";
+  const verifier = await createGooglePushTokenVerifier({
+    audience: GOOGLE_PUSH_AUDIENCE,
+    serviceAccountEmail: GOOGLE_PUSH_EMAIL,
+    libraryLoader: async () => googlePushLibrary({
+      failure: new Error("ne doit pas être appelée"),
+    }),
+  });
+
+  await assertSafePushRejection(
+    () => verifier.verifyAuthorization(`Bearer ${malformedToken}`),
+    "authorization_format_invalid",
+    [malformedToken, GOOGLE_PUSH_EMAIL, GOOGLE_PUSH_AUDIENCE],
+  );
+});
+
+test("le vérificateur OIDC expurge l'échec brut de verifyIdToken", async () => {
+  const rawProviderMessage = [
+    "raw-google-verification-error",
+    GOOGLE_PUSH_TOKEN,
+    GOOGLE_PUSH_EMAIL,
+    GOOGLE_PUSH_AUDIENCE,
+  ].join(" | ");
+  const calls = [];
+  const verifier = await createGooglePushTokenVerifier({
+    audience: GOOGLE_PUSH_AUDIENCE,
+    serviceAccountEmail: GOOGLE_PUSH_EMAIL,
+    libraryLoader: async () => googlePushLibrary({
+      calls,
+      failure: new Error(rawProviderMessage),
+    }),
+  });
+
+  await assertSafePushRejection(
+    () => verifier.verifyAuthorization(`Bearer ${GOOGLE_PUSH_TOKEN}`),
+    "id_token_verification_failed",
+    [
+      rawProviderMessage,
+      "raw-google-verification-error",
+      GOOGLE_PUSH_TOKEN,
+      GOOGLE_PUSH_EMAIL,
+      GOOGLE_PUSH_AUDIENCE,
+    ],
+  );
+  assert.deepEqual(calls, [{
+    idToken: GOOGLE_PUSH_TOKEN,
+    audience: GOOGLE_PUSH_AUDIENCE,
+  }]);
+});
+
+test("le vérificateur OIDC distingue les claims invalides sans les recopier", async (t) => {
+  const cases = [{
+    name: "payload absent",
+    payload: undefined,
+    diagnostic: "claim_payload_missing",
+    extraForbidden: [],
+  }, {
+    name: "email différent",
+    payload: {
+      email: "unexpected-sensitive-account@example-project.iam.gserviceaccount.com",
+      email_verified: true,
+      sub: "123456789012345678901",
+    },
+    diagnostic: "claim_email_mismatch",
+    extraForbidden: ["unexpected-sensitive-account@example-project.iam.gserviceaccount.com"],
+  }, {
+    name: "email non vérifié",
+    payload: {
+      email: GOOGLE_PUSH_EMAIL,
+      email_verified: false,
+      sub: "123456789012345678901",
+    },
+    diagnostic: "claim_email_unverified",
+    extraForbidden: [],
+  }, {
+    name: "subject absent",
+    payload: {
+      email: GOOGLE_PUSH_EMAIL,
+      email_verified: true,
+      sub: "",
+    },
+    diagnostic: "claim_subject_missing",
+    extraForbidden: [],
+  }];
+
+  for (const current of cases) {
+    await t.test(current.name, async () => {
+      const verifier = await createGooglePushTokenVerifier({
+        audience: GOOGLE_PUSH_AUDIENCE,
+        serviceAccountEmail: GOOGLE_PUSH_EMAIL,
+        libraryLoader: async () => googlePushLibrary({ payload: current.payload }),
+      });
+      await assertSafePushRejection(
+        () => verifier.verifyAuthorization(`Bearer ${GOOGLE_PUSH_TOKEN}`),
+        current.diagnostic,
+        [
+          GOOGLE_PUSH_TOKEN,
+          GOOGLE_PUSH_EMAIL,
+          GOOGLE_PUSH_AUDIENCE,
+          ...current.extraForbidden,
+        ],
+      );
+    });
+  }
+});
+
+test("le vérificateur OIDC accepte un Bearer valide sans relâcher les claims", async () => {
+  const calls = [];
+  const verifier = await createGooglePushTokenVerifier({
+    audience: GOOGLE_PUSH_AUDIENCE,
+    serviceAccountEmail: GOOGLE_PUSH_EMAIL,
+    libraryLoader: async () => googlePushLibrary({
+      calls,
+      payload: {
+        email: GOOGLE_PUSH_EMAIL,
+        email_verified: true,
+        sub: "123456789012345678901",
+      },
+    }),
+  });
+
+  const result = await verifier.verifyAuthorization(`  bearer\t${GOOGLE_PUSH_TOKEN}  `);
+  assert.deepEqual(result, { verified: true });
+  assert.deepEqual(calls, [{
+    idToken: GOOGLE_PUSH_TOKEN,
+    audience: GOOGLE_PUSH_AUDIENCE,
+  }]);
 });
 
 test("le compte de service Google est validé sans exposer sa clé", () => {
