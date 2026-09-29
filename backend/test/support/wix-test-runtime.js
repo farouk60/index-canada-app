@@ -292,6 +292,10 @@ export const secrets = Object.freeze({
   },
 });
 
+export async function wixFetch() {
+  throw new Error("Le réseau wix-fetch n'est pas disponible dans ce double de test");
+}
+
 export const mediaManager = Object.freeze({
   async upload() {
     throw new Error("Le téléversement média n'est pas disponible dans ce double de test");

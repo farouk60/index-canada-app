@@ -34,6 +34,10 @@ const virtualModules = new Map([
     virtualModule(`export { secrets } from ${JSON.stringify(runtimeUrl)};`),
   ],
   [
+    "wix-fetch",
+    virtualModule(`export { wixFetch as fetch } from ${JSON.stringify(runtimeUrl)};`),
+  ],
+  [
     "stripe",
     virtualModule(`export { StripeStub as default } from ${JSON.stringify(runtimeUrl)};`),
   ],

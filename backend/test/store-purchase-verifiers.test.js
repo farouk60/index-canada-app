@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   StoreProviderError,
   createAppleTransactionVerifier,
+  createGoogleCertificateLoader,
   createGooglePushTokenVerifier,
   createGoogleSubscriptionVerifier,
   parseAppleRootCertificates,
@@ -21,6 +22,37 @@ const FAKE_PRIVATE_KEY = [
 const GOOGLE_PUSH_AUDIENCE = "https://www.example.test/_functions/googlePlayRtdn";
 const GOOGLE_PUSH_EMAIL = "push@example-project.iam.gserviceaccount.com";
 const GOOGLE_PUSH_TOKEN = "sensitive-header.sensitive-payload.sensitive-signature";
+const GOOGLE_CERTIFICATES_URL = "https://www.googleapis.com/oauth2/v1/certs";
+const GOOGLE_CERTIFICATE_ID = "0123456789abcdef0123456789abcdef01234567";
+const GOOGLE_CERTIFICATE_PEM = [
+  "-----BEGIN CERTIFICATE-----",
+  Buffer.alloc(512, 0xa5).toString("base64"),
+  "-----END CERTIFICATE-----",
+].join("\n");
+
+function googleCertificateResponse({
+  status = 200,
+  body = JSON.stringify({ [GOOGLE_CERTIFICATE_ID]: GOOGLE_CERTIFICATE_PEM }),
+  headers = {},
+  onText = () => {},
+} = {}) {
+  const normalizedHeaders = new Map(
+    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), String(value)]),
+  );
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: {
+      get(name) {
+        return normalizedHeaders.get(String(name).toLowerCase()) ?? null;
+      },
+    },
+    async text() {
+      onText();
+      return body;
+    },
+  };
+}
 
 async function rejectedError(action) {
   let rejection;
@@ -53,6 +85,31 @@ async function assertSafePushRejection(action, diagnostic, forbiddenValues = [])
       accidentalSurface.includes(forbidden),
       false,
       `la valeur sensible ne doit pas fuiter : ${forbidden}`,
+    );
+  }
+  return error;
+}
+
+async function assertSafeCertificateRejection(action, forbiddenValues = []) {
+  const error = await rejectedError(action);
+  assert.equal(error instanceof StoreProviderError, true);
+  assert.equal(error.code, "GOOGLE_PUSH_VERIFICATION_UNAVAILABLE");
+  assert.equal(error.message, "GOOGLE_PUSH_VERIFICATION_UNAVAILABLE");
+  assert.equal(error.retryable, true);
+  assert.equal(error.diagnostic, "id_token_certificate_fetch_failed");
+  assert.equal(Object.prototype.propertyIsEnumerable.call(error, "diagnostic"), false);
+
+  const accidentalSurface = [
+    error.message,
+    error.stack,
+    JSON.stringify(error),
+    ...Object.values(error).map(String),
+  ].join("\n");
+  for (const forbidden of forbiddenValues) {
+    assert.equal(
+      accidentalSurface.includes(forbidden),
+      false,
+      `le contenu amont ne doit pas fuiter : ${forbidden}`,
     );
   }
   return error;
@@ -136,6 +193,283 @@ test("les SDK Store statiques sont disponibles sans chargeur personnalisé", asy
   });
   assert.equal(typeof purchaseVerifier.getSubscription, "function");
   assert.equal(typeof purchaseVerifier.acknowledgeSubscription, "function");
+});
+
+test("le chargeur de certificats Google impose l'URL PEM, la méthode GET et le cache no-store", async () => {
+  const calls = [];
+  let now = Date.parse("2026-09-29T14:00:00.000Z");
+  const loader = createGoogleCertificateLoader({
+    now: () => now,
+    async fetcher(url, options) {
+      calls.push({ url, options });
+      return googleCertificateResponse({
+        headers: { "Cache-Control": "public, max-age=600" },
+      });
+    },
+  });
+
+  const first = await loader.load();
+  now += 1_000;
+  const cached = await loader.load();
+  now += (6 * 60 * 60 * 1_000) + 1;
+  const refreshed = await loader.load();
+
+  assert.equal(first[GOOGLE_CERTIFICATE_ID], GOOGLE_CERTIFICATE_PEM);
+  assert.equal(cached[GOOGLE_CERTIFICATE_ID], GOOGLE_CERTIFICATE_PEM);
+  assert.equal(refreshed[GOOGLE_CERTIFICATE_ID], GOOGLE_CERTIFICATE_PEM);
+  assert.equal(calls.length, 2, "le max-age doit éviter un second appel immédiat");
+  for (const call of calls) {
+    assert.equal(call.url, GOOGLE_CERTIFICATES_URL);
+    assert.deepEqual(call.options, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+  }
+});
+
+test("le chargeur de certificats Google mutualise les chargements simultanés", async () => {
+  let fetchCalls = 0;
+  let resolveFetch;
+  const loader = createGoogleCertificateLoader({
+    fetcher() {
+      fetchCalls += 1;
+      return new Promise((resolve) => {
+        resolveFetch = resolve;
+      });
+    },
+  });
+
+  const first = loader.load();
+  const second = loader.load();
+  await Promise.resolve();
+  assert.equal(fetchCalls, 1);
+  resolveFetch(googleCertificateResponse());
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+
+  assert.equal(firstResult[GOOGLE_CERTIFICATE_ID], GOOGLE_CERTIFICATE_PEM);
+  assert.equal(secondResult[GOOGLE_CERTIFICATE_ID], GOOGLE_CERTIFICATE_PEM);
+  assert.equal(fetchCalls, 1);
+});
+
+test("le chargeur classe les réponses HTTP Google 4xx et 5xx comme indisponibilité temporaire", async (t) => {
+  for (const status of [400, 401, 403, 404, 429, 500, 502, 503]) {
+    await t.test(`HTTP ${status}`, async () => {
+      const upstreamBody = `sensitive-google-error-${status}`;
+      const loader = createGoogleCertificateLoader({
+        fetcher: async () => googleCertificateResponse({
+          status,
+          body: upstreamBody,
+        }),
+      });
+      await assertSafeCertificateRejection(
+        () => loader.load(),
+        [upstreamBody],
+      );
+    });
+  }
+});
+
+test("le chargeur applique un délai logique sans accepter tardivement une réponse", async () => {
+  const loader = createGoogleCertificateLoader({
+    timeoutMs: 5,
+    fetcher: () => new Promise(() => {}),
+  });
+
+  await assertSafeCertificateRejection(() => loader.load());
+});
+
+test("le chargeur refuse Content-Length et corps dépassant la taille maximale", async (t) => {
+  const sensitiveOversizeContent = "sensitive-oversize-certificate-body";
+
+  await t.test("Content-Length annoncé", async () => {
+    let bodyRead = false;
+    const loader = createGoogleCertificateLoader({
+      maxResponseBytes: 512,
+      fetcher: async () => googleCertificateResponse({
+        body: sensitiveOversizeContent,
+        headers: { "Content-Length": "513" },
+        onText: () => {
+          bodyRead = true;
+        },
+      }),
+    });
+    await assertSafeCertificateRejection(
+      () => loader.load(),
+      [sensitiveOversizeContent],
+    );
+    assert.equal(bodyRead, false, "le corps ne doit pas être lu si sa taille annoncée est refusée");
+  });
+
+  await t.test("corps réellement reçu", async () => {
+    const oversizedBody = JSON.stringify({
+      [GOOGLE_CERTIFICATE_ID]: sensitiveOversizeContent.repeat(40),
+    });
+    const loader = createGoogleCertificateLoader({
+      maxResponseBytes: 512,
+      fetcher: async () => googleCertificateResponse({ body: oversizedBody }),
+    });
+    await assertSafeCertificateRejection(
+      () => loader.load(),
+      [sensitiveOversizeContent],
+    );
+  });
+});
+
+test("le chargeur refuse un JSON invalide ou une carte PEM mal formée sans fuite", async (t) => {
+  const sensitiveJson = "{not-json:sensitive-certificate-fragment";
+  const sensitiveInvalidPem = "sensitive-not-a-google-pem";
+  const cases = [{
+    name: "JSON invalide",
+    body: sensitiveJson,
+    forbidden: sensitiveJson,
+  }, {
+    name: "valeur PEM invalide",
+    body: JSON.stringify({ [GOOGLE_CERTIFICATE_ID]: sensitiveInvalidPem }),
+    forbidden: sensitiveInvalidPem,
+  }, {
+    name: "collection PEM vide",
+    body: "{}",
+    forbidden: "",
+  }];
+
+  for (const current of cases) {
+    await t.test(current.name, async () => {
+      const loader = createGoogleCertificateLoader({
+        fetcher: async () => googleCertificateResponse({ body: current.body }),
+      });
+      await assertSafeCertificateRejection(
+        () => loader.load(),
+        current.forbidden ? [current.forbidden] : [],
+      );
+    });
+  }
+});
+
+test("le chargeur expurge entièrement les erreurs réseau du fetcher", async () => {
+  const sensitiveFetchError = [
+    "upstream-fetch-failed",
+    GOOGLE_PUSH_TOKEN,
+    GOOGLE_PUSH_EMAIL,
+    GOOGLE_PUSH_AUDIENCE,
+  ].join(" | ");
+  const loader = createGoogleCertificateLoader({
+    async fetcher() {
+      throw new Error(sensitiveFetchError);
+    },
+  });
+
+  await assertSafeCertificateRejection(
+    () => loader.load(),
+    [sensitiveFetchError, GOOGLE_PUSH_TOKEN, GOOGLE_PUSH_EMAIL, GOOGLE_PUSH_AUDIENCE],
+  );
+});
+
+test("le vérificateur OIDC injecté vérifie localement le JWT avec les PEM Google", async () => {
+  const fetchCalls = [];
+  const constructorCalls = [];
+  const verificationCalls = [];
+  const verifier = await createGooglePushTokenVerifier({
+    audience: GOOGLE_PUSH_AUDIENCE,
+    serviceAccountEmail: GOOGLE_PUSH_EMAIL,
+    certificateFetcher: async (url, options) => {
+      fetchCalls.push({ url, options });
+      return googleCertificateResponse({
+        headers: { "Cache-Control": "max-age=600" },
+      });
+    },
+    libraryLoader: async () => ({
+      OAuth2Client: class {
+        constructor(...args) {
+          constructorCalls.push(args);
+        }
+
+        async verifyIdToken() {
+          assert.fail("le chemin injecté ne doit pas utiliser le transport Gaxios interne");
+        }
+
+        async verifySignedJwtWithCertsAsync(...args) {
+          verificationCalls.push(args);
+          return {
+            getPayload: () => ({
+              email: GOOGLE_PUSH_EMAIL,
+              email_verified: true,
+              sub: "123456789012345678901",
+            }),
+          };
+        }
+      },
+    }),
+  });
+
+  const result = await verifier.verifyAuthorization(`Bearer ${GOOGLE_PUSH_TOKEN}`);
+
+  assert.deepEqual(result, { verified: true });
+  assert.deepEqual(constructorCalls, [[]]);
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].url, GOOGLE_CERTIFICATES_URL);
+  assert.deepEqual(fetchCalls[0].options, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+  assert.equal(verificationCalls.length, 1);
+  assert.equal(verificationCalls[0].length, 4, "aucun paramètre maxExpiry supplémentaire ne doit être deviné");
+  assert.equal(verificationCalls[0][0], GOOGLE_PUSH_TOKEN);
+  assert.equal(verificationCalls[0][1][GOOGLE_CERTIFICATE_ID], GOOGLE_CERTIFICATE_PEM);
+  assert.equal(verificationCalls[0][2], GOOGLE_PUSH_AUDIENCE);
+  assert.deepEqual(verificationCalls[0][3], [
+    "accounts.google.com",
+    "https://accounts.google.com",
+  ]);
+});
+
+test("un échec de chargement PEM reste retryable et n'appelle jamais la vérification JWT", async () => {
+  const sensitiveFetchError = `certificate-network-failure ${GOOGLE_PUSH_TOKEN}`;
+  let verificationCalls = 0;
+  const verifier = await createGooglePushTokenVerifier({
+    audience: GOOGLE_PUSH_AUDIENCE,
+    serviceAccountEmail: GOOGLE_PUSH_EMAIL,
+    certificateFetcher: async () => {
+      throw new Error(sensitiveFetchError);
+    },
+    libraryLoader: async () => ({
+      OAuth2Client: class {
+        async verifySignedJwtWithCertsAsync() {
+          verificationCalls += 1;
+          assert.fail("un certificat indisponible doit arrêter la vérification");
+        }
+      },
+    }),
+  });
+
+  await assertSafeCertificateRejection(
+    () => verifier.verifyAuthorization(`Bearer ${GOOGLE_PUSH_TOKEN}`),
+    [sensitiveFetchError, GOOGLE_PUSH_TOKEN],
+  );
+  assert.equal(verificationCalls, 0);
+});
+
+test("un échec cryptographique après chargement PEM reste une authentification 401 expurgée", async () => {
+  const sensitiveSignatureError = `Invalid token signature: ${GOOGLE_PUSH_TOKEN}`;
+  const verifier = await createGooglePushTokenVerifier({
+    audience: GOOGLE_PUSH_AUDIENCE,
+    serviceAccountEmail: GOOGLE_PUSH_EMAIL,
+    certificateFetcher: async () => googleCertificateResponse(),
+    libraryLoader: async () => ({
+      OAuth2Client: class {
+        async verifySignedJwtWithCertsAsync() {
+          throw new Error(sensitiveSignatureError);
+        }
+      },
+    }),
+  });
+
+  await assertSafePushRejection(
+    () => verifier.verifyAuthorization(`Bearer ${GOOGLE_PUSH_TOKEN}`),
+    "id_token_signature_invalid",
+    [sensitiveSignatureError, GOOGLE_PUSH_TOKEN],
+  );
 });
 
 test("le diagnostic OIDC accepte uniquement les catégories internes autorisées", () => {
@@ -251,6 +585,7 @@ test("le vérificateur OIDC classe les échecs Google sans journaliser leur cont
     name: "certificats indisponibles",
     providerMessage: "Failed to retrieve verification certificates: upstream-sensitive-detail",
     diagnostic: "id_token_certificate_fetch_failed",
+    retryable: true,
   }, {
     name: "clé inconnue",
     providerMessage: "No pem found for envelope: sensitive-jwt-header",
@@ -286,16 +621,18 @@ test("le vérificateur OIDC classe les échecs Google sans journaliser leur cont
           failure: new Error(current.providerMessage),
         }),
       });
-      await assertSafePushRejection(
-        () => verifier.verifyAuthorization(`Bearer ${GOOGLE_PUSH_TOKEN}`),
-        current.diagnostic,
-        [
-          current.providerMessage,
-          GOOGLE_PUSH_TOKEN,
-          GOOGLE_PUSH_EMAIL,
-          GOOGLE_PUSH_AUDIENCE,
-        ],
-      );
+      const action = () => verifier.verifyAuthorization(`Bearer ${GOOGLE_PUSH_TOKEN}`);
+      const forbiddenValues = [
+        current.providerMessage,
+        GOOGLE_PUSH_TOKEN,
+        GOOGLE_PUSH_EMAIL,
+        GOOGLE_PUSH_AUDIENCE,
+      ];
+      if (current.retryable) {
+        await assertSafeCertificateRejection(action, forbiddenValues);
+      } else {
+        await assertSafePushRejection(action, current.diagnostic, forbiddenValues);
+      }
     });
   }
 });

@@ -1241,6 +1241,43 @@ test("post_googlePlayRtdn journalise seulement le diagnostic OIDC autorisé et r
   }
 });
 
+test("post_googlePlayRtdn rend une panne de certificats temporaire et réessayable sans fuite", async (t) => {
+  const token = "sensitive-header.sensitive-payload.sensitive-signature";
+  const providerError = new StoreProviderError("GOOGLE_PUSH_VERIFICATION_UNAVAILABLE", {
+    retryable: true,
+    diagnostic: "id_token_certificate_fetch_failed",
+  });
+  providerError.message = `raw-certificate-fetch-error ${token}`;
+  providerError.authorization = `Bearer ${token}`;
+
+  const logs = [];
+  const originalConsoleError = console.error;
+  console.error = (...values) => logs.push(values.map(String).join(" "));
+  t.after(() => { console.error = originalConsoleError; });
+
+  const push = storePostRequest({});
+  push.headers.authorization = `Bearer ${token}`;
+  const result = await post_googlePlayRtdn(push, {
+    verifyGooglePush: async () => { throw providerError; },
+  });
+
+  assert.equal(result.status, 503);
+  assert.equal(result.body.success, false);
+  assert.equal(result.body.code, "GOOGLE_PUSH_VERIFICATION_UNAVAILABLE");
+  assert.equal(result.body.error, "Le service du magasin est temporairement indisponible.");
+  assert.equal("diagnostic" in result.body, false);
+  assert.equal(logs.length, 1);
+
+  const log = JSON.parse(logs[0]);
+  assert.equal(log.errorCode, "GOOGLE_PUSH_VERIFICATION_UNAVAILABLE");
+  assert.equal(log.diagnostic, "id_token_certificate_fetch_failed");
+
+  const publicSurface = `${JSON.stringify(result.body)}\n${logs.join("\n")}`;
+  for (const forbidden of [token, providerError.message, "Bearer "]) {
+    assert.equal(publicSurface.includes(forbidden), false);
+  }
+});
+
 test("post_googlePlayRtdn traite une révocation une seule fois sans modifier l'approbation", async () => {
   const body = {
     ...storeRegistration(),

@@ -11,6 +11,7 @@ import wixData from "wix-data";
 import { elevate } from "wix-auth";
 import { mediaManager } from "wix-media-backend";
 import { secrets } from "wix-secrets-backend.v2";
+import { fetch as wixFetch } from "wix-fetch";
 import Stripe from "stripe";
 import {
   DIRECTORY_COLLECTION_LIMITS,
@@ -440,6 +441,7 @@ async function getGooglePushVerifier() {
       .then(([audience, serviceAccountEmail]) => createGooglePushTokenVerifier({
         audience,
         serviceAccountEmail,
+        certificateFetcher: wixFetch,
       }))
       .catch((error) => {
         googlePushVerifierPromise = undefined;

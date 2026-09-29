@@ -5,7 +5,18 @@ import * as googleAuthLibrary from "google-auth-library";
 import { APP_BUNDLE_ID } from "./store-purchase-core.js";
 
 const GOOGLE_SCOPE = "https://www.googleapis.com/auth/androidpublisher";
+const GOOGLE_FEDERATED_SIGNON_PEM_CERTS_URL = "https://www.googleapis.com/oauth2/v1/certs";
+const GOOGLE_OIDC_ISSUERS = Object.freeze([
+  "accounts.google.com",
+  "https://accounts.google.com",
+]);
+const GOOGLE_CERTIFICATE_FETCH_TIMEOUT_MS = 5_000;
+const GOOGLE_CERTIFICATE_MAX_RESPONSE_BYTES = 64 * 1024;
+const GOOGLE_CERTIFICATE_FALLBACK_CACHE_MS = 5 * 60 * 1000;
+const GOOGLE_CERTIFICATE_MAX_CACHE_MS = 6 * 60 * 60 * 1000;
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/u;
+const GOOGLE_CERTIFICATE_KID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/u;
+const GOOGLE_PEM_CERTIFICATE_PATTERN = /^-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\r?\n?$/u;
 const SAFE_PROVIDER_DIAGNOSTICS = new Set([
   "authorization_missing_or_oversize",
   "authorization_format_invalid",
@@ -84,6 +95,142 @@ function googlePushVerificationDiagnostic(error) {
     return "id_token_format_invalid";
   }
   return "id_token_verification_failed";
+}
+
+function googleCertificateUnavailable() {
+  return new StoreProviderError("GOOGLE_PUSH_VERIFICATION_UNAVAILABLE", {
+    retryable: true,
+    diagnostic: "id_token_certificate_fetch_failed",
+  });
+}
+
+function responseHeader(response, name) {
+  const value = response?.headers?.get?.(name);
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function certificateCacheDuration(cacheControl) {
+  const match = /(?:^|,)\s*max-age\s*=\s*([0-9]+)(?:\s*(?:,|$))/iu.exec(cacheControl);
+  if (!match) return GOOGLE_CERTIFICATE_FALLBACK_CACHE_MS;
+  const declaredMilliseconds = Number(match[1]) * 1000;
+  if (!Number.isSafeInteger(declaredMilliseconds) || declaredMilliseconds <= 0) return 0;
+  const boundedMilliseconds = Math.min(declaredMilliseconds, GOOGLE_CERTIFICATE_MAX_CACHE_MS);
+  const refreshMargin = Math.min(60_000, Math.floor(boundedMilliseconds / 10));
+  return Math.max(0, boundedMilliseconds - refreshMargin);
+}
+
+function validatedGooglePemCertificates(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw googleCertificateUnavailable();
+  }
+  const entries = Object.entries(value);
+  if (entries.length < 1 || entries.length > 10) throw googleCertificateUnavailable();
+  const certificates = Object.create(null);
+  for (const [kid, certificate] of entries) {
+    if (
+      !GOOGLE_CERTIFICATE_KID_PATTERN.test(kid)
+      || typeof certificate !== "string"
+      || certificate.length < 512
+      || certificate.length > 16_384
+      || !GOOGLE_PEM_CERTIFICATE_PATTERN.test(certificate)
+    ) {
+      throw googleCertificateUnavailable();
+    }
+    certificates[kid] = certificate;
+  }
+  return Object.freeze(certificates);
+}
+
+export function createGoogleCertificateLoader({
+  fetcher,
+  timeoutMs = GOOGLE_CERTIFICATE_FETCH_TIMEOUT_MS,
+  maxResponseBytes = GOOGLE_CERTIFICATE_MAX_RESPONSE_BYTES,
+  now = () => Date.now(),
+} = {}) {
+  if (
+    typeof fetcher !== "function"
+    || !Number.isInteger(timeoutMs)
+    || timeoutMs < 1
+    || timeoutMs > 30_000
+    || !Number.isInteger(maxResponseBytes)
+    || maxResponseBytes < 512
+    || maxResponseBytes > 256 * 1024
+    || typeof now !== "function"
+  ) {
+    throw providerConfigError("GOOGLE_PUSH_CONFIGURATION_INVALID");
+  }
+
+  let cachedCertificates;
+  let cacheExpiresAt = 0;
+  let inFlight;
+
+  async function fetchCertificates() {
+    let timeoutHandle;
+    const timeout = new Promise((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(googleCertificateUnavailable()), timeoutMs);
+    });
+    let response;
+    try {
+      response = await Promise.race([
+        Promise.resolve().then(() => fetcher(GOOGLE_FEDERATED_SIGNON_PEM_CERTS_URL, {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        })),
+        timeout,
+      ]);
+    } catch (_error) {
+      throw googleCertificateUnavailable();
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
+
+    try {
+      if (response?.ok !== true || response.status !== 200 || typeof response.text !== "function") {
+        throw googleCertificateUnavailable();
+      }
+      const contentType = responseHeader(response, "content-type");
+      if (contentType && !/^application\/json(?:\s*;|$)/iu.test(contentType)) {
+        throw googleCertificateUnavailable();
+      }
+      const declaredLength = responseHeader(response, "content-length");
+      if (/^[0-9]+$/u.test(declaredLength) && Number(declaredLength) > maxResponseBytes) {
+        throw googleCertificateUnavailable();
+      }
+      const body = await response.text();
+      if (typeof body !== "string" || Buffer.byteLength(body, "utf8") > maxResponseBytes) {
+        throw googleCertificateUnavailable();
+      }
+      const certificates = validatedGooglePemCertificates(JSON.parse(body));
+      return {
+        certificates,
+        cacheDuration: certificateCacheDuration(responseHeader(response, "cache-control")),
+      };
+    } catch (_error) {
+      throw googleCertificateUnavailable();
+    }
+  }
+
+  return Object.freeze({
+    async load() {
+      const timestamp = Number(now());
+      if (!Number.isFinite(timestamp)) throw googleCertificateUnavailable();
+      if (cachedCertificates && timestamp < cacheExpiresAt) return cachedCertificates;
+      if (!inFlight) {
+        inFlight = fetchCertificates()
+          .then(({ certificates, cacheDuration }) => {
+            cachedCertificates = certificates;
+            const refreshedAt = Number(now());
+            cacheExpiresAt = Number.isFinite(refreshedAt) ? refreshedAt + cacheDuration : 0;
+            return certificates;
+          })
+          .finally(() => {
+            inFlight = undefined;
+          });
+      }
+      return inFlight;
+    },
+  });
 }
 
 function opaqueString(value, code, max = 20_000) {
@@ -247,6 +394,8 @@ export function parseGoogleServiceAccount(value) {
 export async function createGooglePushTokenVerifier({
   audience,
   serviceAccountEmail,
+  certificateFetcher,
+  certificateLoaderOptions,
   libraryLoader = () => googleAuthLibrary,
 } = {}) {
   let audienceUrl;
@@ -276,6 +425,18 @@ export async function createGooglePushTokenVerifier({
     throw providerConfigError("GOOGLE_AUTH_LIBRARY_UNAVAILABLE");
   }
   const client = new library.OAuth2Client();
+  const certificateLoader = typeof certificateFetcher === "function"
+    ? createGoogleCertificateLoader({
+      ...certificateLoaderOptions,
+      fetcher: certificateFetcher,
+    })
+    : null;
+  if (
+    certificateLoader
+    && typeof client.verifySignedJwtWithCertsAsync !== "function"
+  ) {
+    throw providerConfigError("GOOGLE_AUTH_LIBRARY_UNAVAILABLE");
+  }
   const unauthorized = (diagnostic) => new StoreProviderError(
     "GOOGLE_PUSH_UNAUTHORIZED",
     { diagnostic },
@@ -295,13 +456,30 @@ export async function createGooglePushTokenVerifier({
       if (!match) throw unauthorized("authorization_format_invalid");
       let payload;
       try {
-        const ticket = await client.verifyIdToken({
-          idToken: match[1],
-          audience: audienceUrl.toString(),
-        });
+        const ticket = certificateLoader
+          ? await client.verifySignedJwtWithCertsAsync(
+            match[1],
+            await certificateLoader.load(),
+            audienceUrl.toString(),
+            GOOGLE_OIDC_ISSUERS,
+          )
+          : await client.verifyIdToken({
+            idToken: match[1],
+            audience: audienceUrl.toString(),
+          });
         payload = ticket?.getPayload?.();
       } catch (error) {
-        throw unauthorized(googlePushVerificationDiagnostic(error));
+        if (
+          error instanceof StoreProviderError
+          && error.code === "GOOGLE_PUSH_VERIFICATION_UNAVAILABLE"
+        ) {
+          throw error;
+        }
+        const diagnostic = googlePushVerificationDiagnostic(error);
+        if (diagnostic === "id_token_certificate_fetch_failed") {
+          throw googleCertificateUnavailable();
+        }
+        throw unauthorized(diagnostic);
       }
       if (!payload) throw unauthorized("claim_payload_missing");
       if (payload.email !== serviceAccountEmail) throw unauthorized("claim_email_mismatch");
