@@ -285,7 +285,7 @@ et la [référence RTDN](https://developer.android.com/google/play/billing/rtdn-
 Ne pas réutiliser la même identité pour valider les achats et signer les pushes :
 
 1. **Play verifier** — par exemple
-   `index-canada-play-verifier-preprod@<PROJECT_ID>.iam.gserviceaccount.com`.
+   `indexca-play-verifier-preprod@<PROJECT_ID>.iam.gserviceaccount.com`.
    Activer la Google Play Android Developer API, créer une clé JSON pour ce
    compte, puis l'inviter dans **Google Play Console > Utilisateurs et
    autorisations** avec un accès limité à l'application `ca.indexcanada.app` et
@@ -369,7 +369,7 @@ Enregistrer les valeurs suivantes dans le gestionnaire de secrets Wix de la
 préproduction :
 
 ```text
-GOOGLE_PLAY_SERVICE_ACCOUNT_JSON={"type":"service_account",...,"client_email":"index-canada-play-verifier-preprod@<PROJECT_ID>.iam.gserviceaccount.com","private_key":"<CLÉ_PRIVÉE_PEM_FOURNIE_PAR_GOOGLE>",...}
+GOOGLE_PLAY_SERVICE_ACCOUNT_JSON={"type":"service_account",...,"client_email":"indexca-play-verifier-preprod@<PROJECT_ID>.iam.gserviceaccount.com","private_key":"<CLÉ_PRIVÉE_PEM_FOURNIE_PAR_GOOGLE>",...}
 GOOGLE_RTDN_AUDIENCE=https://immigrantindex.wixsite.com/website-1/_functions/googlePlayRtdn
 GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL=index-canada-rtdn-push-preprod@<PROJECT_ID>.iam.gserviceaccount.com
 GOOGLE_RTDN_SUBSCRIPTION=projects/<PROJECT_ID>/subscriptions/index-canada-rtdn-preprod-push

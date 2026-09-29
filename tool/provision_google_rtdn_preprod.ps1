@@ -17,7 +17,7 @@ $ExpectedProjectNumber = '762725959551'
 $Endpoint = 'https://immigrantindex.wixsite.com/website-1/_functions/googlePlayRtdn'
 $Audience = $Endpoint
 
-$PlayVerifierAccountId = 'index-canada-play-verifier-preprod'
+$PlayVerifierAccountId = 'indexca-play-verifier-preprod'
 $PushOidcAccountId = 'index-canada-rtdn-push-preprod'
 $PlayVerifierEmail = "$PlayVerifierAccountId@$ProjectId.iam.gserviceaccount.com"
 $PushOidcEmail = "$PushOidcAccountId@$ProjectId.iam.gserviceaccount.com"
@@ -36,6 +36,22 @@ $RequiredApis = @(
     'pubsub.googleapis.com',
     'serviceusage.googleapis.com'
 )
+
+function Assert-ServiceAccountId {
+    param(
+        [Parameter(Mandatory = $true)][string]$AccountId,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if ($AccountId.Length -lt 6 -or
+        $AccountId.Length -gt 30 -or
+        $AccountId -cnotmatch '^[a-z][a-z0-9-]{4,28}[a-z0-9]$') {
+        throw "$Label '$AccountId' n'est pas un identifiant de compte de service Google valide (6 a 30 caracteres)."
+    }
+}
+
+Assert-ServiceAccountId -AccountId $PlayVerifierAccountId -Label 'Play verifier'
+Assert-ServiceAccountId -AccountId $PushOidcAccountId -Label 'Push OIDC'
 
 function Resolve-GcloudExecutable {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -313,14 +329,10 @@ if ($PlayVerifierEmail -eq $PushOidcEmail) {
     throw 'Les identites Play verifier et Push OIDC doivent rester distinctes.'
 }
 
-$pubSubServiceAgentEmail = "service-$ExpectedProjectNumber@gcp-sa-pubsub.iam.gserviceaccount.com"
-$pubSubServiceAgentDetails = Get-ServiceAccountDetailsWithRetry `
-    -Email $pubSubServiceAgentEmail `
-    -Operation 'Validation de l identite de service Pub/Sub'
-if ((Get-JsonProperty -InputObject $pubSubServiceAgentDetails -Name 'email') -ne $pubSubServiceAgentEmail -or
-    (Get-JsonProperty -InputObject $pubSubServiceAgentDetails -Name 'disabled') -eq $true) {
-    throw 'L identite de service Pub/Sub preproduction est absente ou desactivee.'
-}
+# Les identites de service gerees par Google peuvent refuser
+# iam.serviceAccounts.get, meme au proprietaire du projet. La commande
+# services identity create ci-dessus garantit l'identite, et la validation
+# finale du binding Token Creator prouve que le principal attendu est utilise.
 
 $pushUserManagedKeys = @(Get-GcloudLines -Operation 'Validation des cles du compte Push OIDC' -Arguments @(
     'iam', 'service-accounts', 'keys', 'list',
@@ -392,7 +404,6 @@ if (-not (Test-UnconditionalIamBinding -Policy $topicPolicy -Role 'roles/pubsub.
         "--project=$ProjectId",
         "--member=$GooglePlayPublisher",
         '--role=roles/pubsub.publisher',
-        '--condition=None',
         '--quiet'
     ) | Out-Null
 }
