@@ -1328,11 +1328,7 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
             ),
           if (widget.professionnel.youtube.isNotEmpty)
             _buildSocialIcon(
-              const Icon(
-                Icons.play_circle_fill,
-                color: Colors.white,
-                size: 22,
-              ),
+              const Icon(Icons.play_circle_fill, color: Colors.white, size: 22),
               Colors.red.shade600,
               widget.professionnel.youtube,
               'YouTube',
