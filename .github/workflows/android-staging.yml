@@ -61,8 +61,8 @@ jobs:
           set -euo pipefail
 
           version_value="$(awk '$1 == "version:" { print $2; exit }' pubspec.yaml)"
-          if [[ "$version_value" != "1.1.0+26" ]]; then
-            echo "::error title=Version candidate inattendue::La seule version autorisée est 1.1.0+26."
+          if [[ "$version_value" != "1.1.0+27" ]]; then
+            echo "::error title=Version candidate inattendue::La seule version autorisée est 1.1.0+27."
             exit 1
           fi
 

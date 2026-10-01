@@ -9,7 +9,7 @@ Cette liste est un registre de preuves, pas une estimation commerciale. Une case
 - [x] Identifiant Android : `ca.indexcanada.app`.
 - [x] Bundle Identifier iOS : `ca.indexcanada.app`.
 - [x] Nom affiché Android/iOS : `Index Canada`.
-- [ ] Version candidate cible : `1.1.0+26`; le build TestFlight `1.1.0 (25)` contient encore Stripe natif et ne doit pas être soumis.
+- [ ] Version candidate cible : `1.1.0+27`; le build TestFlight `1.1.0 (25)` contient encore Stripe natif et ne doit pas être soumis.
 - [x] Minification et réduction des ressources activées pour Android release.
 - [x] Le build Android release exige une signature, sauf dérogation CI explicite produisant un artefact non distribuable.
 - [x] La CI iOS compile sans signature et ne produit pas d'archive soumissible.

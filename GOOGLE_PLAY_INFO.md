@@ -156,7 +156,7 @@ Référence officielle : [Ajouter des éléments d'aperçu à la fiche Play Stor
 - [ ] Créer ou confirmer l'application avec le package `ca.indexcanada.app`.
 - [x] Play App Signing est actif.
 - [ ] Résoudre la demande de réinitialisation de la clé d'envoi et confirmer que le certificat local correspond au certificat d'importation attendu par Play Console.
-- [ ] Produire un AAB `1.1.0+26` **signé** avec l'URL Wix de production approuvée et sans clé Stripe.
+- [ ] Produire un AAB `1.1.0+27` **signé** avec l'URL Wix approuvée et sans clé Stripe.
 - [ ] Importer d'abord cet AAB dans le canal interne; Play Console exige un APK/AAB compatible avant de permettre la création des abonnements.
 - [ ] Créer les abonnements annuels `ca.indexcanada.app.premium.annual` et `ca.indexcanada.app.professional.annual`, leurs offres de base, prix CAD et localisations FR/EN.
 - [ ] Configurer Google Real-time Developer Notifications et valider le topic/compte de service côté Wix.

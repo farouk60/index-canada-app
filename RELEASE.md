@@ -6,15 +6,15 @@ La version candidate migre les achats numériques mobiles vers StoreKit et Googl
 
 État vérifié dans le dépôt :
 
-- version Flutter cible : `1.1.0+26` ;
-- versions déjà utilisées dans les stores : iOS `1.0.4 (24)` et Android `1.0.3 (21)` ;
+- version Flutter cible : `1.1.0+27` ;
+- versions déjà utilisées dans les stores : iOS TestFlight `1.1.0 (25)` et Android test interne `1.1.0 (26)` ;
 - identifiant Android et iOS : `ca.indexcanada.app` ;
 - nom affiché : `Index Canada` ;
-- la CI Android produit volontairement un AAB **non signé et non distribuable** ;
+- le workflow Android Staging produit un AAB signé puis chiffré, à importer manuellement dans le canal de test interne ;
 - la CI iOS compile avec `--no-codesign` et ne produit donc pas une livraison App Store ;
 - Firebase Analytics est un service désactivé (stub) : aucun suivi Firebase ne doit être annoncé ;
 - le build iOS `1.1.0 (25)` validé par TestFlight contient encore l'ancien parcours Stripe natif et ne doit pas être soumis ;
-- le build `26` doit remplacer Stripe natif par les produits annuels `ca.indexcanada.app.premium.annual` et `ca.indexcanada.app.professional.annual`.
+- le build Android `26` remplace Stripe natif par les produits annuels `ca.indexcanada.app.premium.annual` et `ca.indexcanada.app.professional.annual` ; le build correctif cible est désormais `27`.
 
 ## 1. Critères bloquants avant une release
 
