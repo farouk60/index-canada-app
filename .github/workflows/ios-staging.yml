@@ -824,3 +824,4 @@ jobs:
           fi
           if [[ -n "${{ steps.encrypted_ipa.outputs.encrypted_path }}" ]]; then
             rm -f "${{ steps.encrypted_ipa.outputs.encrypted_path }}"
+          fi
