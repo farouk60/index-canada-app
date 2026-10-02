@@ -34,6 +34,10 @@ const virtualModules = new Map([
     virtualModule(`export { secrets } from ${JSON.stringify(runtimeUrl)};`),
   ],
   [
+    "wix-fetch",
+    virtualModule(`export { wixFetch as fetch } from ${JSON.stringify(runtimeUrl)};`),
+  ],
+  [
     "stripe",
     virtualModule(`export { StripeStub as default } from ${JSON.stringify(runtimeUrl)};`),
   ],
@@ -43,6 +47,11 @@ const backendModules = new Map([
   ["backend/directory-pagination", new URL("../directory-pagination.js", import.meta.url).href],
   ["backend/engagement-report", new URL("../engagement-report.js", import.meta.url).href],
   ["backend/security-core", new URL("../security-core.js", import.meta.url).href],
+  ["backend/store-purchase-core", new URL("../store-purchase-core.js", import.meta.url).href],
+  ["backend/store-purchase-service", new URL("../store-purchase-service.js", import.meta.url).href],
+  ["backend/store-notification-core", new URL("../store-notification-core.js", import.meta.url).href],
+  ["backend/store-notification-service", new URL("../store-notification-service.js", import.meta.url).href],
+  ["backend/store-purchase-verifiers", new URL("../store-purchase-verifiers.js", import.meta.url).href],
 ]);
 
 export async function resolve(specifier, context, nextResolve) {

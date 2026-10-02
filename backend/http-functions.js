@@ -11,6 +11,7 @@ import wixData from "wix-data";
 import { elevate } from "wix-auth";
 import { mediaManager } from "wix-media-backend";
 import { secrets } from "wix-secrets-backend.v2";
+import { fetch as wixFetch } from "wix-fetch";
 import Stripe from "stripe";
 import {
   DIRECTORY_COLLECTION_LIMITS,
@@ -36,6 +37,7 @@ import {
   evaluateRateLimit,
   getPlan,
   isCategoryEnabled,
+  isProfessionalPubliclyVisible,
   isReviewPublic,
   normalizeFeaturedFilter,
   normalizeProfessionalIdFilter,
@@ -58,16 +60,56 @@ import {
   validateRequestSize,
   verifyFreeCheckoutToken,
 } from "backend/security-core";
+import {
+  createStoreCheckoutDraft,
+  createStoreSigningKeyring,
+  deriveStoreAccountToken,
+  reconcileEntitlement,
+  validateStoreCheckout,
+  validateStoreRestoration,
+} from "backend/store-purchase-core";
+import {
+  confirmStorePurchaseWithDependencies,
+  restoreStorePurchaseWithDependencies,
+} from "backend/store-purchase-service";
+import {
+  decodeGoogleRtdnEnvelope,
+  normalizeAppleLifecycleEvent,
+  normalizeGoogleLifecycleEvent,
+  validateGooglePendingPurchaseCanceled,
+} from "backend/store-notification-core";
+import { processStoreLifecycleEvent } from "backend/store-notification-service";
+import {
+  StoreProviderError,
+  createAppleTransactionVerifier,
+  createGooglePushTokenVerifier,
+  createGoogleSubscriptionVerifier,
+  safeStoreProviderDiagnostic,
+} from "backend/store-purchase-verifiers";
 
 const DATA_OPTIONS = Object.freeze({ suppressAuth: true });
 const CONSISTENT_DATA_OPTIONS = Object.freeze({ suppressAuth: true, consistentRead: true });
 const CHECKOUT_COLLECTION = "PaymentCheckouts";
 const ENGAGEMENT_COLLECTION = "EngagementEvents";
 const RATE_LIMIT_COLLECTION = "ApiRateLimits";
+const ENTITLEMENT_COLLECTION = "Entitlements";
+const STORE_EVENT_COLLECTION = "PaymentEvents";
 const CHECKOUT_VERSION = "2";
 const STRIPE_SECRET_NAME = "STRIPE_SECRET_KEY";
 const STRIPE_WEBHOOK_SECRET_NAME = "STRIPE_WEBHOOK_SECRET";
 const CHECKOUT_SIGNING_SECRET_NAME = "CHECKOUT_SIGNING_SECRET";
+const CHECKOUT_SIGNING_SECRET_PREVIOUS_NAME = "CHECKOUT_SIGNING_SECRET_PREVIOUS";
+const APPLE_APP_ID_SECRET_NAME = "APPLE_APP_ID";
+const APPLE_ROOT_CERTIFICATE_SECRET_NAMES = Object.freeze([
+  "APPLE_ROOT_CERTIFICATE_G1_BASE64",
+  "APPLE_ROOT_CERTIFICATE_G2_BASE64",
+  "APPLE_ROOT_CERTIFICATE_G3_BASE64",
+]);
+const GOOGLE_PLAY_SERVICE_ACCOUNT_SECRET_NAME = "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON";
+const GOOGLE_RTDN_AUDIENCE_SECRET_NAME = "GOOGLE_RTDN_AUDIENCE";
+const GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL_SECRET_NAME = "GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL";
+const GOOGLE_RTDN_SUBSCRIPTION_SECRET_NAME = "GOOGLE_RTDN_SUBSCRIPTION";
+const STORE_ALLOW_SANDBOX_SECRET_NAME = "STORE_ALLOW_SANDBOX";
 
 const RATE_LIMITS = Object.freeze({
   directory: Object.freeze({ limit: 120, windowMs: 60_000, failClosed: false }),
@@ -112,7 +154,13 @@ const PLAN_HEADERS = Object.freeze({
 const getSecretValue = elevate(secrets.getSecretValue);
 let stripePromise;
 let signingSecretPromise;
+let storeSigningKeyringPromise;
 let webhookSecretPromise;
+let appleStoreVerifierPromise;
+let googleStoreVerifierPromise;
+let googlePushVerifierPromise;
+let googleRtdnSubscriptionPromise;
+let storeAllowSandboxPromise;
 
 class PaymentFlowError extends Error {
   constructor(code, status = 400) {
@@ -148,11 +196,13 @@ function requestId() {
 
 function logFailure(scope, error, correlationId) {
   const errorCode = typeof error?.code === "string" ? error.code : "UNEXPECTED_ERROR";
+  const diagnostic = safeStoreProviderDiagnostic(error?.diagnostic);
   console.error(JSON.stringify({
     event: "api_failure",
     scope,
     requestId: correlationId,
     errorCode,
+    ...(diagnostic ? { diagnostic } : {}),
   }));
 }
 
@@ -198,6 +248,8 @@ function publicError(error, correlationId, headers = PRIVATE_HEADERS) {
   if (error instanceof InputError) {
     const status = error.code === "PAYLOAD_TOO_LARGE" ? 413
       : error.code === "EXISTING_PROFILE_NOT_ALLOWED" ? 403
+        : ["STORE_PURCHASE_ALREADY_USED", "STORE_ACCOUNT_REFERENCE_AMBIGUOUS"]
+          .includes(error.code) ? 409
         : 400;
     const message = error.code === "LEGACY_FREE_TOKEN_DISABLED"
       ? "Cette confirmation a expiré. Recommencez l'inscription."
@@ -209,6 +261,19 @@ function publicError(error, correlationId, headers = PRIVATE_HEADERS) {
       { success: false, error: message, code: error.code, requestId: correlationId },
       headers,
     );
+  }
+  if (error instanceof StoreProviderError) {
+    const status = error.code === "GOOGLE_PUSH_UNAUTHORIZED" ? 401
+      : error.retryable ? 503
+        : 400;
+    return jsonResponse(status, {
+      success: false,
+      error: status === 503
+        ? "Le service du magasin est temporairement indisponible."
+        : "L'achat du magasin n'a pas pu être validé.",
+      code: error.code,
+      requestId: correlationId,
+    }, headers);
   }
   if (error instanceof DirectoryDatasetLimitError) {
     return jsonResponse(503, {
@@ -305,6 +370,116 @@ async function getStripe() {
   return stripePromise;
 }
 
+async function getStoreSigningKeyring() {
+  if (!storeSigningKeyringPromise) {
+    storeSigningKeyringPromise = Promise.all([
+      getSigningSecret(),
+      readSecret(CHECKOUT_SIGNING_SECRET_PREVIOUS_NAME),
+    ])
+      .then(([currentSecret, rawPreviousSecrets]) => {
+        if (Buffer.byteLength(rawPreviousSecrets, "utf8") > 16_384) {
+          throw new PaymentFlowError("SERVICE_UNAVAILABLE", 503);
+        }
+        let previousSecrets;
+        try {
+          previousSecrets = JSON.parse(rawPreviousSecrets);
+          return createStoreSigningKeyring(currentSecret, previousSecrets);
+        } catch (error) {
+          if (error instanceof PaymentFlowError) throw error;
+          throw new PaymentFlowError("SERVICE_UNAVAILABLE", 503);
+        }
+      })
+      .catch((error) => {
+        storeSigningKeyringPromise = undefined;
+        throw error;
+      });
+  }
+  return storeSigningKeyringPromise;
+}
+
+async function getAppleStoreVerifier() {
+  if (!appleStoreVerifierPromise) {
+    appleStoreVerifierPromise = Promise.all([
+      ...APPLE_ROOT_CERTIFICATE_SECRET_NAMES.map((name) => readSecret(name)),
+      readSecret(APPLE_APP_ID_SECRET_NAME),
+    ])
+      .then(([
+        rootCertificateG1,
+        rootCertificateG2,
+        rootCertificateG3,
+        appAppleId,
+      ]) => createAppleTransactionVerifier({
+        rootCertificates: [rootCertificateG1, rootCertificateG2, rootCertificateG3],
+        appAppleId,
+      }))
+      .catch((error) => {
+        appleStoreVerifierPromise = undefined;
+        throw error;
+      });
+  }
+  return appleStoreVerifierPromise;
+}
+
+async function getGoogleStoreVerifier() {
+  if (!googleStoreVerifierPromise) {
+    googleStoreVerifierPromise = readSecret(GOOGLE_PLAY_SERVICE_ACCOUNT_SECRET_NAME)
+      .then((serviceAccount) => createGoogleSubscriptionVerifier({ serviceAccount }))
+      .catch((error) => {
+        googleStoreVerifierPromise = undefined;
+        throw error;
+      });
+  }
+  return googleStoreVerifierPromise;
+}
+
+async function getGooglePushVerifier() {
+  if (!googlePushVerifierPromise) {
+    googlePushVerifierPromise = Promise.all([
+      readSecret(GOOGLE_RTDN_AUDIENCE_SECRET_NAME),
+      readSecret(GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL_SECRET_NAME),
+    ])
+      .then(([audience, serviceAccountEmail]) => createGooglePushTokenVerifier({
+        audience,
+        serviceAccountEmail,
+        certificateFetcher: wixFetch,
+      }))
+      .catch((error) => {
+        googlePushVerifierPromise = undefined;
+        throw error;
+      });
+  }
+  return googlePushVerifierPromise;
+}
+
+async function getGoogleRtdnSubscription() {
+  if (!googleRtdnSubscriptionPromise) {
+    googleRtdnSubscriptionPromise = readSecret(GOOGLE_RTDN_SUBSCRIPTION_SECRET_NAME)
+      .catch((error) => {
+        googleRtdnSubscriptionPromise = undefined;
+        throw error;
+      });
+  }
+  return googleRtdnSubscriptionPromise;
+}
+
+async function getStoreAllowSandbox() {
+  if (!storeAllowSandboxPromise) {
+    storeAllowSandboxPromise = getSecretValue(STORE_ALLOW_SANDBOX_SECRET_NAME)
+      .then((result) => {
+        const value = typeof result === "string" ? result : result?.value;
+        return value === "true";
+      })
+      .catch(() => false);
+  }
+  return storeAllowSandboxPromise;
+}
+
+function sandboxPolicy(dependencies) {
+  return Object.hasOwn(dependencies, "allowSandbox")
+    ? Promise.resolve(dependencies.allowSandbox === true)
+    : getStoreAllowSandbox();
+}
+
 function requestHeader(request, name) {
   const headers = request?.headers;
   if (!headers || typeof headers !== "object") return "";
@@ -331,6 +506,22 @@ async function readJsonBody(request) {
     throw new InputError("INVALID_JSON");
   }
   validateRequestSize(body);
+  return body;
+}
+
+async function readLimitedJsonBody(request, maxBytes) {
+  const contentLength = Number(requestHeader(request, "content-length") || 0);
+  if (
+    !Number.isSafeInteger(maxBytes)
+    || maxBytes < 1
+    || (Number.isFinite(contentLength) && contentLength > maxBytes)
+  ) {
+    throw new InputError("PAYLOAD_TOO_LARGE");
+  }
+  const body = await readJsonBody(request);
+  if (Buffer.byteLength(JSON.stringify(body), "utf8") > maxBytes) {
+    throw new InputError("PAYLOAD_TOO_LARGE");
+  }
   return body;
 }
 
@@ -430,6 +621,109 @@ async function persistCheckoutDraft(draft) {
     uncertain.preserveUploadedMedia = true;
     throw uncertain;
   }
+}
+
+async function persistEntitlementRecord(record) {
+  const existing = await findById(ENTITLEMENT_COLLECTION, record._id, { consistentRead: true });
+  const decision = reconcileEntitlement(existing, record);
+  if (decision.action === "unchanged") {
+    return { item: decision.item, idempotent: true };
+  }
+  try {
+    const saved = decision.action === "insert"
+      ? await wixData.insert(ENTITLEMENT_COLLECTION, decision.item, DATA_OPTIONS)
+      : await wixData.update(ENTITLEMENT_COLLECTION, decision.item, DATA_OPTIONS);
+    return { item: saved, idempotent: false };
+  } catch (_error) {
+    let raced;
+    try {
+      raced = await findById(ENTITLEMENT_COLLECTION, record._id, { consistentRead: true });
+    } catch (_readError) {
+      throw new PaymentFlowError("ENTITLEMENT_PERSISTENCE_UNCERTAIN", 503);
+    }
+    if (!raced) throw new PaymentFlowError("ENTITLEMENT_PERSISTENCE_UNCERTAIN", 503);
+    const recovered = reconcileEntitlement(raced, record);
+    if (recovered.action === "unchanged") {
+      return { item: recovered.item, idempotent: true };
+    }
+    throw new PaymentFlowError("ENTITLEMENT_PERSISTENCE_UNCERTAIN", 503);
+  }
+}
+
+async function findStoreCheckoutsByAccountReference({
+  accountReferenceHash,
+  store,
+  productId,
+}) {
+  if (!/^[a-f0-9]{64}$/u.test(accountReferenceHash ?? "")) {
+    throw new InputError("INVALID_STORE_CHECKOUT");
+  }
+  let query = wixData.query(CHECKOUT_COLLECTION)
+    .eq("accountReferenceHash", accountReferenceHash)
+    .eq("store", store);
+  if (productId !== undefined) query = query.eq("storeProductId", productId);
+  const result = await query.limit(2).find(CONSISTENT_DATA_OPTIONS);
+  return Array.isArray(result?.items) ? result.items : [];
+}
+
+async function findStoreEntitlementsByCurrentTransactionHash({ currentTransactionHash }) {
+  if (!/^[a-f0-9]{64}$/u.test(currentTransactionHash ?? "")) {
+    throw new InputError("INVALID_ENTITLEMENT");
+  }
+  const result = await wixData.query(ENTITLEMENT_COLLECTION)
+    .eq("currentTransactionHash", currentTransactionHash)
+    .limit(2)
+    .find(CONSISTENT_DATA_OPTIONS);
+  return Array.isArray(result?.items) ? result.items : [];
+}
+
+function assertStoreEventBinding(existing, incoming) {
+  if (
+    !existing
+    || existing._id !== incoming._id
+    || existing.provider !== incoming.provider
+    || existing.sourceEventHash !== incoming.sourceEventHash
+    || existing.entitlementId !== incoming.entitlementId
+  ) {
+    throw new PaymentFlowError("STORE_EVENT_CONFLICT", 409);
+  }
+  return existing;
+}
+
+async function beginStoreEventRecord(record) {
+  const existing = await findById(STORE_EVENT_COLLECTION, record._id, { consistentRead: true });
+  if (existing) return { item: assertStoreEventBinding(existing, record), idempotent: true };
+  try {
+    const inserted = await wixData.insert(STORE_EVENT_COLLECTION, record, DATA_OPTIONS);
+    return { item: inserted, idempotent: false };
+  } catch (_error) {
+    let raced;
+    try {
+      raced = await findById(STORE_EVENT_COLLECTION, record._id, { consistentRead: true });
+    } catch (_readError) {
+      throw new PaymentFlowError("STORE_EVENT_PERSISTENCE_UNCERTAIN", 503);
+    }
+    if (!raced) throw new PaymentFlowError("STORE_EVENT_PERSISTENCE_UNCERTAIN", 503);
+    return { item: assertStoreEventBinding(raced, record), idempotent: true };
+  }
+}
+
+async function completeStoreEventRecord(existing, patch) {
+  if (
+    !existing
+    || !["processed", "ignored"].includes(patch?.status)
+    || typeof patch.processedAt !== "string"
+    || typeof patch.outcome !== "string"
+    || patch.outcome.length > 80
+  ) {
+    throw new PaymentFlowError("INVALID_STORE_EVENT", 500);
+  }
+  if (existing.status === patch.status && existing.outcome === patch.outcome) return existing;
+  return wixData.update(
+    STORE_EVENT_COLLECTION,
+    { ...existing, ...patch, _id: existing._id },
+    DATA_OPTIONS,
+  );
 }
 
 export async function persistEngagementEvent(record, {
@@ -613,7 +907,7 @@ export async function get_data(request) {
     const [professionalsResult, subCategoriesResult, reviewsResult, partnersResult, offersResult]
       = await loadDirectoryData();
     const activeProfessionals = professionalsResult.items
-      .filter((item) => item.isActive === true)
+      .filter((item) => isProfessionalPubliclyVisible(item))
       .filter((item) => professionalMatches(item, filters));
     return jsonResponse(200, {
       professionnels: activeProfessionals.map(toPublicProfessional),
@@ -628,7 +922,9 @@ export async function get_data(request) {
         .map(toPublicPartner),
       offres: offersResult.items.filter((item) => item.isActive === true).map(toPublicOffer),
       searchStats: {
-        totalProfessionnels: professionalsResult.items.filter((item) => item.isActive === true).length,
+        totalProfessionnels: professionalsResult.items.filter(
+          (item) => isProfessionalPubliclyVisible(item),
+        ).length,
         filteredProfessionnels: activeProfessionals.length,
       },
     }, PUBLIC_HEADERS);
@@ -655,7 +951,7 @@ export async function get_searchProfessionals(request) {
       { collection: "Professionnel" },
     );
     let professionals = result.items
-      .filter((item) => item.isActive === true)
+      .filter((item) => isProfessionalPubliclyVisible(item))
       .filter((item) => professionalMatches(item, filters));
     if (filters.search) {
       professionals = professionals
@@ -777,7 +1073,7 @@ function professionalDirectoryQuery(filters) {
 }
 
 function professionalDirectoryMatches(item, filters) {
-  if (!item || item.isActive !== true || !professionalMatches(item, filters)) return false;
+  if (!isProfessionalPubliclyVisible(item) || !professionalMatches(item, filters)) return false;
   if (filters.featured !== null && item.sponsor !== filters.featured) return false;
   return filters.ids.length === 0 || filters.ids.includes(item._id);
 }
@@ -892,7 +1188,7 @@ export async function get_reviews(request) {
     }
     const professionalId = normalizeProfessionalIdFilter(candidates[0]);
     const professional = await findById("Professionnel", professionalId, { consistentRead: true });
-    if (!professional || professional.isActive !== true) {
+    if (!isProfessionalPubliclyVisible(professional)) {
       return jsonResponse(404, {
         success: false,
         error: "Professionnel introuvable.",
@@ -1019,7 +1315,7 @@ export async function post_review(request) {
     const body = await readJsonBody(request);
     const review = normalizeReviewInput(body);
     const professional = await findById("Professionnel", review.professionalId, { consistentRead: true });
-    if (!professional || professional.isActive !== true) {
+    if (!isProfessionalPubliclyVisible(professional)) {
       return jsonResponse(404, {
         success: false,
         error: "Professionnel introuvable.",
@@ -1072,7 +1368,7 @@ export async function post_engagementEvent(request) {
         record.professionalId,
         { consistentRead: true },
       );
-      if (!professional || professional.isActive !== true) {
+      if (!isProfessionalPubliclyVisible(professional)) {
         return jsonResponse(404, {
           success: false,
           error: "Professionnel introuvable.",
@@ -1128,6 +1424,56 @@ async function retrieveExistingPaymentIntent(stripe, checkout) {
   }
 }
 
+function storeCheckoutResponse(checkout, accountToken, extra = {}) {
+  return {
+    success: true,
+    checkout_id: checkout._id,
+    store: checkout.store,
+    product_id: checkout.storeProductId,
+    account_token: accountToken,
+    requires_payment: true,
+    ...extra,
+  };
+}
+
+export async function post_createStoreCheckout(request) {
+  const correlationId = requestId();
+  try {
+    await consumeRateLimit(request, "checkout", correlationId);
+    const body = await readJsonBody(request);
+    const signingKeyring = await getStoreSigningKeyring();
+    const draft = createStoreCheckoutDraft(body, signingKeyring);
+    const plan = getPlan(draft.planId);
+    assertClientHints(body, plan);
+    let checkout = await getOrCreatePersistedCheckout(draft, correlationId);
+    validateStoredCheckout(checkout);
+    validateStoreCheckout(checkout);
+    const accountToken = deriveStoreAccountToken(checkout, signingKeyring);
+
+    if (checkout.status === "finalized" && checkout.professionalId) {
+      return jsonResponse(200, storeCheckoutResponse(checkout, accountToken, {
+        already_finalized: true,
+        complete_purchase: true,
+        professional_id: checkout.professionalId,
+        entitlement_id: checkout.entitlementId,
+      }));
+    }
+
+    assertCheckoutNotExpired(checkout);
+    if (checkout.status === "created") {
+      checkout = await updateCheckout(checkout, { status: "store_purchase_pending" });
+    }
+    return jsonResponse(200, storeCheckoutResponse(checkout, accountToken));
+  } catch (error) {
+    logFailure("post_createStoreCheckout", error, correlationId);
+    return publicError(error, correlationId);
+  }
+}
+
+export function use_createStoreCheckout(request) {
+  return preflightOrMethodNotAllowed(request, PRIVATE_HEADERS);
+}
+
 export async function post_createPaymentIntent(request) {
   const correlationId = requestId();
   try {
@@ -1138,6 +1484,10 @@ export async function post_createPaymentIntent(request) {
     assertClientHints(body, plan);
     let checkout = await getOrCreatePersistedCheckout(draft, correlationId);
     validateStoredCheckout(checkout);
+    const expectedProvider = plan.requiresPayment ? "stripe" : "free";
+    if ((checkout.paymentProvider ?? expectedProvider) !== expectedProvider) {
+      throw new PaymentFlowError("CHECKOUT_PROVIDER_MISMATCH", 409);
+    }
 
     if (checkout.status === "finalized" && checkout.professionalId) {
       return jsonResponse(200, checkoutResponse(checkout, plan, {
@@ -1349,7 +1699,274 @@ async function getOrCreatePersistedCheckout(transientDraft, correlationId) {
   return persistence.item;
 }
 
-async function finalizeCheckout(checkout, { plan, paymentId }) {
+function checkoutFinalizationPatch(checkout, {
+  plan,
+  paymentId,
+  professionalId,
+  entitlement,
+}) {
+  const patch = {
+    status: "finalized",
+    professionalId,
+    finalizedAt: checkout.finalizedAt || new Date().toISOString(),
+  };
+  if (entitlement) {
+    patch.storeEnvironment = entitlement.environment;
+    patch.storeTransactionHash = entitlement.currentTransactionHash
+      ?? entitlement.lastTransactionHash;
+    patch.entitlementId = entitlement._id;
+    patch.entitlementExpiresAt = entitlement.expiresAt;
+    patch.currentPlanId = entitlement.planId;
+    patch.currentStoreProductId = entitlement.productId;
+    patch.pendingPlanId = entitlement.pendingPlanId ?? "";
+    patch.pendingStoreProductId = entitlement.pendingProductId ?? "";
+    patch.pendingEffectiveAt = entitlement.pendingEffectiveAt ?? "";
+    patch.lastStoreEventAt = entitlement.lastProviderEventAt;
+  } else if (plan.requiresPayment) {
+    patch.paymentIntentId = paymentId;
+  }
+  return patch;
+}
+
+async function repairProfessionalEntitlement(existing, entitlement, paymentId, {
+  checkoutId,
+} = {}) {
+  if (!entitlement) return { item: existing, changed: false };
+  const plan = getPlan(entitlement.planId);
+  const paymentStatus = ["active", "grace_period"].includes(entitlement.status)
+    ? "paid"
+    : ["billing_retry", "on_hold", "paused"].includes(entitlement.status)
+      ? "past_due"
+      : entitlement.status;
+  const projection = {
+    paymentId,
+    paymentProvider: entitlement.provider,
+    paymentStatus,
+    plan: plan.id,
+    sponsor: plan.capabilities.featured,
+    entitlementId: entitlement._id,
+    entitlementStatus: entitlement.status,
+    entitlementExpiresAt: entitlement.expiresAt,
+    expiryDate: entitlement.expiresAt,
+    pendingPlan: entitlement.pendingPlanId ?? "",
+    pendingStoreProductId: entitlement.pendingProductId ?? "",
+    pendingEffectiveAt: entitlement.pendingEffectiveAt ?? "",
+    ...(checkoutId ? { checkoutId } : {}),
+  };
+  const changed = Object.entries(projection).some(([field, value]) => existing[field] !== value);
+  if (!changed) return { item: existing, changed: false };
+  const updated = await wixData.update(
+    "Professionnel",
+    { ...existing, ...projection, _id: existing._id },
+    DATA_OPTIONS,
+  );
+  return { item: updated, changed: true };
+}
+
+async function finalizeExistingStoreProfessional({
+  checkout,
+  entitlement,
+  previousEntitlement,
+  paymentReference,
+}) {
+  validateStoredCheckout(checkout);
+  validateStoreCheckout(checkout);
+  const rootCheckoutId = entitlement?.rootCheckoutId
+    ?? previousEntitlement?.rootCheckoutId
+    ?? previousEntitlement?.checkoutId
+    ?? checkout._id;
+  const previousRootCheckoutId = previousEntitlement
+    ? previousEntitlement.rootCheckoutId ?? previousEntitlement.checkoutId
+    : rootCheckoutId;
+  if (
+    !entitlement
+    || entitlement.checkoutId !== checkout._id
+    || !/^ent_[a-f0-9]{32}$/u.test(entitlement._id ?? "")
+    || !/^idx_[a-f0-9]{32}$/u.test(entitlement.professionalId ?? "")
+    || !/^chk_[a-f0-9]{32}$/u.test(rootCheckoutId ?? "")
+    || entitlement.professionalId !== buildProfessionalId(`checkout:${rootCheckoutId}`)
+    || (
+      previousEntitlement
+      && (
+        previousEntitlement._id !== entitlement._id
+        || previousEntitlement.professionalId !== entitlement.professionalId
+        || previousRootCheckoutId !== rootCheckoutId
+        || previousEntitlement.provider !== entitlement.provider
+        || previousEntitlement.originalTransactionHash
+          !== entitlement.originalTransactionHash
+      )
+    )
+  ) {
+    throw new PaymentFlowError("PAYMENT_ALREADY_USED", 409);
+  }
+  const currentCheckout = await findById(CHECKOUT_COLLECTION, checkout._id, {
+    consistentRead: true,
+  });
+  if (!currentCheckout) throw new PaymentFlowError("CHECKOUT_NOT_FOUND", 500);
+  validateStoredCheckout(currentCheckout);
+  validateStoreCheckout(currentCheckout);
+  if (
+    (currentCheckout.professionalId
+      && currentCheckout.professionalId !== entitlement.professionalId)
+    || (currentCheckout.entitlementId
+      && currentCheckout.entitlementId !== entitlement._id)
+  ) {
+    throw new PaymentFlowError("PAYMENT_ALREADY_USED", 409);
+  }
+  const rootCheckout = rootCheckoutId === currentCheckout._id
+    ? currentCheckout
+    : await findById(CHECKOUT_COLLECTION, rootCheckoutId, { consistentRead: true });
+  if (!rootCheckout) throw new PaymentFlowError("PROFESSIONAL_REPAIR_REQUIRED", 503);
+  validateStoredCheckout(rootCheckout);
+  validateStoreCheckout(rootCheckout);
+  if (
+    rootCheckout.store !== currentCheckout.store
+    || rootCheckout.paymentProvider !== entitlement.provider
+    || (rootCheckout.professionalId
+      && rootCheckout.professionalId !== entitlement.professionalId)
+    || (rootCheckout.entitlementId && rootCheckout.entitlementId !== entitlement._id)
+  ) {
+    throw new PaymentFlowError("PAYMENT_ALREADY_USED", 409);
+  }
+  const effectivePaymentReference = paymentReference
+    ?? `store:${entitlement.provider}:${entitlement.lastTransactionHash}`;
+  let professional = await findById("Professionnel", entitlement.professionalId, {
+    consistentRead: true,
+  });
+  let professionalCreated = false;
+  if (!professional) {
+    const bootstrapEntitlement = {
+      ...entitlement,
+      rootCheckoutId,
+      checkoutId: rootCheckoutId,
+      planId: rootCheckout.planId,
+      productId: rootCheckout.storeProductId,
+      pendingPlanId: "",
+      pendingProductId: "",
+      pendingEffectiveAt: "",
+    };
+    const record = buildProfessionalRecord(
+      rootCheckout,
+      effectivePaymentReference,
+      Date.now(),
+      { entitlement: bootstrapEntitlement },
+    );
+    const saved = await insertProfessionalOnce(record);
+    professional = saved.item;
+    professionalCreated = !saved.idempotent;
+  }
+  if (
+    professional._id !== entitlement.professionalId
+    || professional.entitlementId !== entitlement._id
+  ) {
+    throw new PaymentFlowError("PAYMENT_ALREADY_USED", 409);
+  }
+  let predecessorCheckoutChanged = false;
+  if (professional.checkoutId !== checkout._id && professional.checkoutId !== rootCheckoutId) {
+    const predecessorCheckout = await findById(
+      CHECKOUT_COLLECTION,
+      professional.checkoutId,
+      { consistentRead: true },
+    );
+    if (!predecessorCheckout) {
+      throw new PaymentFlowError("PROFESSIONAL_REPAIR_REQUIRED", 503);
+    }
+    validateStoredCheckout(predecessorCheckout);
+    validateStoreCheckout(predecessorCheckout);
+    const predecessorProvenByPrevious = previousEntitlement
+      && previousEntitlement.checkoutId === predecessorCheckout._id
+      && previousRootCheckoutId === rootCheckoutId;
+    if (
+      predecessorCheckout._id === checkout._id
+      || predecessorCheckout.store !== currentCheckout.store
+      || predecessorCheckout.paymentProvider !== entitlement.provider
+      || (predecessorCheckout.entitlementId
+        && predecessorCheckout.entitlementId !== entitlement._id)
+      || (predecessorCheckout.professionalId
+        && predecessorCheckout.professionalId !== entitlement.professionalId)
+      || (
+        (!predecessorCheckout.entitlementId || !predecessorCheckout.professionalId)
+        && !predecessorProvenByPrevious
+      )
+    ) {
+      throw new PaymentFlowError("PAYMENT_ALREADY_USED", 409);
+    }
+    const predecessorLinkPatch = {
+      status: "finalized",
+      professionalId: entitlement.professionalId,
+      entitlementId: entitlement._id,
+      finalizedAt: predecessorCheckout.finalizedAt || new Date().toISOString(),
+    };
+    predecessorCheckoutChanged = Object.entries(predecessorLinkPatch)
+      .some(([field, value]) => predecessorCheckout[field] !== value);
+    if (predecessorCheckoutChanged) {
+      await updateCheckout(predecessorCheckout, predecessorLinkPatch);
+    }
+  }
+  let rootCheckoutChanged = false;
+  if (rootCheckoutId !== currentCheckout._id) {
+    const rootLinkPatch = {
+      status: "finalized",
+      professionalId: entitlement.professionalId,
+      entitlementId: entitlement._id,
+      finalizedAt: rootCheckout.finalizedAt || new Date().toISOString(),
+    };
+    rootCheckoutChanged = Object.entries(rootLinkPatch)
+      .some(([field, value]) => rootCheckout[field] !== value);
+    if (rootCheckoutChanged) await updateCheckout(rootCheckout, rootLinkPatch);
+  }
+  const repaired = await repairProfessionalEntitlement(
+    professional,
+    entitlement,
+    effectivePaymentReference,
+    { checkoutId: checkout._id },
+  );
+  const plan = getPlan(entitlement.planId);
+  const patch = checkoutFinalizationPatch(currentCheckout, {
+    plan,
+    paymentId: effectivePaymentReference,
+    professionalId: professional._id,
+    entitlement,
+  });
+  const checkoutChanged = Object.entries(patch)
+    .some(([field, value]) => currentCheckout[field] !== value);
+  const finalizedCheckout = checkoutChanged
+    ? await updateCheckout(currentCheckout, patch)
+    : currentCheckout;
+  return {
+    checkout: finalizedCheckout,
+    professional: repaired.item,
+    idempotent: !professionalCreated
+      && !rootCheckoutChanged
+      && !predecessorCheckoutChanged
+      && !checkoutChanged
+      && !repaired.changed,
+  };
+}
+
+async function projectLifecycleEntitlement({ checkout, entitlement, previousEntitlement }) {
+  validateStoredCheckout(checkout);
+  validateStoreCheckout(checkout);
+  const latest = await findById(ENTITLEMENT_COLLECTION, entitlement._id, {
+    consistentRead: true,
+  });
+  if (
+    !latest
+    || latest._id !== entitlement._id
+    || latest.professionalId !== entitlement.professionalId
+    || latest.checkoutId !== checkout._id
+  ) {
+    throw new PaymentFlowError("ENTITLEMENT_PERSISTENCE_UNCERTAIN", 503);
+  }
+  return finalizeExistingStoreProfessional({
+    checkout,
+    entitlement: latest,
+    previousEntitlement,
+    paymentReference: `store:${latest.provider}:${latest.lastTransactionHash}`,
+  });
+}
+
+async function finalizeCheckout(checkout, { plan, paymentId, entitlement = null }) {
   // Wix Data cannot atomically insert the profile and update the checkout.
   // A deterministic profile id makes a retry repair the second write safely.
   validateStoredCheckout(checkout);
@@ -1359,27 +1976,39 @@ async function finalizeCheckout(checkout, { plan, paymentId }) {
     if (existing.checkoutId !== checkout._id) {
       throw new PaymentFlowError("PAYMENT_ALREADY_USED", 409);
     }
-    const repairedCheckout = checkout.status === "finalized"
-      && checkout.professionalId === professionalId
+    const professionalRepair = await repairProfessionalEntitlement(existing, entitlement, paymentId);
+    const expectedPatch = checkoutFinalizationPatch(checkout, {
+      plan,
+      paymentId,
+      professionalId,
+      entitlement,
+    });
+    const checkoutAlreadyFinalized = Object.entries(expectedPatch)
+      .every(([field, value]) => checkout[field] === value);
+    const repairedCheckout = checkoutAlreadyFinalized
       ? checkout
-      : await updateCheckout(checkout, {
-        status: "finalized",
-        paymentIntentId: plan.requiresPayment ? paymentId : checkout.paymentIntentId,
-        professionalId,
-        finalizedAt: new Date().toISOString(),
-      });
-    return { checkout: repairedCheckout, professional: existing, idempotent: true };
+      : await updateCheckout(checkout, expectedPatch);
+    return {
+      checkout: repairedCheckout,
+      professional: professionalRepair.item,
+      idempotent: checkoutAlreadyFinalized && !professionalRepair.changed,
+    };
   }
 
-  const record = buildProfessionalRecord(checkout, paymentId);
+  const record = buildProfessionalRecord(checkout, paymentId, Date.now(), { entitlement });
   const saved = await insertProfessionalOnce(record);
-  const finalizedCheckout = await updateCheckout(checkout, {
-    status: "finalized",
-    paymentIntentId: plan.requiresPayment ? paymentId : checkout.paymentIntentId,
+  const professionalRepair = await repairProfessionalEntitlement(saved.item, entitlement, paymentId);
+  const finalizedCheckout = await updateCheckout(checkout, checkoutFinalizationPatch(checkout, {
+    plan,
+    paymentId,
     professionalId: saved.item._id,
-    finalizedAt: new Date().toISOString(),
-  });
-  return { checkout: finalizedCheckout, professional: saved.item, idempotent: saved.idempotent };
+    entitlement,
+  }));
+  return {
+    checkout: finalizedCheckout,
+    professional: professionalRepair.item,
+    idempotent: saved.idempotent && !professionalRepair.changed,
+  };
 }
 
 async function finalizePaidPaymentIntent(paymentIntent) {
@@ -1418,6 +2047,7 @@ export async function post_confirmPayment(request) {
       if (
         !checkout
         || checkout.planId !== "basic"
+        || (checkout.paymentProvider ?? "free") !== "free"
         || checkout.fingerprint !== token.fp
         || checkout.sourceRegistrationId !== token.sid
       ) {
@@ -1465,6 +2095,362 @@ export function use_confirmPayment(request) {
   return preflightOrMethodNotAllowed(request, PRIVATE_HEADERS);
 }
 
+export async function post_confirmStorePurchase(request, dependencies = {}) {
+  const correlationId = requestId();
+  try {
+    await consumeRateLimit(request, "confirmation", correlationId);
+    const body = await readJsonBody(request);
+    const checkoutId = body?.checkoutId ?? body?.checkout_id;
+    if (typeof checkoutId !== "string" || !/^chk_[a-f0-9]{32}$/u.test(checkoutId)) {
+      throw new InputError("INVALID_STORE_PURCHASE");
+    }
+    const checkout = await findById(CHECKOUT_COLLECTION, checkoutId, { consistentRead: true });
+    if (!checkout) throw new PaymentFlowError("CHECKOUT_NOT_FOUND", 400);
+    validateStoredCheckout(checkout);
+    validateStoreCheckout(checkout);
+    const signingKeyring = await getStoreSigningKeyring();
+
+    let verifyApple = dependencies.verifyApple;
+    let verifyGoogle = dependencies.verifyGoogle;
+    let acknowledgeGoogle = dependencies.acknowledgeGoogle;
+    if (checkout.store === "app_store" && typeof verifyApple !== "function") {
+      const verifier = await getAppleStoreVerifier();
+      verifyApple = (signedTransactionInfo) => verifier.verifyTransaction(signedTransactionInfo);
+    }
+    if (checkout.store === "google_play") {
+      const needsVerifier = typeof verifyGoogle !== "function";
+      const needsAcknowledger = typeof acknowledgeGoogle !== "function";
+      if (needsVerifier || needsAcknowledger) {
+        const verifier = await getGoogleStoreVerifier();
+        if (needsVerifier) {
+          verifyGoogle = (purchaseToken) => verifier.getSubscription(purchaseToken);
+        }
+        if (needsAcknowledger) {
+          acknowledgeGoogle = ({ purchaseToken, productId }) => verifier.acknowledgeSubscription({
+            purchaseToken,
+            productId,
+          });
+        }
+      }
+    }
+
+    const delivered = await confirmStorePurchaseWithDependencies({
+      checkout,
+      rawConfirmation: body,
+      signingKeyring,
+      verifyApple,
+      verifyGoogle,
+      acknowledgeGoogle,
+      allowSandbox: await sandboxPolicy(dependencies),
+      persistEntitlement: dependencies.persistEntitlement ?? persistEntitlementRecord,
+      findEntitlement: dependencies.findEntitlement
+        ?? ((id) => findById(ENTITLEMENT_COLLECTION, id, { consistentRead: true })),
+      findEntitlementsByCurrentTransactionHash:
+        dependencies.findEntitlementsByCurrentTransactionHash
+        ?? findStoreEntitlementsByCurrentTransactionHash,
+      finalizeProfessional: dependencies.finalizeProfessional
+        ?? finalizeExistingStoreProfessional,
+      finalizeExistingProfessional: dependencies.finalizeExistingProfessional
+        ?? finalizeExistingStoreProfessional,
+    });
+
+    let finalizedCheckout = delivered.checkout;
+    if (checkout.store === "google_play" && finalizedCheckout.storeAcknowledged !== true) {
+      finalizedCheckout = await updateCheckout(finalizedCheckout, {
+        storeAcknowledged: true,
+        storeAcknowledgedAt: new Date().toISOString(),
+      });
+    }
+    return jsonResponse(200, {
+      success: true,
+      checkout_id: finalizedCheckout._id,
+      idempotent: delivered.idempotent,
+      complete_purchase: true,
+      status: delivered.professional.registrationStatus,
+      entitlement: {
+        status: delivered.entitlement.status,
+        expires_at: delivered.entitlement.expiresAt,
+        plan_id: delivered.entitlement.planId,
+        product_id: delivered.entitlement.productId,
+        ...(delivered.entitlement.pendingPlanId ? {
+          pending_plan_id: delivered.entitlement.pendingPlanId,
+          pending_product_id: delivered.entitlement.pendingProductId,
+          pending_effective_at: delivered.entitlement.pendingEffectiveAt,
+        } : {}),
+      },
+      data: {
+        professionalId: delivered.professional._id,
+        planId: delivered.entitlement.planId,
+        ...(delivered.entitlement.pendingPlanId
+          ? { pendingPlanId: delivered.entitlement.pendingPlanId }
+          : {}),
+        isActive: delivered.professional.isActive === true,
+      },
+    });
+  } catch (error) {
+    logFailure("post_confirmStorePurchase", error, correlationId);
+    return publicError(error, correlationId);
+  }
+}
+
+export function use_confirmStorePurchase(request) {
+  return preflightOrMethodNotAllowed(request, PRIVATE_HEADERS);
+}
+
+export async function post_restoreStorePurchase(request, dependencies = {}) {
+  const correlationId = requestId();
+  try {
+    await consumeRateLimit(request, "confirmation", correlationId);
+    const body = await readJsonBody(request);
+    const restoration = validateStoreRestoration(body);
+    const signingKeyring = await getStoreSigningKeyring();
+
+    let verifyApple = dependencies.verifyApple;
+    let verifyGoogle = dependencies.verifyGoogle;
+    let acknowledgeGoogle = dependencies.acknowledgeGoogle;
+    if (restoration.store === "app_store" && typeof verifyApple !== "function") {
+      const verifier = await getAppleStoreVerifier();
+      verifyApple = (signedTransactionInfo) => verifier.verifyTransaction(signedTransactionInfo);
+    }
+    if (restoration.store === "google_play") {
+      const needsVerifier = typeof verifyGoogle !== "function";
+      const needsAcknowledger = typeof acknowledgeGoogle !== "function";
+      if (needsVerifier || needsAcknowledger) {
+        const verifier = await getGoogleStoreVerifier();
+        if (needsVerifier) {
+          verifyGoogle = (purchaseToken) => verifier.getSubscription(purchaseToken);
+        }
+        if (needsAcknowledger) {
+          acknowledgeGoogle = ({ purchaseToken, productId }) => verifier.acknowledgeSubscription({
+            purchaseToken,
+            productId,
+          });
+        }
+      }
+    }
+
+    const delivered = await restoreStorePurchaseWithDependencies({
+      rawRestoration: restoration,
+      signingKeyring,
+      verifyApple,
+      verifyGoogle,
+      acknowledgeGoogle,
+      allowSandbox: await sandboxPolicy(dependencies),
+      findEntitlement: dependencies.findEntitlement
+        ?? ((id) => findById(ENTITLEMENT_COLLECTION, id, { consistentRead: true })),
+      findEntitlementsByCurrentTransactionHash:
+        dependencies.findEntitlementsByCurrentTransactionHash
+        ?? findStoreEntitlementsByCurrentTransactionHash,
+      findCheckout: dependencies.findCheckout
+        ?? ((id) => findById(CHECKOUT_COLLECTION, id, { consistentRead: true })),
+      findCheckoutsByAccountReference: dependencies.findCheckoutsByAccountReference
+        ?? findStoreCheckoutsByAccountReference,
+      persistEntitlement: dependencies.persistEntitlement ?? persistEntitlementRecord,
+      finalizeProfessional: dependencies.finalizeProfessional
+        ?? finalizeExistingStoreProfessional,
+      finalizeExistingProfessional: dependencies.finalizeExistingProfessional
+        ?? finalizeExistingStoreProfessional,
+    });
+
+    let finalizedCheckout = delivered.checkout;
+    if (restoration.store === "google_play" && finalizedCheckout.storeAcknowledged !== true) {
+      finalizedCheckout = await updateCheckout(finalizedCheckout, {
+        storeAcknowledged: true,
+        storeAcknowledgedAt: new Date().toISOString(),
+      });
+    }
+    const plan = getPlan(delivered.entitlement.planId);
+    return jsonResponse(200, {
+      success: true,
+      restored: true,
+      checkout_id: finalizedCheckout._id,
+      idempotent: delivered.idempotent,
+      complete_purchase: true,
+      status: delivered.professional.registrationStatus,
+      entitlement: {
+        status: delivered.entitlement.status,
+        expires_at: delivered.entitlement.expiresAt,
+        plan_id: delivered.entitlement.planId,
+        product_id: delivered.entitlement.productId,
+        ...(delivered.entitlement.pendingPlanId ? {
+          pending_plan_id: delivered.entitlement.pendingPlanId,
+          pending_product_id: delivered.entitlement.pendingProductId,
+          pending_effective_at: delivered.entitlement.pendingEffectiveAt,
+        } : {}),
+      },
+      data: {
+        professionalId: delivered.professional._id,
+        planId: plan.id,
+        ...(delivered.entitlement.pendingPlanId
+          ? { pendingPlanId: delivered.entitlement.pendingPlanId }
+          : {}),
+        isActive: delivered.professional.isActive === true,
+      },
+    });
+  } catch (error) {
+    logFailure("post_restoreStorePurchase", error, correlationId);
+    return publicError(error, correlationId);
+  }
+}
+
+export function use_restoreStorePurchase(request) {
+  return preflightOrMethodNotAllowed(request, PRIVATE_HEADERS);
+}
+
+export async function post_appStoreServerNotificationV2(request, dependencies = {}) {
+  const correlationId = requestId();
+  try {
+    const body = await readLimitedJsonBody(request, 320 * 1024);
+    const signedPayload = body?.signedPayload ?? body?.signed_payload;
+    if (
+      typeof signedPayload !== "string"
+      || signedPayload.length < 8
+      || signedPayload.length > 300_000
+      || signedPayload.trim() !== signedPayload
+    ) {
+      throw new InputError("INVALID_STORE_NOTIFICATION");
+    }
+    let verifyNotification = dependencies.verifyAppleNotification;
+    let verifyTransaction = dependencies.verifyAppleTransaction;
+    if (typeof verifyNotification !== "function" || typeof verifyTransaction !== "function") {
+      const verifier = await getAppleStoreVerifier();
+      if (typeof verifyNotification !== "function") {
+        verifyNotification = (value) => verifier.verifyNotification(value);
+      }
+      if (typeof verifyTransaction !== "function") {
+        verifyTransaction = (value) => verifier.verifyTransaction(value);
+      }
+    }
+    const notification = await verifyNotification(signedPayload);
+    if (notification?.notificationType === "TEST") {
+      return jsonResponse(200, { received: true, test: true });
+    }
+    const signedTransactionInfo = notification?.data?.signedTransactionInfo;
+    if (typeof signedTransactionInfo !== "string" || signedTransactionInfo.length < 8) {
+      return jsonResponse(200, { received: true, ignored: true });
+    }
+    const transaction = await verifyTransaction(signedTransactionInfo);
+    const event = normalizeAppleLifecycleEvent(notification, transaction, {
+      signedPayload,
+      signedTransactionInfo,
+    });
+    const processed = await processStoreLifecycleEvent({
+      event,
+      signingKeyring: await getStoreSigningKeyring(),
+      allowSandbox: await sandboxPolicy(dependencies),
+      beginEvent: dependencies.beginEvent ?? beginStoreEventRecord,
+      completeEvent: dependencies.completeEvent ?? completeStoreEventRecord,
+      findEntitlement: dependencies.findEntitlement
+        ?? ((id) => findById(ENTITLEMENT_COLLECTION, id, { consistentRead: true })),
+      findEntitlementsByCurrentTransactionHash:
+        dependencies.findEntitlementsByCurrentTransactionHash
+        ?? findStoreEntitlementsByCurrentTransactionHash,
+      findCheckout: dependencies.findCheckout
+        ?? ((id) => findById(CHECKOUT_COLLECTION, id, { consistentRead: true })),
+      findCheckoutsByAccountReference: dependencies.findCheckoutsByAccountReference
+        ?? findStoreCheckoutsByAccountReference,
+      persistEntitlement: dependencies.persistEntitlement ?? persistEntitlementRecord,
+      projectProfessional: dependencies.projectProfessional ?? projectLifecycleEntitlement,
+      projectReplacementProfessional: dependencies.projectReplacementProfessional
+        ?? finalizeExistingStoreProfessional,
+    });
+    return jsonResponse(200, {
+      received: true,
+      idempotent: processed.idempotent,
+      ignored: processed.ignored,
+    });
+  } catch (error) {
+    logFailure("post_appStoreServerNotificationV2", error, correlationId);
+    return publicError(error, correlationId);
+  }
+}
+
+export function use_appStoreServerNotificationV2(request) {
+  return preflightOrMethodNotAllowed(request, PRIVATE_HEADERS);
+}
+
+export async function post_googlePlayRtdn(request, dependencies = {}) {
+  const correlationId = requestId();
+  try {
+    const contentLength = Number(requestHeader(request, "content-length") || 0);
+    if (Number.isFinite(contentLength) && contentLength > 128 * 1024) {
+      throw new InputError("PAYLOAD_TOO_LARGE");
+    }
+    const authorization = requestHeader(request, "authorization");
+    if (typeof dependencies.verifyGooglePush === "function") {
+      await dependencies.verifyGooglePush(authorization);
+    } else {
+      const pushVerifier = await getGooglePushVerifier();
+      await pushVerifier.verifyAuthorization(authorization);
+    }
+    const body = await readLimitedJsonBody(request, 128 * 1024);
+    const expectedSubscription = dependencies.expectedSubscription
+      ?? await getGoogleRtdnSubscription();
+    const rtdn = decodeGoogleRtdnEnvelope(body, { expectedSubscription });
+    if (rtdn.test) return jsonResponse(200, { received: true, test: true });
+    // Le cycle de vie des droits traite uniquement SubscriptionNotification
+    // après relecture subscriptionsv2. Les autres familles sont authentifiées
+    // et validées, puis acquittées sans corrélation risquée : les jetons bruts
+    // ne sont jamais persistés et aucun droit ne doit être deviné.
+    if (rtdn.ignored) return jsonResponse(200, { received: true, ignored: true });
+
+    let verifier;
+    let verifyGoogle = dependencies.verifyGoogle;
+    if (typeof verifyGoogle !== "function") {
+      verifier = await getGoogleStoreVerifier();
+      verifyGoogle = (purchaseToken) => verifier.getSubscription(purchaseToken);
+    }
+    const subscription = await verifyGoogle(rtdn.purchaseToken);
+    if (rtdn.notificationType === 20) {
+      validateGooglePendingPurchaseCanceled(rtdn, subscription);
+      return jsonResponse(200, { received: true, ignored: true });
+    }
+
+    let acknowledgeGoogle = dependencies.acknowledgeGoogle;
+    if (typeof acknowledgeGoogle !== "function") {
+      verifier ??= await getGoogleStoreVerifier();
+      acknowledgeGoogle = ({ purchaseToken, productId }) => verifier.acknowledgeSubscription({
+        purchaseToken,
+        productId,
+      });
+    }
+    const event = normalizeGoogleLifecycleEvent(rtdn, subscription);
+    const processed = await processStoreLifecycleEvent({
+      event,
+      signingKeyring: await getStoreSigningKeyring(),
+      allowSandbox: await sandboxPolicy(dependencies),
+      beginEvent: dependencies.beginEvent ?? beginStoreEventRecord,
+      completeEvent: dependencies.completeEvent ?? completeStoreEventRecord,
+      findEntitlement: dependencies.findEntitlement
+        ?? ((id) => findById(ENTITLEMENT_COLLECTION, id, { consistentRead: true })),
+      findEntitlementsByCurrentTransactionHash:
+        dependencies.findEntitlementsByCurrentTransactionHash
+        ?? findStoreEntitlementsByCurrentTransactionHash,
+      findCheckout: dependencies.findCheckout
+        ?? ((id) => findById(CHECKOUT_COLLECTION, id, { consistentRead: true })),
+      findCheckoutsByAccountReference: dependencies.findCheckoutsByAccountReference
+        ?? findStoreCheckoutsByAccountReference,
+      persistEntitlement: dependencies.persistEntitlement ?? persistEntitlementRecord,
+      projectProfessional: dependencies.projectProfessional ?? projectLifecycleEntitlement,
+      projectReplacementProfessional: dependencies.projectReplacementProfessional
+        ?? finalizeExistingStoreProfessional,
+      acknowledgeGoogle,
+    });
+    return jsonResponse(200, {
+      received: true,
+      idempotent: processed.idempotent,
+      ignored: processed.ignored,
+    });
+  } catch (error) {
+    logFailure("post_googlePlayRtdn", error, correlationId);
+    return publicError(error, correlationId);
+  }
+}
+
+export function use_googlePlayRtdn(request) {
+  return preflightOrMethodNotAllowed(request, PRIVATE_HEADERS);
+}
+
 export async function post_stripeWebhook(request) {
   const correlationId = requestId();
   try {
@@ -1506,6 +2492,26 @@ export function confirmPayment(request) {
   return post_confirmPayment(request);
 }
 
+export function createStoreCheckout(request) {
+  return post_createStoreCheckout(request);
+}
+
+export function confirmStorePurchase(request) {
+  return post_confirmStorePurchase(request);
+}
+
+export function restoreStorePurchase(request) {
+  return post_restoreStorePurchase(request);
+}
+
+export function appStoreServerNotificationV2(request) {
+  return post_appStoreServerNotificationV2(request);
+}
+
+export function googlePlayRtdn(request) {
+  return post_googlePlayRtdn(request);
+}
+
 export { get_data as data_get };
 export { get_searchProfessionals as searchProfessionals_get };
 export { get_categories as categories_get };
@@ -1518,4 +2524,9 @@ export { post_review as review_post };
 export { post_engagementEvent as engagementEvent_post };
 export { post_createPaymentIntent as createPaymentIntent_post };
 export { post_confirmPayment as confirmPayment_post };
+export { post_createStoreCheckout as createStoreCheckout_post };
+export { post_confirmStorePurchase as confirmStorePurchase_post };
+export { post_restoreStorePurchase as restoreStorePurchase_post };
+export { post_appStoreServerNotificationV2 as appStoreServerNotificationV2_post };
+export { post_googlePlayRtdn as googlePlayRtdn_post };
 export { post_stripeWebhook as stripeWebhook_post };

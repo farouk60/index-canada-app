@@ -1,0 +1,493 @@
+name: Android Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_internal:
+        description: Téléverser l'AAB vérifié vers le test interne Google Play
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  APP_ENVIRONMENT: production
+  API_BASE_URL: https://www.immigrantindex.com/_functions
+  FORBIDDEN_STAGING_API_BASE_URL: https://immigrantindex.wixsite.com/website-1/_functions
+  FORBIDDEN_CI_API_BASE_URL: https://ci.index-canada.example/_functions
+
+jobs:
+  release-gate:
+    name: Gate production Android
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Refuser tout déclenchement, branche ou SHA non approuvé
+        shell: bash
+        env:
+          MOBILE_PRODUCTION_APPROVED_SHA: ${{ vars.MOBILE_PRODUCTION_APPROVED_SHA }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+            echo "::error title=Déclenchement interdit::Ce workflow de production accepte uniquement workflow_dispatch."
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error title=Branche interdite::La livraison Android production doit provenir de main."
+            exit 1
+          fi
+          if [[ ! "$MOBILE_PRODUCTION_APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=SHA de production invalide::MOBILE_PRODUCTION_APPROVED_SHA doit contenir 40 caractères hexadécimaux minuscules."
+            exit 1
+          fi
+          if [[ "$GITHUB_SHA" != "$MOBILE_PRODUCTION_APPROVED_SHA" ]]; then
+            echo "::error title=Révision non approuvée::Le SHA Android ne correspond pas à la révision de production approuvée."
+            exit 1
+          fi
+
+      - name: Récupérer la révision production verrouillée
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Vérifier la version production
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_value="$(awk '$1 == "version:" { print $2; exit }' pubspec.yaml)"
+          if [[ "$version_value" != "1.1.0+28" ]]; then
+            echo "::error title=Version production inattendue::La livraison autorisée est 1.1.0+28."
+            exit 1
+          fi
+
+  quality:
+    name: Qualité mobile et Store Billing
+    needs: release-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Installer Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: "3.47.4"
+          channel: stable
+          cache: true
+
+      - name: Installer Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "18.19.0"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Installer les dépendances verrouillées
+        run: |
+          flutter pub get --enforce-lockfile
+          npm ci --prefix backend
+
+      - name: Refuser les fichiers sensibles suivis
+        shell: bash
+        run: |
+          set -euo pipefail
+          sensitive_files="$({
+            git ls-files -- lib android ios backend pubspec.yaml pubspec.lock | grep -E '(^|/)(\.env($|\.)|key\.properties$|service-account[^/]*\.json$|[^/]+\.(jks|keystore|p8|p12|pfx|pem|key|mobileprovision|provisionprofile)$)' | grep -Ev '(\.example|\.sample|\.template)$'
+          } || true)"
+          if [[ -n "$sensitive_files" ]]; then
+            echo "::error title=Fichier sensible suivi::Un fichier sensible est versionné."
+            printf '%s\n' "$sensitive_files"
+            exit 1
+          fi
+
+      - name: Refuser les secrets intégrés et Stripe natif
+        shell: bash
+        run: |
+          set -euo pipefail
+          secret_files="$({
+            git grep -Il -E '(sk_(live|test)_[[:alnum:]]{16,}|rk_(live|test)_[[:alnum:]]{16,}|whsec_[[:alnum:]]{16,}|AIza[[:alnum:]_-]{30,}|AKIA[0-9A-Z]{16}|gh[pousr]_[[:alnum:]]{20,}|-----BEGIN ((RSA|EC|OPENSSH) )?PRIVATE KEY-----)' -- lib android ios backend pubspec.yaml pubspec.lock
+          } || true)"
+          if [[ -n "$secret_files" ]]; then
+            echo "::error title=Secret potentiel détecté::Le contenu sensible n'est jamais affiché."
+            printf '%s\n' "$secret_files"
+            exit 1
+          fi
+
+          stripe_files="$({
+            git grep -Il -E 'flutter_stripe|stripe_native_payment_service|StripeNativePaymentService|Stripe\.(instance|publishableKey|urlScheme)|STRIPE_(PUBLISHABLE_KEY|URL_SCHEME)|PaymentSheet|flutterstripe' -- lib pubspec.yaml android/app/src/main/AndroidManifest.xml ios/Runner/Info.plist
+          } || true)"
+          if [[ -n "$stripe_files" ]]; then
+            echo "::error title=Paiement Stripe natif interdit::La livraison mobile doit utiliser les achats intégrés des stores."
+            printf '%s\n' "$stripe_files"
+            exit 1
+          fi
+
+      - name: Vérifier le format et analyser
+        run: |
+          dart format --output=none --set-exit-if-changed lib test
+          flutter analyze --fatal-infos --fatal-warnings
+
+      - name: Exécuter les tests Flutter
+        run: flutter test --coverage --reporter expanded
+
+      - name: Vérifier et tester le backend Store Billing
+        run: |
+          node --check backend/http-functions.js
+          node --check backend/security-core.js
+          node --check backend/store-purchase-core.js
+          node --check backend/store-purchase-service.js
+          node --check backend/store-purchase-verifiers.js
+          node --check backend/store-notification-core.js
+          node --check backend/store-notification-service.js
+          npm audit --prefix backend --omit=dev --audit-level=high
+          npm test --prefix backend
+
+  signed-aab:
+    name: AAB Android production signé
+    needs:
+      - release-gate
+      - quality
+    # Les secrets de signature historiques sont conservés dans cet environnement.
+    # Les gates ci-dessus garantissent que seul main au SHA approuvé peut les utiliser.
+    environment: mobile-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Installer Java 17
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Installer Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: "3.47.4"
+          channel: stable
+          cache: true
+
+      - name: Installer les dépendances verrouillées
+        run: flutter pub get --enforce-lockfile
+
+      - name: Autoriser le wrapper Gradle
+        run: chmod +x android/gradlew
+
+      - name: Verrouiller la configuration production
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_url='https://www.immigrantindex.com/_functions'
+          if [[ "$APP_ENVIRONMENT" != "production" || "$API_BASE_URL" != "$expected_url" ]]; then
+            echo "::error title=Configuration production invalide::L'environnement et l'URL doivent viser exactement Wix production."
+            exit 1
+          fi
+          if [[ "$API_BASE_URL" == "$FORBIDDEN_STAGING_API_BASE_URL" || "$API_BASE_URL" == "$FORBIDDEN_CI_API_BASE_URL" ]]; then
+            echo "::error title=Backend interdit::Une URL staging ou CI ne peut pas entrer dans l'AAB production."
+            exit 1
+          fi
+
+      - name: Lire la version de l'application
+        id: app_version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_value="$(awk '$1 == "version:" { print $2; exit }' pubspec.yaml)"
+          if [[ "$version_value" != "1.1.0+28" ]]; then
+            echo "::error title=Version production inattendue::La livraison autorisée est 1.1.0+28."
+            exit 1
+          fi
+          echo "version_name=${version_value%%+*}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${version_value##*+}" >> "$GITHUB_OUTPUT"
+
+      - name: Exiger le secret de chiffrement de l'artefact
+        shell: bash
+        env:
+          ANDROID_ARTIFACT_ENCRYPTION_PASSWORD: ${{ secrets.ANDROID_ARTIFACT_ENCRYPTION_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if (( ${#ANDROID_ARTIFACT_ENCRYPTION_PASSWORD} < 32 )); then
+            echo "::error title=Secret de chiffrement invalide::ANDROID_ARTIFACT_ENCRYPTION_PASSWORD doit contenir au moins 32 caractères."
+            exit 1
+          fi
+
+      - name: Préparer la signature Android
+        id: signing
+        shell: bash
+        env:
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          ANDROID_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+          ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_CERT_SHA256: ${{ secrets.ANDROID_UPLOAD_CERT_SHA256 }}
+          KEYSTORE_PATH: ${{ runner.temp }}/index-canada-upload.jks
+        run: |
+          set -euo pipefail
+          umask 077
+          required_secrets=(
+            ANDROID_UPLOAD_KEYSTORE_BASE64
+            ANDROID_UPLOAD_STORE_PASSWORD
+            ANDROID_UPLOAD_KEY_PASSWORD
+            ANDROID_UPLOAD_KEY_ALIAS
+            ANDROID_UPLOAD_CERT_SHA256
+          )
+          for secret_name in "${required_secrets[@]}"; do
+            if [[ -z "${!secret_name:-}" ]]; then
+              echo "::error title=Secret Android manquant::$secret_name n'est pas configuré."
+              exit 1
+            fi
+          done
+
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          encoded = "".join(os.environ["ANDROID_UPLOAD_KEYSTORE_BASE64"].split())
+          keystore = base64.b64decode(encoded, validate=True)
+          if len(keystore) < 256:
+              raise SystemExit("Le keystore décodé est anormalement court")
+          path = Path(os.environ["KEYSTORE_PATH"])
+          path.write_bytes(keystore)
+          def value(name):
+              raw = os.environ[name]
+              if not raw or any(char in raw for char in "\r\n\0"):
+                  raise SystemExit(f"{name} est invalide")
+              return raw.replace("\\", "\\\\")
+          Path("android/key.properties").write_text(
+              "\n".join((
+                  f"storePassword={value('ANDROID_UPLOAD_STORE_PASSWORD')}",
+                  f"keyPassword={value('ANDROID_UPLOAD_KEY_PASSWORD')}",
+                  f"keyAlias={value('ANDROID_UPLOAD_KEY_ALIAS')}",
+                  f"storeFile={path}",
+                  "",
+              )),
+              encoding="utf-8",
+          )
+          PY
+
+          chmod 600 "$KEYSTORE_PATH" android/key.properties
+          expected_sha256="$(LC_ALL=C keytool -list -v -keystore "$KEYSTORE_PATH" -storepass:env ANDROID_UPLOAD_STORE_PASSWORD -alias "$ANDROID_UPLOAD_KEY_ALIAS" | sed -n 's/^[[:space:]]*SHA256: //p' | head -n 1)"
+          normalized_expected="$(printf '%s' "$expected_sha256" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]')"
+          normalized_canonical="$(printf '%s' "$ANDROID_UPLOAD_CERT_SHA256" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]')"
+          if [[ ! "$normalized_canonical" =~ ^[0-9A-F]{64}$ || "$normalized_expected" != "$normalized_canonical" ]]; then
+            echo "::error title=Identité Android refusée::Le certificat du keystore ne correspond pas à l'empreinte canonique Google Play."
+            exit 1
+          fi
+          echo "certificate_sha256=$expected_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Compiler l'AAB de production signé
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter build appbundle --release --no-pub --dart-define=APP_ENVIRONMENT=production --dart-define=API_BASE_URL=https://www.immigrantindex.com/_functions
+
+      - name: Vérifier l'AAB, sa signature et sa configuration
+        id: bundle
+        shell: bash
+        env:
+          EXPECTED_CERTIFICATE_SHA256: ${{ steps.signing.outputs.certificate_sha256 }}
+          CANONICAL_CERTIFICATE_SHA256: ${{ secrets.ANDROID_UPLOAD_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bundle_files=(build/app/outputs/bundle/release/*.aab)
+          if (( ${#bundle_files[@]} != 1 )); then
+            echo "::error title=AAB ambigu::Un seul bundle release est attendu."
+            exit 1
+          fi
+          bundle_path="${bundle_files[0]}"
+          unzip -tq "$bundle_path"
+          jarsigner -verify "$bundle_path" >/dev/null
+
+          actual_sha256="$(LC_ALL=C keytool -printcert -jarfile "$bundle_path" | sed -n 's/^[[:space:]]*SHA256: //p' | head -n 1)"
+          normalize() { printf '%s' "$1" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]'; }
+          if [[ -z "$actual_sha256" || "$(normalize "$actual_sha256")" != "$(normalize "$EXPECTED_CERTIFICATE_SHA256")" || "$(normalize "$actual_sha256")" != "$(normalize "$CANONICAL_CERTIFICATE_SHA256")" ]]; then
+            echo "::error title=Signature Android inattendue::Le certificat de l'AAB ne correspond pas au keystore approuvé."
+            exit 1
+          fi
+
+          application_id="$(apkanalyzer manifest application-id "$bundle_path")"
+          version_code="$(apkanalyzer manifest version-code "$bundle_path")"
+          if [[ "$application_id" != "ca.indexcanada.app" || "$version_code" != "28" ]]; then
+            echo "::error title=Identité AAB inattendue::Le package ou le versionCode ne correspond pas à ca.indexcanada.app / 28."
+            exit 1
+          fi
+
+          extracted="$RUNNER_TEMP/android-production-aab"
+          rm -rf "$extracted"
+          mkdir -p "$extracted"
+          unzip -q "$bundle_path" -d "$extracted"
+          app_strings="$RUNNER_TEMP/android-production-app-strings.txt"
+          find "$extracted" -type f -name 'libapp.so' -print0 | xargs -0 -r strings > "$app_strings"
+          if ! grep -Fq "$API_BASE_URL" "$app_strings"; then
+            echo "::error title=URL production absente::L'AAB ne contient pas l'URL Wix production attendue."
+            exit 1
+          fi
+          for forbidden_url in "$FORBIDDEN_STAGING_API_BASE_URL" "$FORBIDDEN_CI_API_BASE_URL"; do
+            if grep -Fq "$forbidden_url" "$app_strings"; then
+              echo "::error title=URL interdite intégrée::L'AAB production contient une URL staging ou CI."
+              exit 1
+            fi
+          done
+
+          embedded_secret_files="$({
+            grep -aRIlE '(sk_(live|test)_[[:alnum:]]{16,}|rk_(live|test)_[[:alnum:]]{16,}|whsec_[[:alnum:]]{16,}|AIza[[:alnum:]_-]{30,}|AKIA[0-9A-Z]{16}|gh[pousr]_[[:alnum:]]{20,}|-----BEGIN ((RSA|EC|OPENSSH) )?PRIVATE KEY-----)' "$extracted"
+          } || true)"
+          if [[ -n "$embedded_secret_files" ]]; then
+            echo "::error title=Secret potentiel dans l'AAB::Le contenu sensible n'est jamais affiché."
+            printf '%s\n' "$embedded_secret_files"
+            exit 1
+          fi
+          if ! git diff --quiet HEAD -- .; then
+            git diff --stat HEAD -- .
+            echo "::error title=Dépôt modifié::La compilation production ne doit modifier aucun fichier suivi."
+            exit 1
+          fi
+          echo "bundle_path=$bundle_path" >> "$GITHUB_OUTPUT"
+
+      - name: Utiliser Node.js verrouillé pour Google Play
+        if: ${{ inputs.upload_internal }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "18.19.0"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Installer le client Google Play
+        if: ${{ inputs.upload_internal }}
+        run: npm ci --prefix backend
+
+      - name: Téléverser vers le test interne Google Play
+        if: ${{ inputs.upload_internal }}
+        shell: bash
+        working-directory: backend
+        env:
+          AAB_PATH: ${{ github.workspace }}/${{ steps.bundle.outputs.bundle_path }}
+          GOOGLE_PLAY_UPLOAD_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_UPLOAD_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$GOOGLE_PLAY_UPLOAD_SERVICE_ACCOUNT_JSON" ]]; then
+            echo "::error title=Compte Play manquant::GOOGLE_PLAY_UPLOAD_SERVICE_ACCOUNT_JSON doit être configuré avec des droits minimaux de publication."
+            exit 1
+          fi
+          if [[ ! -s "$AAB_PATH" ]]; then
+            echo "::error title=AAB absent::Le bundle vérifié à téléverser est introuvable."
+            exit 1
+          fi
+          node --input-type=module <<'NODE'
+          import { createReadStream } from "node:fs";
+          import * as library from "@googleapis/androidpublisher";
+
+          const packageName = "ca.indexcanada.app";
+          const expectedVersionCode = "28";
+          let credentials;
+          try {
+            credentials = JSON.parse(process.env.GOOGLE_PLAY_UPLOAD_SERVICE_ACCOUNT_JSON);
+          } catch {
+            throw new Error("Le secret Google Play n'est pas un JSON valide.");
+          }
+          const auth = new library.auth.GoogleAuth({
+            credentials,
+            scopes: ["https://www.googleapis.com/auth/androidpublisher"],
+          });
+          const publisher = library.androidpublisher({ version: "v3", auth });
+          const inserted = await publisher.edits.insert({ packageName });
+          const editId = inserted.data.id;
+          if (!editId) throw new Error("Google Play n'a pas retourné d'identifiant d'édition.");
+          let committed = false;
+          try {
+            const uploaded = await publisher.edits.bundles.upload({
+              packageName,
+              editId,
+              media: {
+                mimeType: "application/octet-stream",
+                body: createReadStream(process.env.AAB_PATH),
+              },
+            });
+            const versionCode = String(uploaded.data.versionCode ?? "");
+            if (versionCode !== expectedVersionCode) {
+              throw new Error("Le versionCode téléversé ne correspond pas au build 28.");
+            }
+            await publisher.edits.tracks.update({
+              packageName,
+              editId,
+              track: "internal",
+              requestBody: {
+                releases: [{
+                  name: "1.1.0 (28)",
+                  versionCodes: [versionCode],
+                  status: "completed",
+                }],
+              },
+            });
+            await publisher.edits.commit({ packageName, editId });
+            committed = true;
+          } finally {
+            if (!committed) {
+              await publisher.edits.delete({ packageName, editId }).catch(() => {});
+            }
+          }
+          NODE
+
+      - name: Chiffrer et vérifier l'AAB production
+        id: encrypted_bundle
+        shell: bash
+        env:
+          ANDROID_ARTIFACT_ENCRYPTION_PASSWORD: ${{ secrets.ANDROID_ARTIFACT_ENCRYPTION_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          bundle_path="${{ steps.bundle.outputs.bundle_path }}"
+          encrypted_path="${bundle_path}.enc"
+          roundtrip_path="$RUNNER_TEMP/index-canada-android-production-roundtrip.aab"
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -in "$bundle_path" -out "$encrypted_path" -pass env:ANDROID_ARTIFACT_ENCRYPTION_PASSWORD
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$encrypted_path" -out "$roundtrip_path" -pass env:ANDROID_ARTIFACT_ENCRYPTION_PASSWORD
+          cmp -s "$bundle_path" "$roundtrip_path"
+          rm -f "$roundtrip_path"
+          echo "encrypted_path=$encrypted_path" >> "$GITHUB_OUTPUT"
+
+      - name: Publier uniquement l'AAB production chiffré
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: index-canada-android-production-${{ steps.app_version.outputs.version_name }}-${{ steps.app_version.outputs.build_number }}-${{ github.run_id }}-encrypted
+          path: ${{ steps.encrypted_bundle.outputs.encrypted_path }}
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Résumer la livraison
+        shell: bash
+        run: |
+          if [[ "${{ inputs.upload_internal }}" == "true" ]]; then
+            echo "AAB 1.1.0 (28) vérifié et téléversé vers le test interne Google Play." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "AAB 1.1.0 (28) vérifié et archivé; aucun téléversement Google Play demandé." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Nettoyer les éléments temporaires
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          rm -f android/key.properties "$RUNNER_TEMP/index-canada-upload.jks" "$RUNNER_TEMP/android-production-app-strings.txt" "$RUNNER_TEMP/index-canada-android-production-roundtrip.aab"
+          if [[ -n "${{ steps.bundle.outputs.bundle_path }}" ]]; then
+            rm -f "${{ steps.bundle.outputs.bundle_path }}" "${{ steps.bundle.outputs.bundle_path }}.enc"
+          fi
+          rm -rf "$RUNNER_TEMP/android-production-aab"

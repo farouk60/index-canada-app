@@ -381,6 +381,8 @@ class _PartnerLogo extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final logoPadding = size >= 80 ? 10.0 : 8.0;
+    final imageSize = size - (logoPadding * 2);
     final fallback = ColoredBox(
       color: colorScheme.surfaceContainerHighest,
       child: Icon(
@@ -391,14 +393,23 @@ class _PartnerLogo extends StatelessWidget {
     );
 
     return ExcludeSemantics(
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
+      child: Container(
+        key: ValueKey('partner_logo_canvas_${partner.id}'),
+        width: size,
+        height: size,
+        alignment: Alignment.center,
+        padding: EdgeInsets.all(logoPadding),
+        decoration: BoxDecoration(
+          color: colorScheme.surfaceContainerLowest,
+          border: Border.all(color: colorScheme.outlineVariant),
+          borderRadius: BorderRadius.circular(12),
+        ),
         child: SizedBox.square(
-          dimension: size,
+          dimension: imageSize,
           child: FastImageWidget(
             imageUrl: getValidImageUrl(partner.logo),
-            width: size,
-            height: size,
+            width: imageSize,
+            height: imageSize,
             fit: BoxFit.contain,
             placeholder: ColoredBox(
               color: colorScheme.surfaceContainerHighest,

@@ -30,7 +30,9 @@ jobs:
       - name: Installer Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          # Reproduit le plancher du runtime backend/Wix déclaré dans
+          # backend/package.json; un test sous Node 22 masquerait une rupture.
+          node-version: "18.19.0"
           cache: npm
           cache-dependency-path: backend/package-lock.json
 
@@ -38,10 +40,15 @@ jobs:
         run: npm ci --prefix backend
 
       - name: Vérifier la syntaxe des modules backend
-        run: >-
-          node --check backend/http-functions.js &&
-          node --check backend/security-core.js &&
+        run: |
+          node --check backend/http-functions.js
+          node --check backend/security-core.js
           node --check backend/directory-pagination.js
+          node --check backend/store-purchase-core.js
+          node --check backend/store-purchase-service.js
+          node --check backend/store-purchase-verifiers.js
+          node --check backend/store-notification-core.js
+          node --check backend/store-notification-service.js
 
       - name: Auditer les dépendances backend de production
         run: npm audit --prefix backend --omit=dev --audit-level=high
@@ -94,6 +101,27 @@ jobs:
             exit 1
           fi
 
+      - name: Bloquer le paiement Stripe natif dans les builds mobiles
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          violations="$({
+            git grep -nI -E \
+              'flutter_stripe|stripe_native_payment_service|StripeNativePaymentService|Stripe\.(instance|publishableKey|urlScheme)|STRIPE_(PUBLISHABLE_KEY|URL_SCHEME)|PaymentSheet|flutterstripe' \
+              -- \
+              lib \
+              pubspec.yaml \
+              android/app/src/main/AndroidManifest.xml \
+              ios/Runner/Info.plist
+          } || true)"
+
+          if [[ -n "$violations" ]]; then
+            echo "::error title=Paiement Stripe natif interdit::La livraison mobile doit utiliser les achats intégrés des stores."
+            echo "$violations"
+            exit 1
+          fi
+
       - name: Installer Java
         uses: actions/setup-java@v6
         with:
@@ -133,7 +161,6 @@ jobs:
           flutter build web --release
           --dart-define=APP_ENVIRONMENT=staging
           --dart-define=API_BASE_URL=https://ci.index-canada.example/_functions
-          --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_0000000000000000
 
       - name: Compiler le bundle Android release sans signature
         shell: bash
@@ -147,7 +174,6 @@ jobs:
           flutter build appbundle --release \
             --dart-define=APP_ENVIRONMENT=staging \
             --dart-define=API_BASE_URL=https://ci.index-canada.example/_functions \
-            --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_0000000000000000 \
             2>&1 | tee "$android_log"
           build_status="${PIPESTATUS[0]}"
           set -e
@@ -185,6 +211,21 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Installer CocoaPods 1.17.0
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! gem list --local --installed cocoapods --version 1.17.0; then
+            sudo gem install cocoapods --version 1.17.0 --no-document
+          fi
+
+          pod_version="$(pod --version)"
+          if [[ "$pod_version" != "1.17.0" ]]; then
+            echo "::error title=Version CocoaPods inattendue::CocoaPods 1.17.0 est requis, version détectée : $pod_version."
+            exit 1
+          fi
+
       - name: Vérifier Xcode 26 et le SDK iOS 26
         shell: bash
         run: |
@@ -220,30 +261,210 @@ jobs:
       - name: Installer les dépendances verrouillées
         run: flutter pub get --enforce-lockfile
 
-      - name: Synchroniser les dépendances CocoaPods
-        working-directory: ios
-        run: pod install
-
-      - name: Vérifier la cohérence du lockfile iOS
+      - name: Vérifier le manifeste des plugins iOS
         shell: bash
         run: |
           set -euo pipefail
 
-          if ! git diff --quiet -- ios/Podfile.lock; then
-            git diff -- ios/Podfile.lock
-            encoded="$(base64 < ios/Podfile.lock | tr -d '\r\n')"
-            chunk_size=3000
-            chunk_count=$(( (${#encoded} + chunk_size - 1) / chunk_size ))
-            for ((chunk_index = 0; chunk_index < chunk_count; chunk_index++)); do
-              chunk="${encoded:chunk_index*chunk_size:chunk_size}"
-              echo "::error title=Podfile.lock base64 $((chunk_index + 1))/$chunk_count::$chunk"
-            done
+          manifest=.flutter-plugins-dependencies
+          if [[ ! -s "$manifest" ]]; then
+            echo "::error title=Manifeste Flutter absent::$manifest n'a pas été généré."
             exit 1
           fi
 
-      - name: Compiler la cible iOS sans signature
+          if ! jq -e '.swift_package_manager_enabled.ios == true' "$manifest" >/dev/null; then
+            echo "::error title=SwiftPM iOS désactivé::Flutter 3.47.4 doit générer swift_package_manager_enabled.ios=true."
+            jq '{version, swift_package_manager_enabled}' "$manifest"
+            exit 1
+          fi
+
+          if ! jq -e '.plugins.ios | any(.name == "in_app_purchase_storekit" and .native_build == true)' "$manifest" >/dev/null; then
+            echo "::error title=Plugin StoreKit absent::in_app_purchase_storekit doit être un plugin iOS natif."
+            jq '[.plugins.ios[] | {name, native_build}]' "$manifest"
+            exit 1
+          fi
+
+      - name: Déterminer le mode de synchronisation iOS
+        id: ios_dependency_mode
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          project_file=ios/Runner.xcodeproj/project.pbxproj
+          scheme_file=ios/Runner.xcodeproj/xcshareddata/xcschemes/Runner.xcscheme
+          project_migrated=false
+          scheme_migrated=false
+
+          if grep -Fq 'FlutterGeneratedPluginSwiftPackage' "$project_file"; then
+            project_migrated=true
+          fi
+          if grep -Fq 'xcode_backend.sh' "$scheme_file"; then
+            scheme_migrated=true
+          fi
+
+          if [[ "$project_migrated" == "true" && "$scheme_migrated" == "true" ]]; then
+            mode=verification
+          elif [[ "$project_migrated" == "false" && "$scheme_migrated" == "false" ]]; then
+            mode=collection
+          else
+            echo "::error title=Migration SwiftPM partielle::Le projet Xcode et le schéma Runner doivent être migrés ensemble."
+            exit 1
+          fi
+
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Mode des dépendances iOS : $mode"
+
+      - name: Synchroniser les dépendances CocoaPods
+        shell: bash
+        working-directory: ios
+        env:
+          IOS_DEPENDENCY_MODE: ${{ steps.ios_dependency_mode.outputs.mode }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$IOS_DEPENDENCY_MODE" == "verification" ]]; then
+            pod install --deployment
+          else
+            pod install
+          fi
+
+      - name: Préparer le projet iOS avec SwiftPM
         run: >-
-          flutter build ios --release --no-codesign
+          flutter build ios --release --no-codesign --config-only --no-pub
           --dart-define=APP_ENVIRONMENT=staging
           --dart-define=API_BASE_URL=https://ci.index-canada.example/_functions
-          --dart-define=STRIPE_PUBLISHABLE_KEY=pk_test_0000000000000000
+
+      - name: Contrôler ou collecter la migration SwiftPM
+        id: ios_migration
+        shell: bash
+        env:
+          IOS_DEPENDENCY_MODE: ${{ steps.ios_dependency_mode.outputs.mode }}
+        run: |
+          set -euo pipefail
+
+          allowed_ios_files=(
+            ios/Flutter/AppFrameworkInfo.plist
+            ios/Podfile.lock
+            ios/Runner.xcodeproj/project.pbxproj
+            ios/Runner.xcodeproj/xcshareddata/xcschemes/Runner.xcscheme
+          )
+          changed_ios_files=()
+          changed_ios_file_count=0
+          while IFS= read -r changed_file; do
+            if [[ -n "$changed_file" ]]; then
+              changed_ios_files+=("$changed_file")
+              changed_ios_file_count=$((changed_ios_file_count + 1))
+            fi
+          done < <(git diff --name-only HEAD -- ios)
+
+          unexpected_ios_files=()
+          unexpected_ios_file_count=0
+          if (( changed_ios_file_count > 0 )); then
+            for changed_file in "${changed_ios_files[@]}"; do
+              allowed=false
+              for allowed_file in "${allowed_ios_files[@]}"; do
+                if [[ "$changed_file" == "$allowed_file" ]]; then
+                  allowed=true
+                  break
+                fi
+              done
+              if [[ "$allowed" != "true" ]]; then
+                unexpected_ios_files+=("$changed_file")
+                unexpected_ios_file_count=$((unexpected_ios_file_count + 1))
+              fi
+            done
+          fi
+
+          if (( unexpected_ios_file_count > 0 )); then
+            printf '::error title=Fichiers iOS inattendus::La migration a modifié des fichiers suivis hors liste : %s\n' "${unexpected_ios_files[*]}"
+            git diff --stat HEAD -- ios
+            exit 1
+          fi
+
+          if [[ "$IOS_DEPENDENCY_MODE" == "verification" ]]; then
+            if (( changed_ios_file_count > 0 )); then
+              git diff --check HEAD -- "${allowed_ios_files[@]}"
+              git diff HEAD -- "${allowed_ios_files[@]}"
+              echo "::error title=Dépendances iOS non reproductibles::pod install --deployment et la préparation SwiftPM doivent laisser le projet intact."
+              exit 1
+            fi
+
+            echo "migration_required=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          project_file=ios/Runner.xcodeproj/project.pbxproj
+          scheme_file=ios/Runner.xcodeproj/xcshareddata/xcschemes/Runner.xcscheme
+          if ! grep -Fq 'FlutterGeneratedPluginSwiftPackage' "$project_file"; then
+            echo "::error title=Projet SwiftPM incomplet::FlutterGeneratedPluginSwiftPackage est absent du projet Xcode généré."
+            exit 1
+          fi
+          if ! grep -Fq 'xcode_backend.sh' "$scheme_file"; then
+            echo "::error title=Schéma SwiftPM incomplet::Le script de préparation Flutter est absent du schéma Runner généré."
+            exit 1
+          fi
+
+          required_migration_files=("$project_file" "$scheme_file")
+          missing_migration_files=()
+          missing_migration_file_count=0
+          for required_file in "${required_migration_files[@]}"; do
+            found=false
+            if (( changed_ios_file_count > 0 )); then
+              for changed_file in "${changed_ios_files[@]}"; do
+                if [[ "$changed_file" == "$required_file" ]]; then
+                  found=true
+                  break
+                fi
+              done
+            fi
+            if [[ "$found" != "true" ]]; then
+              missing_migration_files+=("$required_file")
+              missing_migration_file_count=$((missing_migration_file_count + 1))
+            fi
+          done
+
+          if (( missing_migration_file_count > 0 )); then
+            printf "::error title=Patch SwiftPM incomplet::Ces fichiers de migration obligatoires n'ont pas été modifiés : %s\n" "${missing_migration_files[*]}"
+            git diff --stat HEAD -- "${allowed_ios_files[@]}"
+            exit 1
+          fi
+
+          patch_path="$RUNNER_TEMP/index-canada-ios-swiftpm-migration.patch"
+          git diff --check HEAD -- "${allowed_ios_files[@]}"
+          git diff --binary HEAD -- "${allowed_ios_files[@]}" > "$patch_path"
+          test -s "$patch_path"
+          echo "migration_required=true" >> "$GITHUB_OUTPUT"
+          echo "patch_path=$patch_path" >> "$GITHUB_OUTPUT"
+
+      - name: Publier le patch de migration SwiftPM
+        if: steps.ios_migration.outputs.migration_required == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: index-canada-ios-swiftpm-migration-${{ github.sha }}
+          path: ${{ steps.ios_migration.outputs.patch_path }}
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Arrêter jusqu'à l'intégration de la migration SwiftPM
+        if: steps.ios_migration.outputs.migration_required == 'true'
+        shell: bash
+        run: |
+          echo "::error title=Migration SwiftPM à intégrer::Téléchargez l'artefact de ce run, appliquez son patch sur la même révision puis versionnez uniquement les fichiers iOS autorisés."
+          exit 1
+
+      - name: Compiler la cible iOS sans signature
+        run: >-
+          flutter build ios --release --no-codesign --no-pub
+          --dart-define=APP_ENVIRONMENT=staging
+          --dart-define=API_BASE_URL=https://ci.index-canada.example/_functions
+
+      - name: Vérifier la propreté iOS après compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! git diff --quiet HEAD -- ios; then
+            git diff --stat HEAD -- ios
+            echo "::error title=Projet iOS modifié::La compilation de vérification doit laisser tous les fichiers iOS suivis intacts."
+            exit 1
+          fi

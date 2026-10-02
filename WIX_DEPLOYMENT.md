@@ -1,4 +1,4 @@
-# Déploiement Wix et Stripe
+# Déploiement Wix, StoreKit et Google Play Billing
 
 Ce guide décrit le déploiement du backend d'Index Canada. Il ne remplace pas
 une sauvegarde, une revue de permissions ni une validation de préproduction.
@@ -8,10 +8,11 @@ une sauvegarde, une revue de permissions ni une validation de préproduction.
 Utiliser au minimum un environnement de préproduction isolé de la production :
 
 - collections et médias de test distincts;
-- clés Stripe de test uniquement;
-- secret de webhook propre à l'endpoint de préproduction;
+- comptes sandbox/test Apple et Google séparés des achats réels;
+- clés Stripe de test uniquement pour le parcours Web/legacy;
+- secrets de notifications propres à la préproduction;
 - `CHECKOUT_SIGNING_SECRET` différent de la production;
-- `API_BASE_URL` et clé Stripe publiable injectés au build correspondant.
+- `API_BASE_URL` injectée au build correspondant; aucun secret de paiement n'est injecté dans l'application mobile.
 
 Ne copiez pas de données personnelles de production en préproduction.
 
@@ -26,6 +27,8 @@ directes par les visiteurs et membres :
 - `Partenaires`;
 - `OffresPartenaire`;
 - `PaymentCheckouts`;
+- `Entitlements`;
+- `PaymentEvents`;
 - `EngagementEvents`;
 - `ApiRateLimits`.
 
@@ -39,7 +42,19 @@ techniques suivants sont essentiels :
   `isApproved` et dates;
 - `PaymentCheckouts` : `_id`, version, statut, forfait, montant/devise,
   inscription normalisée, `images` (URL Wix uniquement), `imageHashes`,
-  empreinte, identifiants Stripe/professionnel, tentatives et dates;
+  empreinte, fournisseur, produit store, `accountReferenceHash`, identifiants
+  Stripe/professionnel legacy, tentatives et dates. Ne jamais stocker un JWS
+  Apple, un jeton Google ou `account_token` en clair;
+- `Entitlements` : droit courant par professionnel/forfait, fournisseur,
+  produit, état, début, expiration, renouvellement automatique, révocation et
+  empreintes de transaction nécessaires à l'idempotence. Pour Google, créer
+  les champs texte scalaires `rootCheckoutId`, `currentTransactionHash`,
+  `pendingPlanId`, `pendingProductId` et `pendingEffectiveAt`;
+  `rootCheckoutId` est immuable et permet de réparer la fiche déterministe même
+  si un remplacement arrive avant sa première projection. Ne jamais créer un champ contenant
+  le `purchaseToken`, le `linkedPurchaseToken` ou un historique de jetons bruts;
+- `PaymentEvents` : journal append-only des événements normalisés, sans preuve
+  d'achat brute ni donnée de carte;
 - `ApiRateLimits` : `_id`, `scope`, `keyHash`, `count`, `limit`, début de
   fenêtre et `expiresAt` comme texte ISO UTC canonique indexé;
 - `EngagementEvents` : `_id`, `version`, `type`, `professionalId`,
@@ -89,29 +104,49 @@ orphelins hors du chemin utilisateur.
 
 Ajouter dans le gestionnaire de secrets, sans les placer dans le code :
 
-| Secret | Valeur attendue |
-|---|---|
-| `STRIPE_SECRET_KEY` | Clé secrète Stripe de l'environnement |
-| `STRIPE_WEBHOOK_SECRET` | Secret `whsec_...` de l'endpoint configuré |
-| `CHECKOUT_SIGNING_SECRET` | Valeur aléatoire d'au moins 32 octets, propre à l'environnement |
+| Secret                              | Valeur attendue                                                                                        |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `STRIPE_SECRET_KEY`                 | Clé secrète Stripe de l'environnement                                                                  |
+| `STRIPE_WEBHOOK_SECRET`             | Secret `whsec_...` de l'endpoint configuré                                                             |
+| `CHECKOUT_SIGNING_SECRET`           | Valeur aléatoire d'au moins 32 octets, propre à l'environnement                                        |
+| `CHECKOUT_SIGNING_SECRET_PREVIOUS`  | Tableau JSON de 0 à 8 anciens secrets; configurer `[]` avant le premier déploiement                     |
+| `APPLE_APP_ID`                      | Identifiant numérique de l'application dans App Store Connect                                          |
+| `APPLE_ROOT_CERTIFICATE_G1_BASE64`  | Certificat Apple Inc. Root DER encodé en Base64, téléchargé depuis Apple                               |
+| `APPLE_ROOT_CERTIFICATE_G2_BASE64`  | Certificat Apple Root CA - G2 DER encodé en Base64, téléchargé depuis Apple                            |
+| `APPLE_ROOT_CERTIFICATE_G3_BASE64`  | Certificat Apple Root CA - G3 DER encodé en Base64, téléchargé depuis Apple                            |
+| `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`  | Objet JSON brut complet de la clé du compte **Play verifier**, limité à `ca.indexcanada.app`; ne pas l'encoder en Base64 |
+| `GOOGLE_RTDN_AUDIENCE`              | `https://immigrantindex.wixsite.com/website-1/_functions/googlePlayRtdn`                                |
+| `GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL` | Adresse du compte **Push OIDC** sans clé, distinct du compte Play verifier                              |
+| `GOOGLE_RTDN_SUBSCRIPTION`          | `projects/<PROJECT_ID>/subscriptions/index-canada-rtdn-preprod-push`                                   |
+| `STORE_ALLOW_SANDBOX`               | `true` uniquement en préproduction; absent ou `false` en production afin de refuser tout droit sandbox |
 
-Après rotation, redéployer ou redémarrer le backend afin que les valeurs
-mises en cache en mémoire ne restent pas actives dans une instance chaude.
+Pour faire tourner `CHECKOUT_SIGNING_SECRET` sans casser les restaurations ni
+les notifications des abonnements existants :
+
+1. ajouter d'abord sa valeur actuelle dans le tableau
+   `CHECKOUT_SIGNING_SECRET_PREVIOUS`;
+2. enregistrer ensuite la nouvelle valeur de `CHECKOUT_SIGNING_SECRET`;
+3. redéployer ou redémarrer le backend afin de vider le cache en mémoire;
+4. conserver chaque ancienne valeur tant que ses abonnements ou checkouts
+   peuvent encore produire une restauration ou une notification.
+
+Ne jamais dépasser huit anciennes valeurs. Une liste absente, malformée,
+dupliquée ou contenant un secret trop court fait échouer le backend de manière
+fermée; elle ne déclenche aucun repli silencieux.
 
 Si l'ancienne clé Wix potentiellement présente dans `.env.production` était
 réelle, la révoquer avant ce déploiement. Nettoyer un fichier local ne suffit
 pas; analyser également l'historique Git.
 
-## 5. Installer Stripe et déployer le backend
+## 5. Installer les SDK serveur et déployer le backend
 
-Le fichier `backend/http-functions.js` importe le SDK serveur `stripe`. Avant
-de publier le site Wix :
+Avant de publier le site Wix :
 
 1. ouvrir **Code > Packages & Apps > npm** dans Wix;
-2. rechercher `stripe` et installer exactement la version **`22.6.2`**;
-3. vérifier que la version affichée par Wix correspond à celle fixée dans
+2. installer exactement `stripe@22.6.2`, `@apple/app-store-server-library@3.1.0`, `@googleapis/androidpublisher@38.0.0` et `google-auth-library@10.5.0` (versions verrouillées pour le runtime Node 18 de ce déploiement);
+3. vérifier que les versions affichées par Wix correspondent à celles fixées dans
    `backend/package.json` et `backend/package-lock.json`;
-4. valider l'import et un paiement de test dans l'environnement de
+4. valider les imports et un achat sandbox de chaque store dans l'environnement de
    préproduction avant toute promotion.
 
 `npm ci --prefix backend` installe la même version pour les contrôles locaux et
@@ -121,17 +156,19 @@ version, ou si son environnement Node refuse le paquet, le déploiement reste
 **NO-GO** jusqu'à une version explicitement choisie, verrouillée, testée et
 reportée dans les deux manifestes et dans ce guide.
 
-La version `22.6.2` a été vérifiée dans le
-[registre npm officiel](https://registry.npmjs.org/stripe/latest) le
-18 septembre 2026. Le SDK requiert Node.js 18 ou supérieur et ne contient pas
-de dépendance native; sa compatibilité avec l'environnement Wix réellement
-utilisé doit néanmoins être prouvée en préproduction. Wix documente également
+La compatibilité Node et Wix des quatre SDK doit être prouvée en préproduction;
+un verrou npm réussi localement ne suffit pas. Wix documente également
 les [contraintes de compatibilité des paquets npm](https://dev.wix.com/docs/develop-websites/articles/coding-with-velo/packages/about-npm-packages).
 
 Déployer ensemble :
 
 - `backend/http-functions.js`;
 - `backend/security-core.js`;
+- `backend/store-purchase-core.js`;
+- `backend/store-purchase-service.js`;
+- `backend/store-purchase-verifiers.js`;
+- `backend/store-notification-core.js`;
+- `backend/store-notification-service.js`;
 - `backend/directory-pagination.js`;
 - `backend/engagement-report.js`;
 - `backend/engagement-report.web.js`;
@@ -149,21 +186,26 @@ qu'après publication du site.
 
 Les routes attendues sont :
 
-| Méthode | Route | Usage |
-|---|---|---|
-| `GET` | `/_functions/data` | Répertoire agrégé compatible v1 |
-| `GET` | `/_functions/searchProfessionals` | Recherche bornée |
-| `GET` | `/_functions/categories` | Catégories v2, `limit` et `cursor` |
-| `GET` | `/_functions/professionals` | Professionnels v2; `category`, `search`, `city`, `featured`, `ids`, `limit`, `cursor` |
-| `GET` | `/_functions/reviews` | Avis approuvés v2; `professionalId` obligatoire, `limit`, `cursor` |
-| `GET` | `/_functions/partners` | Partenaires actifs et officiels v2, `limit`, `cursor` |
-| `GET` | `/_functions/offers` | Offres actives v2, `limit`, `cursor` |
-| `GET` | `/_functions/paymentPlans` | Catalogue public projeté |
-| `POST` | `/_functions/review` | Avis créé en attente de modération |
-| `POST` | `/_functions/engagementEvent` | Interaction ROI anonyme et idempotente |
-| `POST` | `/_functions/createPaymentIntent` | Checkout idempotent et upload des médias |
-| `POST` | `/_functions/confirmPayment` | Confirmation gratuite signée ou Stripe |
-| `POST` | `/_functions/stripeWebhook` | Finalisation Stripe signée |
+| Méthode | Route                                      | Usage                                                                                                                 |
+| ------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `GET`   | `/_functions/data`                         | Répertoire agrégé compatible v1                                                                                       |
+| `GET`   | `/_functions/searchProfessionals`          | Recherche bornée                                                                                                      |
+| `GET`   | `/_functions/categories`                   | Catégories v2, `limit` et `cursor`                                                                                    |
+| `GET`   | `/_functions/professionals`                | Professionnels v2; `category`, `search`, `city`, `featured`, `ids`, `limit`, `cursor`                                 |
+| `GET`   | `/_functions/reviews`                      | Avis approuvés v2; `professionalId` obligatoire, `limit`, `cursor`                                                    |
+| `GET`   | `/_functions/partners`                     | Partenaires actifs et officiels v2, `limit`, `cursor`                                                                 |
+| `GET`   | `/_functions/offers`                       | Offres actives v2, `limit`, `cursor`                                                                                  |
+| `GET`   | `/_functions/paymentPlans`                 | Catalogue public projeté                                                                                              |
+| `POST`  | `/_functions/review`                       | Avis créé en attente de modération                                                                                    |
+| `POST`  | `/_functions/engagementEvent`              | Interaction ROI anonyme et idempotente                                                                                |
+| `POST`  | `/_functions/createPaymentIntent`          | Checkout idempotent et upload des médias                                                                              |
+| `POST`  | `/_functions/confirmPayment`               | Confirmation gratuite signée ou Stripe                                                                                |
+| `POST`  | `/_functions/stripeWebhook`                | Finalisation Stripe signée                                                                                            |
+| `POST`  | `/_functions/createStoreCheckout`          | Prépare un checkout mobile et retourne le produit attendu et un `account_token` dérivé                                |
+| `POST`  | `/_functions/confirmStorePurchase`         | Vérifie la preuve auprès d'Apple/Google avant de créer ou prolonger un droit                                          |
+| `POST`  | `/_functions/restoreStorePurchase`         | Vérifie une preuve restaurée et rattache le droit au checkout d'origine sans accepter d'identifiant client arbitraire |
+| `POST`  | `/_functions/appStoreServerNotificationV2` | Reçoit et vérifie les notifications signées App Store Server Notifications V2                                         |
+| `POST`  | `/_functions/googlePlayRtdn`               | Reçoit un push Pub/Sub authentifié, puis relit l'abonnement auprès de Google Play                                     |
 
 Les routes `POST` doivent répondre `no-store`; les routes de lecture peuvent
 être mises en cache selon les en-têtes du code. Restreindre les origines CORS
@@ -179,15 +221,204 @@ uniquement des agrégats. Elle décrit des interactions dans l'application, pas
 des visiteurs uniques ni des ventes attribuées. Elle refuse une période qui
 dépasse 10 000 événements et exige alors une période plus courte.
 
-## 6. Configurer Stripe
+## 6. Configurer Apple et Google
+
+1. App Store Connect : créer un seul groupe contenant les deux abonnements
+   annuels `ca.indexcanada.app.premium.annual` et
+   `ca.indexcanada.app.professional.annual`.
+2. Configurer App Store Server Notifications V2 vers la route serveur dédiée
+   `https://<domaine-wix>/_functions/appStoreServerNotificationV2` avant la
+   production et tester les environnements Sandbox et Production.
+3. Google Play : importer d'abord l'AAB Billing signé, créer les deux mêmes ID
+   de produits avec une offre de base annuelle, puis configurer Real-time
+   Developer Notifications vers
+   `https://<domaine-wix>/_functions/googlePlayRtdn`.
+4. Restreindre le compte de service Google au package et aux permissions
+   strictement nécessaires à la lecture/gestion des commandes et abonnements.
+5. Rejouer les notifications et confirmations : le même identifiant de
+   transaction ne doit produire qu'un seul événement logique et un seul droit.
+6. Tester explicitement expiration, remboursement/révocation, récupération de
+   facturation et changement de formule. Le profil reste `pending_review` et
+   `isActive=false` tant que la modération Wix ne l'approuve pas.
+7. Appliquer la politique commerciale Google côté serveur :
+   `Premium → Professional` accepte uniquement
+   `ReplacementMode.WITH_TIME_PRORATION`; `Professional → Premium` accepte
+   uniquement la structure officielle différée à deux `lineItems` et
+   `ReplacementMode.DEFERRED`. Tout autre sens, mode ou structure échoue
+   fermé. Dans le cas différé, le backend acquitte le nouveau jeton mais
+   conserve `planId=professional` et `pendingPlanId=premium` jusqu'au premier
+   renouvellement effectif. `replacementMode` ne doit jamais être persisté.
+8. Tester une chaîne de remplacements avec des jetons tous différents. Le même
+   document `Entitlements`, le même `professionalId` et une seule fiche doivent
+   subsister; une expiration tardive d'un ancien jeton doit produire un
+   événement `ignored` avec l'issue `superseded_purchase_token`.
+9. Tester le réabonnement Google au même produit après expiration/révocation.
+   Google peut fournir un nouveau `purchaseToken` et un
+   `linkedPurchaseToken`, sans `itemReplacement`. Ce parcours n'est accepté que
+   si le lien haché retrouve exactement le droit expiré/révoqué (ou dont
+   `expiresAt` est déjà passé), si le produit est inchangé et si le compte
+   obscurci correspond au nouveau checkout vérifié. Un droit encore actif, un
+   autre produit, un lien absent ou ambigu reste refusé.
+10. Injecter une panne après l'écriture du droit, avant la projection
+    `Professionnel`, puis rejouer confirmation et RTDN. Le même identifiant de
+    droit et la même fiche doivent être réparés; lors d'un remplacement, le
+    checkout prédécesseur doit déjà prouver exactement le même
+    `entitlementId` et `professionalId` avant toute migration.
+
+## 6.1 Google RTDN en préproduction
+
+Le package Android autorisé est exclusivement `ca.indexcanada.app`. Le point de
+terminaison et l'audience OIDC doivent être exactement, sans barre finale :
+
+```text
+https://immigrantindex.wixsite.com/website-1/_functions/googlePlayRtdn
+```
+
+Google recommande de relire l'achat avec la Google Play Developer API après une
+RTDN : la notification indique un changement, mais ne contient pas à elle seule
+l'état complet de l'abonnement. Voir la documentation officielle sur la
+[préparation de Google Play Billing](https://developer.android.com/google/play/billing/getting-ready)
+et la [référence RTDN](https://developer.android.com/google/play/billing/rtdn-reference).
+
+#### Deux comptes de service séparés
+
+Ne pas réutiliser la même identité pour valider les achats et signer les pushes :
+
+1. **Play verifier** — par exemple
+   `indexca-play-verifier-preprod@<PROJECT_ID>.iam.gserviceaccount.com`.
+   Activer la Google Play Android Developer API, créer une clé JSON pour ce
+   compte, puis l'inviter dans **Google Play Console > Utilisateurs et
+   autorisations** avec un accès limité à l'application `ca.indexcanada.app` et
+   seulement les permissions **View financial data, orders, and cancellation
+   survey responses** et **Manage orders and subscriptions**. Ces deux
+   permissions sont celles prescrites par le
+   [guide officiel Google Play Developer API](https://developers.google.com/android-publisher/getting_started).
+2. **Push OIDC** — par exemple
+   `index-canada-rtdn-push-preprod@<PROJECT_ID>.iam.gserviceaccount.com`.
+   Ce compte sert uniquement de sujet `email` du jeton OIDC Pub/Sub. Ne créer,
+   télécharger ni stocker aucune clé JSON pour lui.
+
+La clé privée du compte Play verifier va uniquement dans le gestionnaire de
+secrets Wix. Ne jamais la placer dans Git, dans un fichier `.env`, dans un
+binaire mobile, dans un ticket ou dans les journaux.
+
+#### Topic et abonnement push
+
+La partie Google Cloud de cette configuration peut être provisionnée puis
+relue de façon idempotente avec le script préproduction ci-dessous. Il exige
+une session `gcloud` déjà authentifiée, cible uniquement le projet figé
+`index-immigrant-index-2025` et ne crée ni n'exporte aucune clé privée :
+
+```powershell
+pwsh -File .\tool\provision_google_rtdn_preprod.ps1 `
+  -GcloudPath 'C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd'
+
+# Relecture stricte ultérieure, sans mutation :
+pwsh -File .\tool\provision_google_rtdn_preprod.ps1 `
+  -GcloudPath 'C:\Program Files\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd' `
+  -ValidateOnly
+```
+
+Le script couvre les étapes Google Cloud 1 à 5 ci-dessous : API, deux comptes de
+service, topic, IAM et abonnement push authentifié. Il ne configure ni Google
+Play Console ni les secrets Wix. L'invitation du compte **Play verifier** dans
+Play Console, la sélection du topic RTDN et le transfert protégé de sa clé JSON
+vers Wix restent les étapes manuelles séparées décrites ci-dessous.
+
+Le composant `gcloud beta` doit être installé, car il crée explicitement
+l'identité de service Pub/Sub après l'activation de l'API. Le principal de la
+session `gcloud` doit aussi posséder `iam.serviceAccounts.actAs` sur le seul
+compte **Push OIDC**. Le script ne s'accorde jamais cette permission : s'il lui
+manque, la création ou la mise à jour de l'abonnement échoue sans élargir IAM.
+
+1. Dans le projet Google Cloud de préproduction, activer Pub/Sub et créer le
+   topic recommandé `index-canada-rtdn-preprod`, dont le nom complet est
+   `projects/<PROJECT_ID>/topics/index-canada-rtdn-preprod`.
+2. Sur ce topic, accorder le rôle **Pub/Sub Publisher** à l'identité système
+   Google Play
+   `google-play-developer-notifications@system.gserviceaccount.com`, comme
+   l'exige la [procédure RTDN officielle](https://developer.android.com/google/play/billing/getting-ready#configure-rtdn).
+3. Créer l'abonnement push `index-canada-rtdn-preprod-push` vers l'URL exacte
+   indiquée ci-dessus. Activer l'authentification, sélectionner le compte
+   **Push OIDC** et utiliser la même URL comme audience.
+4. Conserver l'enveloppe Pub/Sub : **ne pas activer le déballage du contenu**.
+   Le backend vérifie le nom complet de l'abonnement, puis lit
+   `message.data` encodé en Base64 dans l'enveloppe standard.
+5. Autoriser le service agent Pub/Sub
+   `service-<PROJECT_NUMBER>@gcp-sa-pubsub.iam.gserviceaccount.com` à créer les
+   jetons OIDC pour le compte Push OIDC avec
+   `roles/iam.serviceAccountTokenCreator`. Restreindre de préférence ce rôle au
+   compte Push OIDC. La procédure et les contrôles `aud`, `email` et
+   `email_verified` sont décrits dans
+   [Authentifier les abonnements push](https://cloud.google.com/pubsub/docs/authenticate-push-subscriptions).
+6. Dans Google Play Console, ouvrir l'application `ca.indexcanada.app`, puis
+   **Monétiser > Configuration de la monétisation > Notifications développeur
+   en temps réel**. Activer les notifications et renseigner le nom complet du
+   topic.
+
+   **Gate de sécurité :** ce topic RTDN est configuré au niveau de l'application
+   Android, pas d'une piste de diffusion. Avant de le remplacer, vérifier qu'un
+   topic de production n'est pas déjà actif pour `ca.indexcanada.app`. S'il
+   existe, ne pas le remplacer par le topic préproduction : conserver le flux
+   production et utiliser un package de préproduction distinct ou une
+   architecture Pub/Sub qui distribue explicitement vers les deux environnements.
+
+#### Valeurs exactes des quatre secrets Wix
+
+Enregistrer les valeurs suivantes dans le gestionnaire de secrets Wix de la
+préproduction :
+
+```text
+GOOGLE_PLAY_SERVICE_ACCOUNT_JSON={"type":"service_account",...,"client_email":"indexca-play-verifier-preprod@<PROJECT_ID>.iam.gserviceaccount.com","private_key":"<CLÉ_PRIVÉE_PEM_FOURNIE_PAR_GOOGLE>",...}
+GOOGLE_RTDN_AUDIENCE=https://immigrantindex.wixsite.com/website-1/_functions/googlePlayRtdn
+GOOGLE_RTDN_SERVICE_ACCOUNT_EMAIL=index-canada-rtdn-push-preprod@<PROJECT_ID>.iam.gserviceaccount.com
+GOOGLE_RTDN_SUBSCRIPTION=projects/<PROJECT_ID>/subscriptions/index-canada-rtdn-preprod-push
+```
+
+`GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` est l'objet JSON original complet exporté
+par Google, sur une ou plusieurs lignes, avec les en-têtes PEM et les séquences
+`\n` de `private_key` laissés exactement tels que Google les fournit; ce n'est
+ni un chemin de fichier ni une valeur Base64. Les deux adresses de compte de
+service doivent être différentes.
+
+#### Validation avant promotion
+
+1. Envoyer **Send test message** dans Play Console et confirmer une réponse 2xx.
+   Cela valide uniquement le chemin Play → Pub/Sub → Wix, l'audience OIDC,
+   l'adresse du compte Push OIDC et l'enveloppe.
+2. Effectuer ensuite un véritable achat sandbox de l'abonnement Premium ou
+   Professional avec un compte test. Vérifier la confirmation serveur, le
+   document `Entitlements`, puis au moins une véritable
+   `subscriptionNotification` de renouvellement, d'expiration ou de révocation.
+3. Ne pas conclure sur la base du seul `testNotification` : il ne contient pas
+   de jeton d'achat et ne prouve ni la relecture Play Developer API ni la mise à
+   jour d'un droit.
+4. Avec le correctif backend en cours, après authentification, les familles RTDN
+   non liées aux abonnements (`oneTimeProductNotification`,
+   `voidedPurchaseNotification` et autres familles non prises en charge) sont
+   acquittées avec HTTP 200 et marquées ignorées. Elles ne doivent jamais créer,
+   prolonger, expirer ou révoquer un droit d'abonnement. La révocation d'un
+   droit reste fondée sur une `subscriptionNotification` vérifiée puis relue
+   auprès de Google Play.
+5. Une `SUBSCRIPTION_PENDING_PURCHASE_CANCELED` (type 20) est relue auprès de
+   Google puis acquittée sans créer, modifier ni révoquer un droit : un achat
+   initial resté en attente n'a jamais accordé d'accès, tandis qu'un remplacement
+   en attente annulé ne doit pas expirer l'abonnement existant.
+6. Le catalogue actuel ne propose ni bundle ni add-on Google Play. Le backend
+   échoue volontairement fermé si plusieurs `lineItems` actives rendent le
+   produit effectif ambigu; ajouter un contrat et des tests dédiés avant toute
+   introduction de bundle ou d'add-on.
+
+## 6.2 Conserver Stripe pour le Web/legacy
 
 1. Créer un endpoint vers
    `https://<domaine-wix>/_functions/stripeWebhook`.
 2. Activer au minimum `payment_intent.succeeded`.
 3. Copier le secret de signature de cet endpoint dans
    `STRIPE_WEBHOOK_SECRET`.
-4. Vérifier que `STRIPE_SECRET_KEY` et la clé publiable du binaire appartiennent
-   au même mode (test ou production) et au même compte.
+4. Vérifier que `STRIPE_SECRET_KEY` et la clé publiée par le client Web legacy
+   appartiennent au même mode et au même compte. Aucun binaire Android/iOS ne
+   reçoit cette clé.
 5. Effectuer un paiement de test et confirmer une réponse HTTP 2xx du webhook.
 6. Rejouer le même événement : aucun second profil ni second paiement ne doit
    apparaître.
@@ -236,15 +467,16 @@ progresser le curseur sans boucle ni doublon.
 Avant la préproduction, vérifier ou créer les index Wix correspondant aux
 prédicats réellement utilisés :
 
-| Collection | Index/prédicats à valider |
-|---|---|
-| `Professionnel` | `isActive`; `isActive + sponsor`; catégorie canonique avec `isActive`; ordre stable par `_id` |
-| `Reviews` | approbation (`isApproved` ou `moderationStatus`) + `professionalId`; ordre stable par `_id` |
-| `Partenaires` | `isActive + isOfficial`; ordre stable par `_id` |
-| `OffresPartenaire` | `isActive`; ordre stable par `_id` |
-| `SousCategorie` | ordre stable par `_id` |
+| Collection         | Index/prédicats à valider                                                                      |
+| ------------------ | ---------------------------------------------------------------------------------------------- |
+| `Professionnel`    | `isActive`; `isActive + sponsor`; catégorie canonique avec `isActive`; ordre stable par `_id`  |
+| `Reviews`          | approbation (`isApproved` ou `moderationStatus`) + `professionalId`; ordre stable par `_id`    |
+| `Partenaires`      | `isActive + isOfficial`; ordre stable par `_id`                                                |
+| `OffresPartenaire` | `isActive`; ordre stable par `_id`                                                             |
+| `SousCategorie`    | ordre stable par `_id`                                                                         |
 | `EngagementEvents` | `professionalId + _createdDate`; `_createdDate` pour la purge; `_id` unique pour l'idempotence |
-| `ApiRateLimits` | `expiresAt` (texte ISO UTC canonique) pour la purge quotidienne; `_id` unique |
+| `ApiRateLimits`    | `expiresAt` (texte ISO UTC canonique) pour la purge quotidienne; `_id` unique                  |
+| `Entitlements`     | `currentTransactionHash` (texte scalaire); `rootCheckoutId`; `checkoutId`; `_id` unique       |
 
 Tant que les anciens champs `sousCategorie`, `sousCatgorie`,
 `professionnelId` ou `image` contiennent encore des associations, ajouter les
@@ -256,13 +488,13 @@ Le client doit parcourir les curseurs v2 jusqu'à `has_more=false`. La route v1
 `/data` parcourt encore `hasNext()`/`next()` pour sa compatibilité et refuse un
 jeu qui dépasse :
 
-| Collection | Plafond |
-|---|---:|
-| `Professionnel` | 10 000 |
-| `Reviews` | 10 000 |
-| `SousCategorie` | 2 000 |
-| `Partenaires` | 2 000 |
-| `OffresPartenaire` | 2 000 |
+| Collection         | Plafond |
+| ------------------ | ------: |
+| `Professionnel`    |  10 000 |
+| `Reviews`          |  10 000 |
+| `SousCategorie`    |   2 000 |
+| `Partenaires`      |   2 000 |
+| `OffresPartenaire` |   2 000 |
 
 Un plafond est un coupe-circuit, pas un objectif de capacité. Créer une alerte
 bien avant 80 %. Charger en préproduction plus d'une page par ressource,
@@ -278,9 +510,10 @@ Ne pas promouvoir si un point échoue :
 - collections privées et projections inspectées;
 - cinq routes v2 testées sur plusieurs pages avec leurs filtres, index Wix et
   curseurs opaques;
-- secrets présents, anciens secrets révoqués;
-- 132 tests Flutter et 72 tests backend réussis au 23 septembre 2026, ou
-  résultats ultérieurs équivalents consignés pour la version candidate;
+- secrets présents, trousseau de rotation configuré et anciennes clés encore
+  nécessaires conservées uniquement dans Wix Secrets Manager;
+- suites Flutter et backend du commit exact réussies; joindre le lien du
+  workflow plutôt qu'un total de tests rapidement obsolète;
 - `flutter analyze` sans anomalie;
 - builds CI Web, Android et iOS réellement verts;
 - inscriptions gratuite et payante inactives et `pending_review` jusqu'à
@@ -294,8 +527,7 @@ Ne pas promouvoir si un point échoue :
 - purge de rétention testée sur une copie de données et tâche Wix publiée;
 - sauvegarde et procédure de retour arrière testées.
 
-La dernière couverture Flutter mesurée avant ROI v1 (29,6 % le 18 septembre
-2026) reste une limite acceptée temporairement, pas un critère suffisant de
+La dernière couverture Flutter mesurée avant ROI v1 (29,6 % le 18 septembre 2026) reste une limite acceptée temporairement, pas un critère suffisant de
 mise en production. Elle doit être recalculée pour toute version candidate.
 
 ## 10. Promotion et surveillance
@@ -303,7 +535,8 @@ mise en production. Elle doit être recalculée pour toute version candidate.
 1. Exporter les collections de production.
 2. Déployer le backend compatible avec le schéma actuel.
 3. Effectuer les tests de fumée avec un petit jeu de données contrôlé.
-4. Publier les clients avec l'URL et la clé publiable de production.
+4. Publier les clients avec l'URL HTTPS de production, sans secret Apple,
+   Google ou Stripe dans les binaires mobiles.
 5. Surveiller taux d'erreur, HTTP 429/503, latence, webhooks Stripe en échec,
    `CHECKOUT_PERSISTENCE_UNCERTAIN`, uploads et nettoyages de médias.
 6. Comparer quotidiennement, au lancement, les checkouts finalisés, profils,

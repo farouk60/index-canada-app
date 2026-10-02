@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/localization_service.dart';
 import '../services/main_navigation_controller.dart';
-import '../services/stripe_native_payment_service.dart';
+import '../services/store_purchase_service.dart';
 
 /// Écran de résultat en lecture seule. Le paiement et la confirmation de
 /// l’inscription sont déjà terminés lors de son ouverture.
@@ -36,8 +36,7 @@ class PaymentSuccessPage extends StatelessWidget {
   final PaymentConfirmation? confirmation;
   final VoidCallback? onViewProfile;
 
-  bool get _isActive =>
-      confirmation?.isActive ?? planType.toLowerCase() != 'basic';
+  bool get _isActive => confirmation?.isActive ?? false;
 
   bool get _isPendingReview =>
       confirmation?.status == 'pending_review' || !_isActive;

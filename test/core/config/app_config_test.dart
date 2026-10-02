@@ -4,8 +4,6 @@ import 'package:index_canada/core/config/app_config.dart';
 AppConfig buildConfig({
   AppEnvironment environment = AppEnvironment.production,
   String apiBaseUrl = 'https://www.immigrantindex.com/_functions',
-  String stripePublishableKey = 'pk_live_1234567890ABCDEF',
-  String stripeUrlScheme = AppConfig.requiredStripeUrlScheme,
   int imageCacheMaximumSize = 200,
   int imageCacheMaximumSizeBytes = 50 * 1024 * 1024,
 }) {
@@ -13,8 +11,6 @@ AppConfig buildConfig({
     environment: environment,
     appName: 'Index Canada',
     apiBaseUrl: apiBaseUrl,
-    stripePublishableKey: stripePublishableKey,
-    stripeUrlScheme: stripeUrlScheme,
     imageCacheMaximumSize: imageCacheMaximumSize,
     imageCacheMaximumSizeBytes: imageCacheMaximumSizeBytes,
     loggingEnabled: false,
@@ -23,14 +19,11 @@ AppConfig buildConfig({
 
 void main() {
   group('AppConfig.validateForRuntime', () {
-    test('accepte une configuration de production native complète', () {
+    test('accepte une production mobile sans configuration Stripe', () {
       final config = buildConfig();
 
-      expect(config.validationIssues(supportsNativePayments: true), isEmpty);
-      expect(
-        () => config.validateForRuntime(supportsNativePayments: true),
-        returnsNormally,
-      );
+      expect(config.validationIssues(), isEmpty);
+      expect(config.validateForRuntime, returnsNormally);
     });
 
     test('exige HTTPS et refuse les hôtes factices', () {
@@ -39,70 +32,42 @@ void main() {
         apiBaseUrl: 'https://api.example.invalid/functions',
       );
 
-      expect(
-        insecure.validationIssues(supportsNativePayments: false),
-        contains('API_BASE_URL_INVALID'),
-      );
-      expect(
-        placeholder.validationIssues(supportsNativePayments: false),
-        contains('API_BASE_URL_INVALID'),
-      );
+      expect(insecure.validationIssues(), contains('API_BASE_URL_INVALID'));
+      expect(placeholder.validationIssues(), contains('API_BASE_URL_INVALID'));
     });
 
-    test('exige une clé Stripe live en production native', () {
-      final missing = buildConfig(stripePublishableKey: '');
-      final testKey = buildConfig(
-        stripePublishableKey: 'pk_test_1234567890ABCDEF',
-      );
+    test('refuse le backend staging dans une livraison production', () {
+      final config = buildConfig(apiBaseUrl: AppConfig.stagingApiBaseUrl);
 
       expect(
-        missing.validationIssues(supportsNativePayments: true),
-        contains('STRIPE_LIVE_KEY_REQUIRED'),
+        config.validationIssues(),
+        contains('API_BASE_URL_ENVIRONMENT_MISMATCH'),
       );
       expect(
-        testKey.validationIssues(supportsNativePayments: true),
-        contains('STRIPE_LIVE_KEY_REQUIRED'),
-      );
-      expect(
-        () => testKey.validateForRuntime(supportsNativePayments: true),
+        config.validateForRuntime,
         throwsA(isA<AppConfigurationException>()),
       );
     });
 
-    test('n’exige pas de clé native sur Web', () {
-      final config = buildConfig(stripePublishableKey: '');
-
-      expect(config.validationIssues(supportsNativePayments: false), isEmpty);
-    });
-
-    test('autorise une clé de test en préproduction native', () {
+    test('refuse le backend production dans une livraison staging', () {
       final config = buildConfig(
         environment: AppEnvironment.staging,
-        stripePublishableKey: 'pk_test_1234567890ABCDEF',
-      );
-
-      expect(config.validationIssues(supportsNativePayments: true), isEmpty);
-    });
-
-    test('refuse une clé Stripe native mal formée', () {
-      final config = buildConfig(
-        environment: AppEnvironment.staging,
-        stripePublishableKey: 'pk_test_placeholder',
+        apiBaseUrl: AppConfig.productionApiBaseUrl,
       );
 
       expect(
-        config.validationIssues(supportsNativePayments: true),
-        contains('STRIPE_PUBLISHABLE_KEY_INVALID'),
+        config.validationIssues(),
+        contains('API_BASE_URL_ENVIRONMENT_MISMATCH'),
       );
     });
 
-    test('refuse un schéma Stripe différent des manifestes natifs', () {
-      final config = buildConfig(stripeUrlScheme: 'indexcanada');
-
-      expect(
-        config.validationIssues(supportsNativePayments: true),
-        contains('STRIPE_URL_SCHEME_INVALID'),
+    test('accepte uniquement l’URL canonique de staging en staging', () {
+      final config = buildConfig(
+        environment: AppEnvironment.staging,
+        apiBaseUrl: AppConfig.stagingApiBaseUrl,
       );
+
+      expect(config.validationIssues(), isEmpty);
     });
   });
 }

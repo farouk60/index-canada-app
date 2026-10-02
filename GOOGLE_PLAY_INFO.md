@@ -1,8 +1,13 @@
 # Préparation de la fiche Google Play
 
-## Statut : brouillon, non prêt à soumettre
+## Statut : build 27 en test interne, production non prête
 
-Ce document décrit les valeurs vérifiées dans le dépôt et propose des textes de fiche. Les déclarations de confidentialité restent à confirmer sur la version de production réellement déployée. Le guide [`WIX_DEPLOYMENT.md`](WIX_DEPLOYMENT.md), les tests de bout en bout et la liste [`production_checklist.md`](production_checklist.md) doivent être terminés avant une publication.
+Ce document décrit les valeurs vérifiées dans le dépôt et propose des textes de
+fiche. Android 1.1.0 (27) est accessible aux testeurs internes, mais les
+déclarations de confidentialité et les achats de bout en bout restent à
+confirmer avant une publication. Le guide
+[`WIX_DEPLOYMENT.md`](WIX_DEPLOYMENT.md), les tests réels et la liste
+[`production_checklist.md`](production_checklist.md) doivent être terminés.
 
 ## 1. Identité technique vérifiée
 
@@ -10,10 +15,10 @@ Ce document décrit les valeurs vérifiées dans le dépôt et propose des texte
 | --- | --- |
 | Nom de l'application | Index Canada |
 | Package Android | `ca.indexcanada.app` |
-| Version | `1.0.3` |
-| Code de version | `21` |
+| Version candidate | `1.1.0` |
+| Code de version candidat | `27` |
 | Firebase Analytics | Désactivé (stub) |
-| Artefact Android CI | AAB non signé, vérification seulement |
+| Artefact Android staging | AAB signé, contrôlé puis chiffré |
 
 Le package est déjà configuré. Ne pas suivre une ancienne instruction demandant de remplacer `com.example.mon_index_app`.
 
@@ -87,7 +92,7 @@ does not guarantee approval or publication of a profile.
 
 | Permission | Usage actuel |
 | --- | --- |
-| `android.permission.INTERNET` | Appels du backend Wix, paiement et chargement des médias. |
+| `android.permission.INTERNET` | Appels du backend Wix, Google Play Billing et chargement des médias. |
 | `android.permission.ACCESS_NETWORK_STATE` | Détection de l'état réseau. |
 | `android.permission.CAMERA` | Prise d'une photo de profil ou de galerie pendant l'inscription. |
 
@@ -101,17 +106,17 @@ La galerie utilise le sélecteur système. Les liens `tel:`, cartes et itinérai
 
 ## 4. Sécurité des données — inventaire préliminaire
 
-**Ne pas copier cet inventaire tel quel dans Play Console.** Le formulaire final doit provenir d'une observation de la version signée connectée au backend Wix/Stripe de production, y compris les SDK tiers. Google précise que le développeur est responsable de l'exactitude complète de la déclaration.
+**Ne pas copier cet inventaire tel quel dans Play Console.** Le formulaire final doit provenir d'une observation de la version signée connectée au backend Wix et à Google Play Billing, y compris les SDK tiers. Google précise que le développeur est responsable de l'exactitude complète de la déclaration.
 
 | Type potentiel | Observation actuelle | Validation requise avant soumission |
 | --- | --- | --- |
 | Coordonnées professionnelles | Le parcours d'inscription peut transmettre à Wix le nom, l'entreprise, le courriel, le téléphone, l'adresse, le site et la description fournis par l'utilisateur. | Confirmer les champs exacts, leur caractère obligatoire/facultatif, la finalité, la conservation et la suppression. |
 | Photos et vidéos | Des photos choisies ou prises peuvent être envoyées à Wix Media Manager pour le profil/la galerie. | Confirmer qu'aucun Base64 n'est stocké en collection, documenter conservation et suppression. |
-| Paiement | Stripe traite le paiement natif ; Wix conserve des identifiants et statuts nécessaires au rapprochement. L'application ne doit pas enregistrer les données complètes de carte. | Observer les données envoyées par le SDK Stripe et déclarer les catégories/finalités exigées par Google Play. |
+| Paiement | Google Play traite l'abonnement numérique natif; Wix reçoit une preuve d'achat, la valide auprès de Google et conserve uniquement les références hachées, statuts et dates nécessaires au droit. L'application ne reçoit ni ne conserve les données complètes de carte. | Valider le comportement du SDK Play Billing, la conservation serveur et les catégories/finalités exigées par Google Play. |
 | Localisation de l'appareil | Aucune permission Android de localisation n'est déclarée. | Vérifier qu'aucun SDK ou appel réseau ne collecte une position ou une localisation approximative. |
 | Activité dans l'application | Firebase Analytics est désactivé et ne doit pas être déclaré actif. | Vérifier les autres SDK, journaux serveur et données de diagnostic avant de répondre « non collecté ». |
 | Favoris | Le comportement doit être vérifié pour déterminer s'ils restent uniquement sur l'appareil ou sont transmis. | Observer le trafic et documenter le stockage réel. |
-| Identifiants de l'appareil et diagnostics | Non déterminé par la seule lecture des permissions. | Auditer Flutter, Stripe, Wix et tout SDK présent dans l'artefact signé. |
+| Identifiants de l'appareil et diagnostics | Non déterminé par la seule lecture des permissions. | Auditer Flutter, Google Play Billing, Wix et tout SDK présent dans l'artefact signé. |
 
 Avant de remplir le formulaire :
 
@@ -153,10 +158,21 @@ Référence officielle : [Ajouter des éléments d'aperçu à la fiche Play Stor
 ## 6. Configuration Play Console à terminer
 
 - [ ] Vérifier le profil développeur et les coordonnées publiques.
-- [ ] Créer ou confirmer l'application avec le package `ca.indexcanada.app`.
-- [ ] Activer Play App Signing et protéger la clé d'envoi.
-- [ ] Produire un AAB **signé** avec les valeurs Wix/Stripe de production approuvées.
-- [ ] Tester cet AAB depuis le canal interne sur un appareil Android réel.
+- [x] Confirmer l'application avec le package `ca.indexcanada.app`.
+- [x] Play App Signing est actif.
+- [x] Confirmer que le certificat d'envoi correspond au certificat
+  d'importation Play Console.
+- [x] Produire un AAB `1.1.0+27` **signé** avec l'URL Wix staging approuvée et
+  sans clé Stripe.
+- [x] Importer cet AAB et le publier dans le canal interne.
+- [x] Créer et activer les abonnements annuels
+  `ca.indexcanada.app.premium.annual` et
+  `ca.indexcanada.app.professional.annual` avec leurs offres de base Canada.
+- [x] Configurer Google RTDN préproduction et recevoir la notification native
+  de test en HTTP 200.
+- [ ] Tester un achat réel avec un testeur sous licence, sa restauration et une
+  vraie notification d'abonnement relue par l'API Google.
+- [ ] Terminer le contrôle de fumée du build 27 sur un appareil Android réel.
 - [ ] Ajouter les fiches locales français (Canada) et anglais (Canada).
 - [ ] Ajouter l'icône, la bannière, les captures et leurs textes alternatifs.
 - [ ] Fournir l'URL de politique de confidentialité.

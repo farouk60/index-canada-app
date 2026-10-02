@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:index_canada/data_service.dart';
@@ -102,6 +103,31 @@ void main() {
       );
     });
   }
+
+  testWidgets('utilise les logos de marque Instagram et WhatsApp', (
+    tester,
+  ) async {
+    await LocalizationService().setLanguage('fr');
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: ProfessionnelDetailPage(
+          professionnel: _professionnel(),
+          analyticsService: _analyticsService(),
+          dataService: _ResponsiveReviewsDataService(),
+          phoneLauncher: (_) async => true,
+          mapsLauncher: (_) async => true,
+          websiteLauncher: (_) async => true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byIcon(FontAwesomeIcons.instagram.data), findsOneWidget);
+    expect(find.byIcon(FontAwesomeIcons.whatsapp.data), findsOneWidget);
+    expect(find.byTooltip('Ouvrir Instagram'), findsOneWidget);
+    expect(find.byTooltip('Ouvrir WhatsApp'), findsOneWidget);
+  });
 }
 
 FirebaseAnalyticsService _analyticsService() {
@@ -126,4 +152,6 @@ Professionnel _professionnel() => Professionnel(
   reviewCount: 128,
   email: 'bonjour@st-boulangerie.example',
   website: 'https://st-boulangerie.example',
+  instagram: '@st_boulangerie',
+  whatsapp: '+1 514 555 0101',
 );

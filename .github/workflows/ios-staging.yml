@@ -19,7 +19,7 @@ concurrency:
 env:
   EXPECTED_SOURCE_REF: refs/heads/candidate/store-billing-entitlements-2026-09-28
   EXPECTED_VERSION_NAME: 1.1.0
-  EXPECTED_BUILD_NUMBER: "26"
+  EXPECTED_BUILD_NUMBER: "27"
   STAGING_APP_ENVIRONMENT: staging
   STAGING_API_BASE_URL: https://immigrantindex.wixsite.com/website-1/_functions
   FORBIDDEN_PRODUCTION_API_BASE_URL: https://www.immigrantindex.com/_functions
@@ -824,3 +824,4 @@ jobs:
           fi
           if [[ -n "${{ steps.encrypted_ipa.outputs.encrypted_path }}" ]]; then
             rm -f "${{ steps.encrypted_ipa.outputs.encrypted_path }}"
+          fi

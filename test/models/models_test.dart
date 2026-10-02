@@ -74,7 +74,8 @@ void main() {
       expect(professional.couponCode, '2026');
       expect(professional.couponExpirationDate, DateTime.utc(2030, 5));
       expect(professional.subscriptionExpiryDate, isNotNull);
-      expect(professional.isFeatured, isTrue);
+      expect(professional.sponsor, isFalse);
+      expect(professional.isFeatured, isFalse);
 
       // Les champs individuels ont priorité sur l'ancienne mediagallery.
       expect(professional.getAllGalleryImages(), [
@@ -136,6 +137,53 @@ void main() {
         professional.getCouponDescriptionInLanguage('fr'),
         'For newcomers',
       );
+    });
+
+    test('utilise le booléen sponsor comme source de vérité', () {
+      final featuredBasic = Professionnel.fromJson({
+        '_id': 'pro-featured-basic',
+        'title': 'Basique commandité',
+        'plan': 'basic',
+        'sponsor': true,
+      });
+      final nonFeaturedProfessional = Professionnel.fromJson({
+        '_id': 'pro-not-featured-professional',
+        'title': 'Professionnel non commandité',
+        'plan': 'professional',
+        'sponsor': false,
+      });
+
+      expect(featuredBasic.sponsor, isTrue);
+      expect(featuredBasic.isFeatured, isTrue);
+      expect(nonFeaturedProfessional.sponsor, isFalse);
+      expect(nonFeaturedProfessional.isFeatured, isFalse);
+    });
+
+    test('ne rend jamais Premium vedette par simple plan', () {
+      final legacyPremium = Professionnel.fromJson({
+        '_id': 'pro-legacy-premium',
+        'title': 'Premium historique',
+        'plan': 'Premium',
+      });
+
+      expect(legacyPremium.sponsor, isFalse);
+      expect(legacyPremium.isFeatured, isFalse);
+    });
+
+    test('conserve le repli des anciens plans explicitement en vedette', () {
+      for (final plan in ['sponsor', 'professional', 'featured', 'vedette']) {
+        final professional = Professionnel.fromJson({
+          '_id': 'pro-legacy-$plan',
+          'title': 'Ancien forfait $plan',
+          'plan': plan,
+        });
+
+        expect(
+          professional.isFeatured,
+          isTrue,
+          reason: 'Le plan historique $plan doit rester compatible.',
+        );
+      }
     });
   });
 

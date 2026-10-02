@@ -17,7 +17,7 @@ publique coordonnée.
 
 ## Périmètre prioritaire
 
-Les signalements sur Stripe, les fonctions Wix, les permissions de
+Les signalements sur StoreKit, Google Play Billing, Stripe Web, les fonctions Wix, les permissions de
 collections, le Media Manager, l'inscription professionnelle, la modération et
 l'exposition de renseignements personnels sont prioritaires.
 
@@ -36,11 +36,39 @@ l'exposition de renseignements personnels sont prioritaires.
 - Le catalogue serveur est la source de vérité des forfaits, prix, devises et
   capacités. Les montants envoyés par le client ne sont que des indices à
   comparer, jamais une autorité.
-- Les confirmations Stripe revalident le statut, le montant, la devise et les
-  métadonnées liées au checkout. Les jetons gratuits sont signés, liés au
-  checkout et expirent.
+- Les confirmations mobiles ne font confiance ni au prix ni à l'état annoncé
+  par le client : Apple ou Google doivent confirmer le produit, l'application,
+  le compte lié, l'expiration et l'absence de révocation. Les jetons gratuits
+  sont signés, liés au checkout et expirent.
 - Les identifiants déterministes rendent les confirmations et le webhook
   idempotents; un second appel ne doit pas créer un second profil.
+
+Les preuves StoreKit JWS et jetons d'achat Google sont sensibles. Ils ne sont
+ni journalisés ni stockés en clair : le backend conserve seulement une
+empreinte ou référence strictement nécessaire à l'idempotence et à l'audit.
+Lors d'un remplacement Google, `linkedPurchaseToken` reste uniquement en
+mémoire le temps de valider le lien. Le document de droit conserve une seule
+empreinte scalaire `currentTransactionHash` du jeton courant, jamais le jeton
+brut ni une liste de jetons. L'identité racine du droit et le `professionalId`
+restent immuables. Une notification tardive d'un prédécesseur est marquée
+`superseded_purchase_token` et ne peut ni expirer ni révoquer le droit courant.
+Un lien absent, ambigu ou incohérent échoue fermé.
+
+La politique de remplacement Google est imposée par le serveur, jamais par le
+client : seul `Premium → Professional` avec `WITH_TIME_PRORATION` est immédiat;
+seul `Professional → Premium` avec la réponse officielle différée à deux
+`lineItems` est planifié. Un réabonnement au même produit sans
+`itemReplacement` n'est accepté qu'après expiration/révocation, avec un
+`linkedPurchaseToken` dont l'empreinte retrouve exactement le droit courant et
+un identifiant de compte obscurci vérifié contre le nouveau checkout. La saga
+de projection est rejouable après l'écriture du droit : elle ne crée une fiche
+manquante que pour l'identité déterministe initiale prouvée par le
+`rootCheckoutId` immuable et n'autorise une migration
+que si la fiche et le checkout prédécesseur portent déjà le même
+`entitlementId` et le même `professionalId`. Si le profil a déjà migré mais que
+le patch du checkout prédécesseur a échoué, ce checkout n'est réparé que lorsque
+le droit précédent le désigne exactement avec la même racine; toute divergence
+échoue fermé.
 
 Les projections publiques incluent actuellement certaines coordonnées
 professionnelles (courriel, téléphone, adresse et liens sociaux). Elles doivent
@@ -102,10 +130,12 @@ prévoyez une tâche de réconciliation des orphelins.
 
 ## Secrets et historique Git
 
-Les secrets `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` et
-`CHECKOUT_SIGNING_SECRET` appartiennent exclusivement au gestionnaire de
-secrets Wix. La clé Stripe publiable est la seule clé Stripe attendue dans le
-binaire, injectée au build.
+Les secrets de validation Apple, le compte de service Google, les secrets
+`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `CHECKOUT_SIGNING_SECRET` et le
+trousseau JSON `CHECKOUT_SIGNING_SECRET_PREVIOUS` appartiennent exclusivement
+au gestionnaire de secrets Wix. Aucun secret Apple,
+Google, Stripe ou Wix et aucune clé Stripe publiable ne sont attendus dans les
+binaires Android/iOS. Stripe reste un fournisseur Web/legacy séparé.
 
 Une ancienne valeur `WIX_API_KEY` a potentiellement figuré dans le fichier
 historique `.env.production`. Sa suppression du répertoire de travail ne la
@@ -136,7 +166,9 @@ journal ou une capture d'écran.
   clients. Ses plafonds empêchent une croissance incontrôlée, mais cette route
   v1 doit rester mesurée, sans nouveau consommateur, puis être retirée lorsque
   son usage est nul.
-- Les forfaits payants ne sont pas pris en charge sur Web.
+- Les forfaits payants mobiles passent exclusivement par StoreKit ou Google
+  Play Billing. Le Web conserve son parcours Stripe séparé/legacy; aucun client
+  ne doit pouvoir transformer une preuve d'un fournisseur en droit chez l'autre.
 - Les tests automatisés ne prouvent pas la configuration réelle des permissions
   Wix, des secrets, du webhook ou du Media Manager.
 

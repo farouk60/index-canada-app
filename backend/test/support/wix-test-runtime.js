@@ -287,9 +287,14 @@ export function webMethod(permission, callback) {
 
 export const secrets = Object.freeze({
   async getSecretValue(name) {
+    if (name === "CHECKOUT_SIGNING_SECRET_PREVIOUS") return { value: "[]" };
     return { value: `test-only-${name}-secret-with-more-than-thirty-two-characters` };
   },
 });
+
+export async function wixFetch() {
+  throw new Error("Le réseau wix-fetch n'est pas disponible dans ce double de test");
+}
 
 export const mediaManager = Object.freeze({
   async upload() {

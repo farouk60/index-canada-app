@@ -134,7 +134,8 @@ class Professionnel {
   final List<dynamic>
   gallery; // Nouvelle propriété pour la galerie (objets Wix ou strings)
   final String sousCategorie;
-  final String plan; // Plan du professionnel (remplace sponsor)
+  final String plan; // Plan commercial du professionnel
+  final bool sponsor; // Source de vérité pour le statut « En vedette »
   final double averageRating; // Note moyenne des avis
   final int reviewCount; // Nombre d'avis
 
@@ -181,6 +182,7 @@ class Professionnel {
     required this.gallery,
     required this.sousCategorie,
     required this.plan,
+    bool? sponsor,
     this.averageRating = 0.0,
     this.reviewCount = 0,
     this.couponTitle = '',
@@ -207,7 +209,7 @@ class Professionnel {
     this.stripeCustomerId = '',
     this.stripeSubscriptionId = '',
     this.subscriptionExpiryDate,
-  });
+  }) : sponsor = sponsor ?? _isLegacyFeaturedPlan(plan);
 
   factory Professionnel.fromJson(Map<String, dynamic> json) {
     try {
@@ -343,6 +345,7 @@ class Professionnel {
         plan:
             json['plan']?.toString() ??
             '', // Récupérer le plan du professionnel
+        sponsor: json['sponsor'] is bool ? json['sponsor'] as bool : null,
         averageRating: (json['averageRating'] ?? 0.0).toDouble(),
         reviewCount: json['reviewCount'] ?? 0,
         couponTitle: _cleanHtmlString(json['couponTitle']?.toString() ?? ''),
@@ -393,6 +396,7 @@ class Professionnel {
         gallery: [],
         sousCategorie: '',
         plan: json['plan']?.toString() ?? '',
+        sponsor: json['sponsor'] is bool ? json['sponsor'] as bool : null,
       );
     }
   }
@@ -415,23 +419,21 @@ class Professionnel {
         : couponDescriptionEN;
   }
 
-  /// Vérifier si le professionnel est en vedette (basé sur le plan)
-  bool get isFeatured {
-    if (plan.isEmpty) return false;
+  /// Vérifier si le professionnel est en vedette.
+  ///
+  /// Le booléen `sponsor` renvoyé par l'API est autoritatif. Le repli sur le
+  /// plan est limité aux anciens payloads qui ne contiennent pas ce booléen.
+  bool get isFeatured => sponsor;
 
-    // Les plans qui donnent le statut "en vedette"
-    final featuredPlans = [
+  static bool _isLegacyFeaturedPlan(String plan) {
+    const legacyFeaturedPlans = {
       'sponsor',
-      'premium',
       'professional',
       'featured',
       'vedette',
-    ];
-    return featuredPlans.contains(plan.toLowerCase());
+    };
+    return legacyFeaturedPlans.contains(plan.trim().toLowerCase());
   }
-
-  /// Vérifier si le professionnel a un plan actif (pour rétrocompatibilité)
-  bool get sponsor => isFeatured;
 
   /// Obtenir toutes les images de galerie (champs individuels + ancienne galerie)
   List<String> getAllGalleryImages() {

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../models.dart';
@@ -1284,42 +1285,50 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
         children: [
           if (widget.professionnel.facebook.isNotEmpty)
             _buildSocialIcon(
-              Icons.facebook,
+              const Icon(Icons.facebook, color: Colors.white, size: 22),
               Colors.blue.shade600,
               widget.professionnel.facebook,
               'Facebook',
             ),
           if (widget.professionnel.instagram.isNotEmpty)
             _buildSocialIcon(
-              Icons.camera_alt,
-              Colors.pink.shade400,
+              const FaIcon(
+                FontAwesomeIcons.instagram,
+                color: Colors.white,
+                size: 22,
+              ),
+              const Color(0xFFE4405F),
               widget.professionnel.instagram,
               'Instagram',
             ),
           if (widget.professionnel.linkedin.isNotEmpty)
             _buildSocialIcon(
-              Icons.business,
+              const Icon(Icons.business, color: Colors.white, size: 22),
               Colors.blue.shade800,
               widget.professionnel.linkedin,
               'LinkedIn',
             ),
           if (widget.professionnel.whatsapp.isNotEmpty)
             _buildSocialIcon(
-              Icons.chat,
-              Colors.green.shade600,
+              const FaIcon(
+                FontAwesomeIcons.whatsapp,
+                color: Colors.white,
+                size: 22,
+              ),
+              const Color(0xFF128C7E),
               widget.professionnel.whatsapp,
               'WhatsApp',
             ),
           if (widget.professionnel.tiktok.isNotEmpty)
             _buildSocialIcon(
-              Icons.music_note,
+              const Icon(Icons.music_note, color: Colors.white, size: 22),
               Colors.black,
               widget.professionnel.tiktok,
               'TikTok',
             ),
           if (widget.professionnel.youtube.isNotEmpty)
             _buildSocialIcon(
-              Icons.play_circle_fill,
+              const Icon(Icons.play_circle_fill, color: Colors.white, size: 22),
               Colors.red.shade600,
               widget.professionnel.youtube,
               'YouTube',
@@ -1331,7 +1340,7 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
 
   // Petit carré avec logo de réseau social
   Widget _buildSocialIcon(
-    IconData icon,
+    Widget icon,
     Color color,
     String url,
     String platform,
@@ -1343,7 +1352,7 @@ class _ProfessionnelDetailPageState extends State<ProfessionnelDetailPage> {
     return IconButton(
       onPressed: () => _openSocialLink(url, platform),
       tooltip: actionLabel,
-      icon: Icon(icon, color: Colors.white, size: 22),
+      icon: icon,
       style: IconButton.styleFrom(
         backgroundColor: color,
         minimumSize: const Size(48, 48),

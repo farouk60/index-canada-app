@@ -14,14 +14,35 @@ const {
   get_search_professionals,
   get_searchProfessionals,
   persistEngagementEvent,
+  post_appStoreServerNotificationV2,
+  post_confirmStorePurchase,
+  post_createStoreCheckout,
   post_engagementEvent,
+  post_googlePlayRtdn,
+  post_restoreStorePurchase,
   use_categories,
   use_engagementEvent,
   use_professionals,
   use_search_professionals,
   use_searchProfessionals,
+  use_confirmStorePurchase,
+  use_createStoreCheckout,
+  use_appStoreServerNotificationV2,
+  use_googlePlayRtdn,
+  use_restoreStorePurchase,
 } = await import("../http-functions.js");
-const { buildEngagementEventRecord } = await import("../security-core.js");
+const {
+  buildEngagementEventRecord,
+  buildPersistedCheckoutDraft,
+} = await import("../security-core.js");
+const {
+  APP_BUNDLE_ID,
+  createStoreCheckoutDraft,
+  deriveStoreAccountToken,
+} = await import("../store-purchase-core.js");
+const { StoreProviderError } = await import("../store-purchase-verifiers.js");
+
+const TEST_SIGNING_SECRET = "test-only-CHECKOUT_SIGNING_SECRET-secret-with-more-than-thirty-two-characters";
 
 const PUBLIC_REQUEST = Object.freeze({
   ip: "203.0.113.25",
@@ -50,12 +71,37 @@ function seed(data = {}) {
   __wixDataTest.reset({
     ApiRateLimits: [],
     EngagementEvents: [],
+    Entitlements: [],
+    PaymentEvents: [],
+    PaymentCheckouts: [],
     SousCategorie: [],
     Professionnel: [],
     Reviews: [],
     Partenaires: [],
     OffresPartenaire: [],
     ...data,
+  });
+}
+
+function storeRegistration(overrides = {}) {
+  return {
+    professionalId: "temp_1758812400000",
+    email: "owner@example.ca",
+    businessName: "Cabinet Exemple",
+    categoryId: "legal-services",
+    ville: "Montréal",
+    phone: "+1 514 555 0101",
+    address: "100 rue Exemple, Montréal",
+    description: "Conseils pour les nouveaux arrivants",
+    ...overrides,
+  };
+}
+
+function storePostRequest(body) {
+  return request({}, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: { json: async () => body },
   });
 }
 
@@ -773,4 +819,1743 @@ test("les handlers use_* distinguent OPTIONS des méthodes non autorisées", () 
   assert.equal(engagementPreflight.headers["Access-Control-Allow-Methods"], "POST, OPTIONS");
   assert.equal(rejectedEngagement.status, 405);
   assert.equal(rejectedEngagement.body.code, "METHOD_NOT_ALLOWED");
+});
+
+test("le répertoire masque les droits magasin expirés ou révoqués même si la modération reste active", async () => {
+  const future = new Date(Date.now() + 60_000).toISOString();
+  const past = new Date(Date.now() - 1).toISOString();
+  seed({
+    Professionnel: [
+      {
+        _id: "pro_apple_active",
+        title: "Apple visible",
+        isActive: true,
+        sponsor: true,
+        paymentProvider: "apple",
+        entitlementStatus: "active",
+        entitlementExpiresAt: future,
+      },
+      {
+        _id: "pro_google_expired",
+        title: "Google expiré",
+        isActive: true,
+        sponsor: true,
+        paymentProvider: "google",
+        entitlementStatus: "active",
+        entitlementExpiresAt: past,
+      },
+      {
+        _id: "pro_apple_revoked",
+        title: "Apple révoqué",
+        isActive: true,
+        sponsor: true,
+        paymentProvider: "apple",
+        entitlementStatus: "revoked",
+        entitlementExpiresAt: future,
+      },
+      {
+        _id: "pro_stripe_legacy",
+        title: "Stripe historique",
+        isActive: true,
+        sponsor: true,
+        paymentProvider: "stripe",
+      },
+    ],
+  });
+
+  const result = await get_professionals(request({ featured: "true", limit: "25" }));
+
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.professionals.map((item) => item._id), [
+    "pro_apple_active",
+    "pro_stripe_legacy",
+  ]);
+  assert.equal(JSON.stringify(result.body).includes("pro_google_expired"), false);
+  assert.equal(JSON.stringify(result.body).includes("pro_apple_revoked"), false);
+});
+
+test("post_createStoreCheckout retourne un account_token dérivé sans le persister", async () => {
+  const body = {
+    ...storeRegistration(),
+    planId: "premium",
+    store: "app_store",
+  };
+  const draft = createStoreCheckoutDraft(body, TEST_SIGNING_SECRET, Date.now());
+  const persisted = buildPersistedCheckoutDraft(draft, { profile: "", gallery: [] });
+  seed({
+    PaymentCheckouts: [persisted],
+    SousCategorie: [{ _id: "legal-services", isActive: true }],
+  });
+
+  const result = await post_createStoreCheckout(storePostRequest(body));
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.success, true);
+  assert.equal(result.body.checkout_id, persisted._id);
+  assert.equal(result.body.store, "app_store");
+  assert.equal(result.body.product_id, "ca.indexcanada.app.premium.annual");
+  assert.equal(result.body.account_token, deriveStoreAccountToken(persisted, TEST_SIGNING_SECRET));
+  assert.match(result.body.account_token, /^[a-f0-9-]{36}$/u);
+  const stored = __wixDataTest.items("PaymentCheckouts")[0];
+  assert.equal(JSON.stringify(stored).includes(result.body.account_token), false);
+  assert.equal(Object.hasOwn(stored, "appAccountToken"), false);
+  assert.equal(Object.hasOwn(stored, "verificationData"), false);
+});
+
+test("post_confirmStorePurchase livre un droit idempotent avant une fiche toujours à modérer", async () => {
+  const body = {
+    ...storeRegistration(),
+    planId: "premium",
+    store: "google_play",
+  };
+  const draft = createStoreCheckoutDraft(body, TEST_SIGNING_SECRET, Date.now());
+  const checkout = buildPersistedCheckoutDraft(draft, { profile: "", gallery: [] });
+  const accountToken = deriveStoreAccountToken(checkout, TEST_SIGNING_SECRET);
+  seed({ PaymentCheckouts: [checkout] });
+  let verificationCount = 0;
+  let acknowledgementCount = 0;
+  const purchaseStartedAt = new Date(Date.now() - 60_000).toISOString();
+  const purchaseExpiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+  const dependencies = {
+    async verifyGoogle() {
+      verificationCount += 1;
+      return {
+        packageName: APP_BUNDLE_ID,
+        subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+        acknowledgementState: verificationCount === 1
+          ? "ACKNOWLEDGEMENT_STATE_PENDING"
+          : "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+        startTime: purchaseStartedAt,
+        lineItems: [{
+          productId: "ca.indexcanada.app.premium.annual",
+          expiryTime: purchaseExpiresAt,
+          latestSuccessfulOrderId: "GPA.1234-5678-9012-34567",
+          autoRenewingPlan: { autoRenewEnabled: true },
+        }],
+        externalAccountIdentifiers: { obfuscatedExternalAccountId: accountToken },
+        etag: "etag-1",
+      };
+    },
+    async acknowledgeGoogle() {
+      acknowledgementCount += 1;
+    },
+  };
+  const confirmation = {
+    checkoutId: checkout._id,
+    store: "google_play",
+    productId: "ca.indexcanada.app.premium.annual",
+    verificationData: "purchase-token-never-persisted",
+    purchaseId: "GPA.1234-5678-9012-34567",
+  };
+
+  const first = await post_confirmStorePurchase(storePostRequest(confirmation), dependencies);
+  const replay = await post_confirmStorePurchase(storePostRequest(confirmation), dependencies);
+
+  assert.equal(first.status, 200);
+  assert.equal(first.body.complete_purchase, true);
+  assert.equal(first.body.status, "pending_review");
+  assert.equal(first.body.data.isActive, false);
+  assert.equal(first.body.entitlement.status, "active");
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.idempotent, true);
+  assert.equal(acknowledgementCount, 1);
+  assert.equal(__wixDataTest.items("Entitlements").length, 1);
+  assert.equal(__wixDataTest.items("Professionnel").length, 1);
+  const professional = __wixDataTest.items("Professionnel")[0];
+  assert.equal(professional.registrationStatus, "pending_review");
+  assert.equal(professional.isActive, false);
+  assert.equal(professional.entitlementStatus, "active");
+  for (const collection of ["PaymentCheckouts", "Entitlements", "Professionnel"]) {
+    const serialized = JSON.stringify(__wixDataTest.items(collection));
+    assert.equal(serialized.includes("purchase-token-never-persisted"), false);
+    assert.equal(serialized.includes(accountToken), false);
+  }
+});
+
+test("la confirmation répare la fiche après une panne survenue après l'Entitlement", async () => {
+  const draft = createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400301" }),
+    planId: "premium",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now());
+  const checkout = buildPersistedCheckoutDraft(draft, { profile: "", gallery: [] });
+  const accountToken = deriveStoreAccountToken(checkout, TEST_SIGNING_SECRET);
+  const rawToken = "initial-saga-retry-token-never-persisted";
+  const providerResponse = {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+    acknowledgementState: "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+    startTime: new Date(Date.now() - 60_000).toISOString(),
+    lineItems: [{
+      productId: checkout.storeProductId,
+      expiryTime: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      latestSuccessfulOrderId: "GPA.6666-6666-6666-66666",
+      autoRenewingPlan: { autoRenewEnabled: true },
+    }],
+    externalAccountIdentifiers: { obfuscatedExternalAccountId: accountToken },
+    etag: "initial-saga-etag",
+  };
+  const confirmation = {
+    checkoutId: checkout._id,
+    store: "google_play",
+    productId: checkout.storeProductId,
+    verificationData: rawToken,
+  };
+  const providerDependencies = {
+    verifyGoogle: async () => providerResponse,
+    acknowledgeGoogle: async () => assert.fail("achat déjà acquitté"),
+  };
+  seed({ PaymentCheckouts: [checkout] });
+
+  const failed = await post_confirmStorePurchase(storePostRequest(confirmation), {
+    ...providerDependencies,
+    finalizeProfessional: async () => {
+      throw new Error("panne injectée après Entitlement");
+    },
+  });
+  assert.equal(failed.status, 500);
+  assert.equal(__wixDataTest.items("Entitlements").length, 1);
+  assert.equal(__wixDataTest.items("Professionnel").length, 0);
+
+  const repaired = await post_confirmStorePurchase(
+    storePostRequest(confirmation),
+    providerDependencies,
+  );
+  assert.equal(repaired.status, 200);
+  assert.equal(__wixDataTest.items("Entitlements").length, 1);
+  assert.equal(__wixDataTest.items("Professionnel").length, 1);
+  const entitlement = __wixDataTest.items("Entitlements")[0];
+  const professional = __wixDataTest.items("Professionnel")[0];
+  const finalizedCheckout = __wixDataTest.items("PaymentCheckouts")[0];
+  assert.equal(professional._id, entitlement.professionalId);
+  assert.equal(professional.entitlementId, entitlement._id);
+  assert.equal(professional.checkoutId, checkout._id);
+  assert.equal(finalizedCheckout.entitlementId, entitlement._id);
+  assert.equal(finalizedCheckout.professionalId, professional._id);
+  const persisted = JSON.stringify({ entitlement, professional, finalizedCheckout });
+  assert.equal(persisted.includes(rawToken), false);
+  assert.equal(persisted.includes(accountToken), false);
+});
+
+test("post_restoreStorePurchase retrouve le droit par le hash fournisseur sans checkout en entrée", async () => {
+  const body = {
+    ...storeRegistration(),
+    planId: "premium",
+    store: "google_play",
+  };
+  const draft = createStoreCheckoutDraft(body, TEST_SIGNING_SECRET, Date.now());
+  const checkout = buildPersistedCheckoutDraft(draft, { profile: "", gallery: [] });
+  const accountToken = deriveStoreAccountToken(checkout, TEST_SIGNING_SECRET);
+  const purchaseStartedAt = new Date(Date.now() - 60_000).toISOString();
+  const purchaseExpiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+  const providerResponse = {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+    acknowledgementState: "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+    startTime: purchaseStartedAt,
+    lineItems: [{
+      productId: "ca.indexcanada.app.premium.annual",
+      expiryTime: purchaseExpiresAt,
+      latestSuccessfulOrderId: "GPA.1234-5678-9012-34567",
+      autoRenewingPlan: { autoRenewEnabled: true },
+    }],
+    externalAccountIdentifiers: { obfuscatedExternalAccountId: accountToken },
+    etag: "restore-etag",
+  };
+  seed({ PaymentCheckouts: [checkout] });
+  const confirmation = {
+    checkoutId: checkout._id,
+    store: "google_play",
+    productId: "ca.indexcanada.app.premium.annual",
+    verificationData: "restored-purchase-token",
+    purchaseId: "GPA.1234-5678-9012-34567",
+  };
+  const dependencies = {
+    verifyGoogle: async () => providerResponse,
+    acknowledgeGoogle: async () => assert.fail("la preuve est déjà acquittée"),
+  };
+  const confirmed = await post_confirmStorePurchase(
+    storePostRequest(confirmation),
+    dependencies,
+  );
+  assert.equal(confirmed.status, 200);
+
+  const restored = await post_restoreStorePurchase(storePostRequest({
+    store: confirmation.store,
+    productId: confirmation.productId,
+    verificationData: confirmation.verificationData,
+    purchaseId: confirmation.purchaseId,
+  }), dependencies);
+
+  assert.equal(restored.status, 200);
+  assert.equal(restored.body.restored, true);
+  assert.equal(restored.body.checkout_id, checkout._id);
+  assert.equal(restored.body.data.professionalId, confirmed.body.data.professionalId);
+  assert.equal(restored.body.data.isActive, false);
+  assert.equal(restored.body.status, "pending_review");
+  assert.equal(__wixDataTest.items("PaymentCheckouts").length, 1);
+  assert.equal(__wixDataTest.items("Entitlements").length, 1);
+  const persisted = JSON.stringify({
+    checkouts: __wixDataTest.items("PaymentCheckouts"),
+    entitlements: __wixDataTest.items("Entitlements"),
+    professionals: __wixDataTest.items("Professionnel"),
+  });
+  assert.equal(persisted.includes("restored-purchase-token"), false);
+  assert.equal(persisted.includes(accountToken), false);
+});
+
+test("post_restoreStorePurchase récupère idempotemment un achat interrompu avant tout Entitlement", async () => {
+  const draft = createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400099" }),
+    planId: "premium",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now());
+  const checkout = buildPersistedCheckoutDraft(draft, { profile: "", gallery: [] });
+  const accountToken = deriveStoreAccountToken(checkout, TEST_SIGNING_SECRET);
+  seed({ PaymentCheckouts: [checkout] });
+  const restoration = {
+    store: "google_play",
+    productId: "ca.indexcanada.app.premium.annual",
+    verificationData: "interrupted-http-purchase-token",
+    purchaseId: "client-hint-does-not-bind-google",
+  };
+  const dependencies = {
+    verifyGoogle: async () => ({
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+      acknowledgementState: "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+      startTime: new Date(Date.now() - 60_000).toISOString(),
+      lineItems: [{
+        productId: restoration.productId,
+        expiryTime: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+        latestSuccessfulOrderId: "GPA.1234-5678-9012-34567",
+        autoRenewingPlan: { autoRenewEnabled: true },
+      }],
+      externalAccountIdentifiers: { obfuscatedExternalAccountId: accountToken },
+      etag: "interrupted-http-etag",
+    }),
+    acknowledgeGoogle: async () => assert.fail("déjà acquitté"),
+  };
+
+  const first = await post_restoreStorePurchase(storePostRequest(restoration), dependencies);
+  const replay = await post_restoreStorePurchase(storePostRequest(restoration), dependencies);
+
+  assert.equal(first.status, 200);
+  assert.equal(first.body.complete_purchase, true);
+  assert.equal(first.body.restored, true);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.idempotent, true);
+  assert.equal(__wixDataTest.items("PaymentCheckouts").length, 1);
+  assert.equal(__wixDataTest.items("Entitlements").length, 1);
+  assert.equal(__wixDataTest.items("Professionnel").length, 1);
+  const persisted = JSON.stringify({
+    checkouts: __wixDataTest.items("PaymentCheckouts"),
+    entitlements: __wixDataTest.items("Entitlements"),
+    professionals: __wixDataTest.items("Professionnel"),
+  });
+  assert.equal(persisted.includes(restoration.verificationData), false);
+  assert.equal(persisted.includes(accountToken), false);
+});
+
+test("post_restoreStorePurchase refuse une référence de compte CMS ambiguë", async () => {
+  const draft = createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400100" }),
+    planId: "premium",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now());
+  const checkout = buildPersistedCheckoutDraft(draft, { profile: "", gallery: [] });
+  const accountToken = deriveStoreAccountToken(checkout, TEST_SIGNING_SECRET);
+  seed({
+    PaymentCheckouts: [
+      checkout,
+      { ...checkout, _id: `chk_${"f".repeat(32)}` },
+    ],
+  });
+  const result = await post_restoreStorePurchase(storePostRequest({
+    store: "google_play",
+    productId: checkout.storeProductId,
+    verificationData: "ambiguous-http-purchase-token",
+  }), {
+    verifyGoogle: async () => ({
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+      acknowledgementState: "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+      startTime: new Date(Date.now() - 60_000).toISOString(),
+      lineItems: [{
+        productId: checkout.storeProductId,
+        expiryTime: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+        latestSuccessfulOrderId: "GPA.1234-5678-9012-34567",
+        autoRenewingPlan: { autoRenewEnabled: true },
+      }],
+      externalAccountIdentifiers: { obfuscatedExternalAccountId: accountToken },
+    }),
+    acknowledgeGoogle: async () => {},
+  });
+
+  assert.equal(result.status, 409);
+  assert.equal(result.body.code, "STORE_ACCOUNT_REFERENCE_AMBIGUOUS");
+  assert.equal(__wixDataTest.items("Entitlements").length, 0);
+  assert.equal(__wixDataTest.items("Professionnel").length, 0);
+});
+
+test("post_googlePlayRtdn journalise seulement le diagnostic OIDC autorisé et répond 401 générique", async (t) => {
+  const token = "sensitive-header.sensitive-payload.sensitive-signature";
+  const email = "push-sensitive@example-project.iam.gserviceaccount.com";
+  const audience = "https://sensitive.example.test/_functions/googlePlayRtdn";
+  const rawMessage = `raw-provider-message ${token} ${email} ${audience}`;
+  const providerError = new StoreProviderError("GOOGLE_PUSH_UNAUTHORIZED", {
+    diagnostic: "id_token_verification_failed",
+  });
+  providerError.message = rawMessage;
+  providerError.authorization = `Bearer ${token}`;
+  providerError.expectedEmail = email;
+  providerError.audience = audience;
+
+  const logs = [];
+  const originalConsoleError = console.error;
+  console.error = (...values) => logs.push(values.map(String).join(" "));
+  t.after(() => { console.error = originalConsoleError; });
+
+  const push = storePostRequest({});
+  push.headers.authorization = `Bearer ${token}`;
+  const result = await post_googlePlayRtdn(push, {
+    verifyGooglePush: async () => { throw providerError; },
+  });
+
+  assert.equal(result.status, 401);
+  assert.equal(result.body.success, false);
+  assert.equal(result.body.code, "GOOGLE_PUSH_UNAUTHORIZED");
+  assert.equal("diagnostic" in result.body, false);
+  assert.equal(logs.length, 1);
+
+  const log = JSON.parse(logs[0]);
+  assert.equal(log.event, "api_failure");
+  assert.equal(log.scope, "post_googlePlayRtdn");
+  assert.equal(log.errorCode, "GOOGLE_PUSH_UNAUTHORIZED");
+  assert.equal(log.diagnostic, "id_token_verification_failed");
+  assert.equal(typeof log.requestId, "string");
+
+  const publicSurface = `${JSON.stringify(result.body)}\n${logs.join("\n")}`;
+  for (const forbidden of [token, email, audience, rawMessage, "Bearer "]) {
+    assert.equal(publicSurface.includes(forbidden), false);
+  }
+});
+
+test("post_googlePlayRtdn rend une panne de certificats temporaire et réessayable sans fuite", async (t) => {
+  const token = "sensitive-header.sensitive-payload.sensitive-signature";
+  const providerError = new StoreProviderError("GOOGLE_PUSH_VERIFICATION_UNAVAILABLE", {
+    retryable: true,
+    diagnostic: "id_token_certificate_fetch_failed",
+  });
+  providerError.message = `raw-certificate-fetch-error ${token}`;
+  providerError.authorization = `Bearer ${token}`;
+
+  const logs = [];
+  const originalConsoleError = console.error;
+  console.error = (...values) => logs.push(values.map(String).join(" "));
+  t.after(() => { console.error = originalConsoleError; });
+
+  const push = storePostRequest({});
+  push.headers.authorization = `Bearer ${token}`;
+  const result = await post_googlePlayRtdn(push, {
+    verifyGooglePush: async () => { throw providerError; },
+  });
+
+  assert.equal(result.status, 503);
+  assert.equal(result.body.success, false);
+  assert.equal(result.body.code, "GOOGLE_PUSH_VERIFICATION_UNAVAILABLE");
+  assert.equal(result.body.error, "Le service du magasin est temporairement indisponible.");
+  assert.equal("diagnostic" in result.body, false);
+  assert.equal(logs.length, 1);
+
+  const log = JSON.parse(logs[0]);
+  assert.equal(log.errorCode, "GOOGLE_PUSH_VERIFICATION_UNAVAILABLE");
+  assert.equal(log.diagnostic, "id_token_certificate_fetch_failed");
+
+  const publicSurface = `${JSON.stringify(result.body)}\n${logs.join("\n")}`;
+  for (const forbidden of [token, providerError.message, "Bearer "]) {
+    assert.equal(publicSurface.includes(forbidden), false);
+  }
+});
+
+test("post_googlePlayRtdn traite une révocation une seule fois sans modifier l'approbation", async () => {
+  const body = {
+    ...storeRegistration(),
+    planId: "premium",
+    store: "google_play",
+  };
+  const draft = createStoreCheckoutDraft(body, TEST_SIGNING_SECRET, Date.now());
+  const checkout = buildPersistedCheckoutDraft(draft, { profile: "", gallery: [] });
+  const accountToken = deriveStoreAccountToken(checkout, TEST_SIGNING_SECRET);
+  const subscription = {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+    acknowledgementState: "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+    startTime: new Date(Date.now() - 60_000).toISOString(),
+    lineItems: [{
+      productId: "ca.indexcanada.app.premium.annual",
+      expiryTime: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      latestSuccessfulOrderId: "GPA.1234-5678-9012-34567",
+      autoRenewingPlan: { autoRenewEnabled: true },
+    }],
+    externalAccountIdentifiers: { obfuscatedExternalAccountId: accountToken },
+    etag: "rtdn-etag",
+  };
+  seed({ PaymentCheckouts: [checkout] });
+  const confirmation = {
+    checkoutId: checkout._id,
+    store: "google_play",
+    productId: "ca.indexcanada.app.premium.annual",
+    verificationData: "rtdn-purchase-token-never-persisted",
+    purchaseId: "GPA.1234-5678-9012-34567",
+  };
+  const providerDependencies = {
+    verifyGoogle: async () => subscription,
+    acknowledgeGoogle: async () => assert.fail("déjà acquitté"),
+  };
+  assert.equal((await post_confirmStorePurchase(
+    storePostRequest(confirmation),
+    providerDependencies,
+  )).status, 200);
+  const approved = {
+    ...__wixDataTest.items("Professionnel")[0],
+    isActive: true,
+    registrationStatus: "approved",
+  };
+  seed({
+    PaymentCheckouts: __wixDataTest.items("PaymentCheckouts"),
+    Entitlements: __wixDataTest.items("Entitlements"),
+    Professionnel: [approved],
+  });
+  const rtdnData = Buffer.from(JSON.stringify({
+    version: "1.0",
+    packageName: APP_BUNDLE_ID,
+    eventTimeMillis: String(Date.now() - 1_000),
+    subscriptionNotification: {
+      version: "1.0",
+      notificationType: 12,
+      purchaseToken: confirmation.verificationData,
+    },
+  }), "utf8").toString("base64");
+  const pushBody = {
+    message: {
+      data: rtdnData,
+      messageId: "9876543210123456",
+      publishTime: new Date().toISOString(),
+    },
+    subscription: "projects/index-canada/subscriptions/play-rtdn",
+  };
+  const pushRequest = storePostRequest(pushBody);
+  pushRequest.headers.authorization = "Bearer header.payload.signature";
+  const dependencies = {
+    ...providerDependencies,
+    expectedSubscription: pushBody.subscription,
+    verifyGooglePush: async (authorization) => assert.equal(
+      authorization,
+      "Bearer header.payload.signature",
+    ),
+  };
+
+  const first = await post_googlePlayRtdn(pushRequest, dependencies);
+  const replay = await post_googlePlayRtdn(pushRequest, dependencies);
+
+  const obsoletePayload = JSON.parse(Buffer.from(rtdnData, "base64").toString("utf8"));
+  obsoletePayload.eventTimeMillis = String(Date.now() - 5_000);
+  obsoletePayload.subscriptionNotification.notificationType = 2;
+  const obsoleteRequest = storePostRequest({
+    ...pushBody,
+    message: {
+      ...pushBody.message,
+      messageId: "obsolete-renewal-9876543210",
+      data: Buffer.from(JSON.stringify(obsoletePayload), "utf8").toString("base64"),
+    },
+  });
+  obsoleteRequest.headers.authorization = "Bearer header.payload.signature";
+  const obsoleteReplay = await post_googlePlayRtdn(obsoleteRequest, dependencies);
+
+  assert.equal(first.status, 200);
+  assert.equal(first.body.received, true);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.idempotent, true);
+  assert.equal(obsoleteReplay.status, 200);
+  assert.equal(__wixDataTest.items("PaymentEvents").length, 2);
+  assert.equal(
+    __wixDataTest.items("PaymentEvents").every((event) => event.status === "processed"),
+    true,
+  );
+  assert.equal(__wixDataTest.items("Entitlements")[0].status, "revoked");
+  const professional = __wixDataTest.items("Professionnel")[0];
+  assert.equal(professional.isActive, true);
+  assert.equal(professional.registrationStatus, "approved");
+  assert.equal(professional.entitlementStatus, "revoked");
+  assert.equal(professional.paymentStatus, "revoked");
+  const persisted = JSON.stringify({
+    events: __wixDataTest.items("PaymentEvents"),
+    entitlements: __wixDataTest.items("Entitlements"),
+    professionals: __wixDataTest.items("Professionnel"),
+  });
+  assert.equal(persisted.includes(confirmation.verificationData), false);
+  assert.equal(persisted.includes(accountToken), false);
+});
+
+test("post_googlePlayRtdn acquitte les familles non-abonnement sans appel fournisseur ni mutation", async () => {
+  const subscriptionName = "projects/index-canada/subscriptions/play-rtdn";
+  const notifications = [{
+    oneTimeProductNotification: {
+      version: "1.0",
+      notificationType: 1,
+      purchaseToken: "one-time-token-never-persisted",
+      sku: "one.time.product",
+    },
+  }, {
+    voidedPurchaseNotification: {
+      purchaseToken: "voided-token-never-persisted",
+      orderId: "GPA.1234-5678-9012-34567",
+      productType: 1,
+      refundType: 1,
+    },
+  }, {
+    pendingRefundReviewNotification: {
+      version: "1.0",
+      pendingRefundToken: "pending-refund-token-never-persisted",
+      orderId: "GPA.1234-5678-9012-34567",
+      refundReason: 7,
+    },
+  }];
+  let pushVerifications = 0;
+  let providerCalls = 0;
+
+  for (const [index, notification] of notifications.entries()) {
+    const data = Buffer.from(JSON.stringify({
+      version: "1.0",
+      packageName: APP_BUNDLE_ID,
+      eventTimeMillis: String(Date.now() - 1_000),
+      ...notification,
+    }), "utf8").toString("base64");
+    const push = storePostRequest({
+      message: {
+        data,
+        messageId: `ignored-rtdn-${index}-1234567890`,
+        publishTime: new Date().toISOString(),
+      },
+      subscription: subscriptionName,
+    });
+    push.headers.authorization = "Bearer header.payload.signature";
+    const result = await post_googlePlayRtdn(push, {
+      expectedSubscription: subscriptionName,
+      verifyGooglePush: async () => { pushVerifications += 1; },
+      verifyGoogle: async () => { providerCalls += 1; },
+      acknowledgeGoogle: async () => assert.fail("aucun abonnement à acquitter"),
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.received, true);
+    assert.equal(result.body.ignored, true);
+  }
+
+  assert.equal(pushVerifications, notifications.length);
+  assert.equal(providerCalls, 0);
+  assert.equal(__wixDataTest.items("PaymentEvents").length, 0);
+  assert.equal(__wixDataTest.items("Entitlements").length, 0);
+  assert.equal(__wixDataTest.items("Professionnel").length, 0);
+});
+
+test("post_googlePlayRtdn ignore le type 20 initial et de remplacement sans mutation ni acquittement", async () => {
+  const subscriptionName = "projects/index-canada/subscriptions/play-rtdn";
+  const initialToken = "pending-initial-token-never-persisted";
+  const replacementToken = "pending-replacement-token-never-persisted";
+  const linkedToken = "pending-linked-token-never-reread";
+  const providerResponses = new Map([
+    [initialToken, {
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED",
+    }],
+    [replacementToken, {
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED",
+      linkedPurchaseToken: linkedToken,
+    }],
+  ]);
+  const verifiedTokens = [];
+  const forbidden = () => assert.fail("le type 20 ne doit déclencher aucune mutation ni acquittement");
+  const dependencies = {
+    expectedSubscription: subscriptionName,
+    verifyGooglePush: async () => {},
+    verifyGoogle: async (purchaseToken) => {
+      verifiedTokens.push(purchaseToken);
+      return providerResponses.get(purchaseToken);
+    },
+    acknowledgeGoogle: forbidden,
+    beginEvent: forbidden,
+    completeEvent: forbidden,
+    persistEntitlement: forbidden,
+    projectProfessional: forbidden,
+    projectReplacementProfessional: forbidden,
+  };
+
+  for (const [index, purchaseToken] of [initialToken, replacementToken].entries()) {
+    const data = Buffer.from(JSON.stringify({
+      version: "1.0",
+      packageName: APP_BUNDLE_ID,
+      eventTimeMillis: String(Date.now() - 1_000),
+      subscriptionNotification: {
+        version: "1.0",
+        notificationType: 20,
+        purchaseToken,
+      },
+    }), "utf8").toString("base64");
+    const push = storePostRequest({
+      message: {
+        data,
+        messageId: `pending-canceled-${index}-1234567890`,
+        publishTime: new Date().toISOString(),
+      },
+      subscription: subscriptionName,
+    });
+    push.headers.authorization = "Bearer header.payload.signature";
+    const result = await post_googlePlayRtdn(push, dependencies);
+    assert.equal(result.status, 200);
+    assert.equal(result.body.received, true);
+    assert.equal(result.body.ignored, true);
+  }
+
+  assert.deepEqual(verifiedTokens, [initialToken, replacementToken]);
+  assert.equal(verifiedTokens.includes(linkedToken), false);
+  assert.equal(__wixDataTest.items("PaymentEvents").length, 0);
+  assert.equal(__wixDataTest.items("Entitlements").length, 0);
+  assert.equal(__wixDataTest.items("Professionnel").length, 0);
+});
+
+test("post_googlePlayRtdn refuse les réponses type 20 incohérentes sans mutation", async () => {
+  const subscriptionName = "projects/index-canada/subscriptions/play-rtdn";
+  const purchaseToken = "pending-invalid-token-never-persisted";
+  const cases = [{
+    name: "package",
+    response: {
+      packageName: "ca.example.other",
+      subscriptionState: "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED",
+    },
+    code: "STORE_APP_MISMATCH",
+  }, {
+    name: "state",
+    response: {
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+    },
+    code: "UNTRUSTED_STORE_NOTIFICATION",
+  }, {
+    name: "self-link",
+    response: {
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED",
+      linkedPurchaseToken: purchaseToken,
+    },
+    code: "STORE_PURCHASE_LINEAGE_INVALID",
+  }];
+  let mutationCalls = 0;
+
+  for (const [index, fixture] of cases.entries()) {
+    const data = Buffer.from(JSON.stringify({
+      version: "1.0",
+      packageName: APP_BUNDLE_ID,
+      eventTimeMillis: String(Date.now() - 1_000),
+      subscriptionNotification: {
+        version: "1.0",
+        notificationType: 20,
+        purchaseToken,
+      },
+    }), "utf8").toString("base64");
+    const push = storePostRequest({
+      message: {
+        data,
+        messageId: `pending-invalid-${fixture.name}-${index}-1234567890`,
+        publishTime: new Date().toISOString(),
+      },
+      subscription: subscriptionName,
+    });
+    push.headers.authorization = "Bearer header.payload.signature";
+    const forbidden = () => {
+      mutationCalls += 1;
+      assert.fail("une réponse type 20 invalide ne doit jamais muter ni être acquittée");
+    };
+    const result = await post_googlePlayRtdn(push, {
+      expectedSubscription: subscriptionName,
+      verifyGooglePush: async () => {},
+      verifyGoogle: async () => fixture.response,
+      acknowledgeGoogle: forbidden,
+      beginEvent: forbidden,
+      completeEvent: forbidden,
+      persistEntitlement: forbidden,
+      projectProfessional: forbidden,
+      projectReplacementProfessional: forbidden,
+    });
+    assert.equal(result.status, 400);
+    assert.equal(result.body.success, false);
+    assert.equal(result.body.code, fixture.code);
+  }
+
+  assert.equal(mutationCalls, 0);
+  assert.equal(__wixDataTest.items("PaymentEvents").length, 0);
+  assert.equal(__wixDataTest.items("Entitlements").length, 0);
+  assert.equal(__wixDataTest.items("Professionnel").length, 0);
+});
+
+test("un RTDN-first répare la fiche manquante après une panne post-Entitlement", async () => {
+  const draft = createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400302" }),
+    planId: "premium",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now());
+  const checkout = buildPersistedCheckoutDraft(draft, { profile: "", gallery: [] });
+  const accountToken = deriveStoreAccountToken(checkout, TEST_SIGNING_SECRET);
+  const rawToken = "rtdn-first-saga-token-never-persisted";
+  const subscriptionName = "projects/index-canada/subscriptions/play-rtdn";
+  const eventAt = Date.now();
+  const data = Buffer.from(JSON.stringify({
+    version: "1.0",
+    packageName: APP_BUNDLE_ID,
+    eventTimeMillis: String(eventAt),
+    subscriptionNotification: {
+      version: "1.0",
+      notificationType: 4,
+      purchaseToken: rawToken,
+    },
+  }), "utf8").toString("base64");
+  const push = storePostRequest({
+    message: {
+      data,
+      messageId: "rtdn-first-saga-message-123456",
+      publishTime: new Date(eventAt).toISOString(),
+    },
+    subscription: subscriptionName,
+  });
+  push.headers.authorization = "Bearer header.payload.signature";
+  const providerDependencies = {
+    expectedSubscription: subscriptionName,
+    verifyGooglePush: async () => {},
+    verifyGoogle: async () => ({
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+      acknowledgementState: "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+      startTime: new Date(eventAt - 60_000).toISOString(),
+      lineItems: [{
+        productId: checkout.storeProductId,
+        expiryTime: new Date(eventAt + 365 * 24 * 60 * 60 * 1000).toISOString(),
+        latestSuccessfulOrderId: "GPA.7777-7777-7777-77777",
+        autoRenewingPlan: { autoRenewEnabled: true },
+      }],
+      externalAccountIdentifiers: { obfuscatedExternalAccountId: accountToken },
+      etag: "rtdn-first-saga-etag",
+    }),
+    acknowledgeGoogle: async () => assert.fail("achat déjà acquitté"),
+  };
+  seed({ PaymentCheckouts: [checkout] });
+
+  const failed = await post_googlePlayRtdn(push, {
+    ...providerDependencies,
+    projectProfessional: async () => {
+      throw new Error("panne RTDN injectée après Entitlement");
+    },
+  });
+  assert.equal(failed.status, 500);
+  assert.equal(__wixDataTest.items("Entitlements").length, 1);
+  assert.equal(__wixDataTest.items("Professionnel").length, 0);
+  assert.equal(__wixDataTest.items("PaymentEvents")[0].status, "processing");
+
+  const repaired = await post_googlePlayRtdn(push, providerDependencies);
+  assert.equal(repaired.status, 200);
+  assert.equal(repaired.body.ignored, false);
+  assert.equal(__wixDataTest.items("Entitlements").length, 1);
+  assert.equal(__wixDataTest.items("Professionnel").length, 1);
+  assert.equal(__wixDataTest.items("PaymentEvents")[0].status, "processed");
+  const entitlement = __wixDataTest.items("Entitlements")[0];
+  const professional = __wixDataTest.items("Professionnel")[0];
+  assert.equal(professional._id, entitlement.professionalId);
+  assert.equal(professional.entitlementId, entitlement._id);
+  assert.equal(professional.checkoutId, checkout._id);
+  const persisted = JSON.stringify({
+    events: __wixDataTest.items("PaymentEvents"),
+    entitlement,
+    professional,
+  });
+  assert.equal(persisted.includes(rawToken), false);
+  assert.equal(persisted.includes(accountToken), false);
+});
+
+test("un remplacement RTDN répare la fiche initiale manquante depuis le checkout racine", async () => {
+  const premiumProduct = "ca.indexcanada.app.premium.annual";
+  const professionalProduct = "ca.indexcanada.app.professional.annual";
+  const initialToken = "root-saga-initial-token-never-persisted";
+  const replacementToken = "root-saga-replacement-token-never-persisted";
+  const initialDraft = createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400401" }),
+    planId: "premium",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now());
+  const initialCheckout = buildPersistedCheckoutDraft(
+    initialDraft,
+    { profile: "", gallery: [] },
+  );
+  const initialAccountToken = deriveStoreAccountToken(initialCheckout, TEST_SIGNING_SECRET);
+  const initialResponse = {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+    acknowledgementState: "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+    startTime: new Date(Date.now() - 60_000).toISOString(),
+    lineItems: [{
+      productId: premiumProduct,
+      expiryTime: new Date(Date.now() + 60_000).toISOString(),
+      latestSuccessfulOrderId: "GPA.4141-4141-4141-41414",
+      autoRenewingPlan: { autoRenewEnabled: true },
+    }],
+    externalAccountIdentifiers: { obfuscatedExternalAccountId: initialAccountToken },
+  };
+  seed({ PaymentCheckouts: [initialCheckout] });
+  const failedInitial = await post_confirmStorePurchase(storePostRequest({
+    checkoutId: initialCheckout._id,
+    store: "google_play",
+    productId: premiumProduct,
+    verificationData: initialToken,
+  }), {
+    verifyGoogle: async () => initialResponse,
+    acknowledgeGoogle: async () => assert.fail("achat initial déjà acquitté"),
+    finalizeProfessional: async () => {
+      throw new Error("panne initiale injectée avant la fiche");
+    },
+  });
+  assert.equal(failedInitial.status, 500);
+  assert.equal(__wixDataTest.items("Entitlements").length, 1);
+  assert.equal(__wixDataTest.items("Professionnel").length, 0);
+  assert.equal(
+    __wixDataTest.items("Entitlements")[0].rootCheckoutId,
+    initialCheckout._id,
+  );
+
+  const replacementDraft = createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400402" }),
+    planId: "professional",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now());
+  const replacementCheckout = buildPersistedCheckoutDraft(
+    replacementDraft,
+    { profile: "", gallery: [] },
+  );
+  const replacementAccountToken = deriveStoreAccountToken(
+    replacementCheckout,
+    TEST_SIGNING_SECRET,
+  );
+  seed({
+    PaymentCheckouts: [
+      ...__wixDataTest.items("PaymentCheckouts"),
+      replacementCheckout,
+    ],
+    Entitlements: __wixDataTest.items("Entitlements"),
+  });
+
+  const eventAt = Date.now() + 1_000;
+  const data = Buffer.from(JSON.stringify({
+    version: "1.0",
+    packageName: APP_BUNDLE_ID,
+    eventTimeMillis: String(eventAt),
+    subscriptionNotification: {
+      version: "1.0",
+      notificationType: 4,
+      purchaseToken: replacementToken,
+    },
+  }), "utf8").toString("base64");
+  const push = storePostRequest({
+    message: {
+      data,
+      messageId: "root-saga-replacement-message-123456",
+      publishTime: new Date(eventAt).toISOString(),
+    },
+    subscription: "projects/index-canada/subscriptions/play-rtdn",
+  });
+  push.headers.authorization = "Bearer header.payload.signature";
+  const acknowledgements = [];
+  const repaired = await post_googlePlayRtdn(push, {
+    expectedSubscription: "projects/index-canada/subscriptions/play-rtdn",
+    verifyGooglePush: async () => {},
+    verifyGoogle: async () => ({
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+      acknowledgementState: "ACKNOWLEDGEMENT_STATE_PENDING",
+      linkedPurchaseToken: initialToken,
+      startTime: initialResponse.startTime,
+      lineItems: [{
+        productId: professionalProduct,
+        expiryTime: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+        latestSuccessfulOrderId: "GPA.4242-4242-4242-42424",
+        autoRenewingPlan: { autoRenewEnabled: true },
+        itemReplacement: {
+          productId: premiumProduct,
+          replacementMode: "WITH_TIME_PRORATION",
+        },
+      }],
+      externalAccountIdentifiers: {
+        obfuscatedExternalAccountId: replacementAccountToken,
+      },
+      etag: "root-saga-replacement-etag",
+    }),
+    acknowledgeGoogle: async (value) => acknowledgements.push(value),
+  });
+
+  assert.equal(repaired.status, 200);
+  assert.deepEqual(acknowledgements, [{
+    purchaseToken: replacementToken,
+    productId: professionalProduct,
+  }]);
+  const [entitlement] = __wixDataTest.items("Entitlements");
+  const [professional] = __wixDataTest.items("Professionnel");
+  assert.equal(entitlement.rootCheckoutId, initialCheckout._id);
+  assert.equal(entitlement.checkoutId, replacementCheckout._id);
+  assert.equal(professional._id, entitlement.professionalId);
+  assert.equal(professional.checkoutId, replacementCheckout._id);
+  assert.equal(professional.entitlementId, entitlement._id);
+  assert.equal(__wixDataTest.items("Professionnel").length, 1);
+  const checkouts = __wixDataTest.items("PaymentCheckouts");
+  assert.equal(checkouts.find((item) => item._id === initialCheckout._id)?.entitlementId, entitlement._id);
+  assert.equal(checkouts.find((item) => item._id === initialCheckout._id)?.professionalId, professional._id);
+  assert.equal(checkouts.find((item) => item._id === replacementCheckout._id)?.entitlementId, entitlement._id);
+  assert.equal(checkouts.find((item) => item._id === replacementCheckout._id)?.professionalId, professional._id);
+  const persisted = JSON.stringify({ entitlement, professional, checkouts });
+  assert.equal(persisted.includes(initialToken), false);
+  assert.equal(persisted.includes(replacementToken), false);
+});
+
+test("Google RTDN migre un remplacement différé sans doubler la fiche et ignore l'ancien token expiré", async () => {
+  const professionalDraft = createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400101" }),
+    planId: "professional",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now());
+  const professionalCheckout = buildPersistedCheckoutDraft(
+    professionalDraft,
+    { profile: "", gallery: [] },
+  );
+  const professionalAccountToken = deriveStoreAccountToken(
+    professionalCheckout,
+    TEST_SIGNING_SECRET,
+  );
+  const initialToken = "initial-purchase-token-never-persisted";
+  const replacementToken = "replacement-purchase-token-never-persisted";
+  const premiumProduct = "ca.indexcanada.app.premium.annual";
+  const professionalProduct = "ca.indexcanada.app.professional.annual";
+  const initialSubscription = {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+    acknowledgementState: "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+    startTime: new Date(Date.now() - 60_000).toISOString(),
+    lineItems: [{
+      productId: professionalProduct,
+      expiryTime: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      latestSuccessfulOrderId: "GPA.1111-1111-1111-11111",
+      autoRenewingPlan: { autoRenewEnabled: true },
+    }],
+    externalAccountIdentifiers: { obfuscatedExternalAccountId: professionalAccountToken },
+    etag: "initial-plan-etag",
+  };
+  seed({ PaymentCheckouts: [professionalCheckout] });
+  assert.equal((await post_confirmStorePurchase(storePostRequest({
+    checkoutId: professionalCheckout._id,
+    store: "google_play",
+    productId: professionalProduct,
+    verificationData: initialToken,
+  }), {
+    verifyGoogle: async () => initialSubscription,
+    acknowledgeGoogle: async () => assert.fail("déjà acquitté"),
+  })).status, 200);
+  const originalEntitlement = __wixDataTest.items("Entitlements")[0];
+  const originalProfessional = __wixDataTest.items("Professionnel")[0];
+  const approved = {
+    ...originalProfessional,
+    isActive: true,
+    registrationStatus: "approved",
+  };
+
+  const replacementDraft = createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400101" }),
+    planId: "premium",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now());
+  const replacementCheckout = buildPersistedCheckoutDraft(
+    replacementDraft,
+    { profile: "", gallery: [] },
+  );
+  const replacementAccountToken = deriveStoreAccountToken(
+    replacementCheckout,
+    TEST_SIGNING_SECRET,
+  );
+  seed({
+    PaymentCheckouts: [
+      ...__wixDataTest.items("PaymentCheckouts"),
+      replacementCheckout,
+    ],
+    Entitlements: __wixDataTest.items("Entitlements"),
+    Professionnel: [approved],
+  });
+
+  const deferredExpiry = new Date(Date.now() + 60_000).toISOString();
+  const deferredSubscription = {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+    acknowledgementState: "ACKNOWLEDGEMENT_STATE_PENDING",
+    linkedPurchaseToken: initialToken,
+    lineItems: [{
+      productId: professionalProduct,
+      expiryTime: deferredExpiry,
+      latestSuccessfulOrderId: "GPA.1111-1111-1111-11111",
+      autoRenewingPlan: { autoRenewEnabled: false },
+      deferredItemReplacement: { productId: premiumProduct },
+    }, {
+      productId: premiumProduct,
+    }],
+    externalAccountIdentifiers: { obfuscatedExternalAccountId: replacementAccountToken },
+    etag: "deferred-plan-etag",
+  };
+  const deliverRtdn = async ({
+    token,
+    notificationType,
+    messageId,
+    eventTime,
+    response,
+    acknowledgeGoogle = async () => assert.fail("déjà acquitté"),
+    extraDependencies = {},
+  }) => {
+    const data = Buffer.from(JSON.stringify({
+      version: "1.0",
+      packageName: APP_BUNDLE_ID,
+      eventTimeMillis: String(eventTime),
+      subscriptionNotification: {
+        version: "1.0",
+        notificationType,
+        purchaseToken: token,
+      },
+    }), "utf8").toString("base64");
+    const push = storePostRequest({
+      message: {
+        data,
+        messageId,
+        publishTime: new Date(eventTime).toISOString(),
+      },
+      subscription: "projects/index-canada/subscriptions/play-rtdn",
+    });
+    push.headers.authorization = "Bearer header.payload.signature";
+    return post_googlePlayRtdn(push, {
+      expectedSubscription: "projects/index-canada/subscriptions/play-rtdn",
+      verifyGooglePush: async () => {},
+      verifyGoogle: async () => response,
+      acknowledgeGoogle,
+      ...extraDependencies,
+    });
+  };
+
+  const firstEventAt = Date.now() + 1_000;
+  const acknowledgements = [];
+  const failedDeferred = await deliverRtdn({
+    token: replacementToken,
+    notificationType: 4,
+    messageId: "deferred-replacement-message-123456",
+    eventTime: firstEventAt,
+    response: deferredSubscription,
+    acknowledgeGoogle: async (value) => acknowledgements.push(value),
+    extraDependencies: {
+      projectReplacementProfessional: async () => {
+        throw new Error("panne X vers Y injectée après Entitlement");
+      },
+    },
+  });
+  assert.equal(failedDeferred.status, 500);
+  assert.equal(__wixDataTest.items("Entitlements")[0].checkoutId, replacementCheckout._id);
+  assert.equal(__wixDataTest.items("Professionnel")[0].checkoutId, professionalCheckout._id);
+  assert.deepEqual(acknowledgements, []);
+  const deferred = await deliverRtdn({
+    token: replacementToken,
+    notificationType: 4,
+    messageId: "deferred-replacement-message-123456",
+    eventTime: firstEventAt,
+    response: deferredSubscription,
+    acknowledgeGoogle: async (value) => acknowledgements.push(value),
+  });
+  assert.equal(deferred.status, 200);
+  assert.deepEqual(acknowledgements, [{
+    purchaseToken: replacementToken,
+    productId: professionalProduct,
+  }]);
+  let entitlement = __wixDataTest.items("Entitlements")[0];
+  assert.equal(entitlement._id, originalEntitlement._id);
+  assert.equal(entitlement.professionalId, originalProfessional._id);
+  assert.equal(entitlement.checkoutId, replacementCheckout._id);
+  assert.equal(entitlement.planId, "professional");
+  assert.equal(entitlement.productId, professionalProduct);
+  assert.equal(entitlement.pendingPlanId, "premium");
+  assert.equal(entitlement.pendingProductId, premiumProduct);
+  assert.equal(entitlement.pendingEffectiveAt, deferredExpiry);
+  assert.equal(__wixDataTest.items("Professionnel").length, 1);
+  assert.equal(__wixDataTest.items("Professionnel")[0].checkoutId, replacementCheckout._id);
+  assert.equal(__wixDataTest.items("Professionnel")[0].plan, "professional");
+  assert.equal(__wixDataTest.items("Professionnel")[0].sponsor, true);
+  assert.equal(__wixDataTest.items("Professionnel")[0].isActive, true);
+  assert.equal(__wixDataTest.items("Professionnel")[0].registrationStatus, "approved");
+
+  const confirmation = await post_confirmStorePurchase(storePostRequest({
+    checkoutId: replacementCheckout._id,
+    store: "google_play",
+    productId: premiumProduct,
+    verificationData: replacementToken,
+  }), {
+    verifyGoogle: async () => ({
+      ...deferredSubscription,
+      acknowledgementState: "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+    }),
+    acknowledgeGoogle: async () => assert.fail("le RTDN a déjà acquitté le nouveau token"),
+  });
+  assert.equal(confirmation.status, 200);
+  assert.equal(confirmation.body.data.planId, "professional");
+  assert.equal(confirmation.body.data.pendingPlanId, "premium");
+  assert.equal(confirmation.body.entitlement.plan_id, "professional");
+  assert.equal(confirmation.body.entitlement.pending_plan_id, "premium");
+
+  const renewedSubscription = {
+    ...deferredSubscription,
+    acknowledgementState: "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+    startTime: initialSubscription.startTime,
+    lineItems: [{
+      productId: professionalProduct,
+      expiryTime: new Date(Date.now() - 1_000).toISOString(),
+      latestSuccessfulOrderId: "GPA.1111-1111-1111-11111",
+      autoRenewingPlan: { autoRenewEnabled: false },
+    }, {
+      productId: premiumProduct,
+      expiryTime: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      latestSuccessfulOrderId: "GPA.2222-2222-2222-22222",
+      autoRenewingPlan: { autoRenewEnabled: true },
+    }],
+    etag: "effective-renewal-etag",
+  };
+  const renewed = await deliverRtdn({
+    token: replacementToken,
+    notificationType: 2,
+    messageId: "effective-renewal-message-123456",
+    eventTime: firstEventAt + 1_000,
+    response: renewedSubscription,
+  });
+  assert.equal(renewed.status, 200);
+  entitlement = __wixDataTest.items("Entitlements")[0];
+  assert.equal(entitlement.planId, "premium");
+  assert.equal(entitlement.productId, premiumProduct);
+  assert.equal(entitlement.pendingPlanId, "");
+  assert.equal(entitlement.pendingProductId, "");
+  assert.equal(entitlement.pendingEffectiveAt, "");
+  assert.equal(__wixDataTest.items("Professionnel")[0].plan, "premium");
+  assert.equal(__wixDataTest.items("Professionnel")[0].sponsor, false);
+  assert.equal(__wixDataTest.items("Professionnel")[0].isActive, true);
+  assert.equal(__wixDataTest.items("Professionnel")[0].registrationStatus, "approved");
+
+  const expiredOldToken = await deliverRtdn({
+    token: initialToken,
+    notificationType: 13,
+    messageId: "expired-old-token-message-123456",
+    eventTime: firstEventAt + 2_000,
+    response: {
+      ...initialSubscription,
+      subscriptionState: "SUBSCRIPTION_STATE_EXPIRED",
+      lineItems: [{
+        ...initialSubscription.lineItems[0],
+        expiryTime: new Date(Date.now() - 1_000).toISOString(),
+        autoRenewingPlan: { autoRenewEnabled: false },
+      }],
+    },
+  });
+  assert.equal(expiredOldToken.status, 200);
+  assert.equal(expiredOldToken.body.ignored, true);
+  assert.equal(__wixDataTest.items("Entitlements")[0].status, "active");
+  assert.equal(__wixDataTest.items("Entitlements")[0].planId, "premium");
+  assert.equal(__wixDataTest.items("Professionnel")[0].entitlementStatus, "active");
+  assert.equal(
+    __wixDataTest.items("PaymentEvents")
+      .find((event) => event.eventType === "SUBSCRIPTION_EXPIRED")?.outcome,
+    "superseded_purchase_token",
+  );
+
+  const secondReplacementToken = "second-replacement-token-never-persisted";
+  const upgradeDraft = createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400102" }),
+    planId: "professional",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now());
+  const upgradeCheckout = buildPersistedCheckoutDraft(
+    upgradeDraft,
+    { profile: "", gallery: [] },
+  );
+  const upgradeAccountToken = deriveStoreAccountToken(
+    upgradeCheckout,
+    TEST_SIGNING_SECRET,
+  );
+  seed({
+    PaymentCheckouts: [
+      ...__wixDataTest.items("PaymentCheckouts"),
+      upgradeCheckout,
+    ],
+    PaymentEvents: __wixDataTest.items("PaymentEvents"),
+    Entitlements: __wixDataTest.items("Entitlements"),
+    Professionnel: __wixDataTest.items("Professionnel"),
+  });
+  const secondAcknowledgements = [];
+  const failedSecondReplacement = await deliverRtdn({
+    token: secondReplacementToken,
+    notificationType: 4,
+    messageId: "second-replacement-message-123456",
+    eventTime: firstEventAt + 3_000,
+    response: {
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+      acknowledgementState: "ACKNOWLEDGEMENT_STATE_PENDING",
+      linkedPurchaseToken: replacementToken,
+      startTime: initialSubscription.startTime,
+      lineItems: [{
+        productId: professionalProduct,
+        expiryTime: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+        latestSuccessfulOrderId: "GPA.3333-3333-3333-33333",
+        autoRenewingPlan: { autoRenewEnabled: true },
+        itemReplacement: {
+          productId: premiumProduct,
+          replacementMode: "WITH_TIME_PRORATION",
+        },
+      }],
+      externalAccountIdentifiers: { obfuscatedExternalAccountId: upgradeAccountToken },
+      etag: "second-replacement-etag",
+    },
+    acknowledgeGoogle: async (value) => secondAcknowledgements.push(value),
+    extraDependencies: {
+      projectReplacementProfessional: async () => {
+        throw new Error("panne Y vers Z injectée après Entitlement");
+      },
+    },
+  });
+  assert.equal(failedSecondReplacement.status, 500);
+  assert.equal(__wixDataTest.items("Entitlements")[0].checkoutId, upgradeCheckout._id);
+  assert.equal(__wixDataTest.items("Professionnel")[0].checkoutId, replacementCheckout._id);
+  assert.deepEqual(secondAcknowledgements, []);
+  const secondReplacement = await deliverRtdn({
+    token: secondReplacementToken,
+    notificationType: 4,
+    messageId: "second-replacement-message-123456",
+    eventTime: firstEventAt + 3_000,
+    response: {
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+      acknowledgementState: "ACKNOWLEDGEMENT_STATE_PENDING",
+      linkedPurchaseToken: replacementToken,
+      startTime: initialSubscription.startTime,
+      lineItems: [{
+        productId: professionalProduct,
+        expiryTime: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+        latestSuccessfulOrderId: "GPA.3333-3333-3333-33333",
+        autoRenewingPlan: { autoRenewEnabled: true },
+        itemReplacement: {
+          productId: premiumProduct,
+          replacementMode: "WITH_TIME_PRORATION",
+        },
+      }],
+      externalAccountIdentifiers: { obfuscatedExternalAccountId: upgradeAccountToken },
+      etag: "second-replacement-etag",
+    },
+    acknowledgeGoogle: async (value) => secondAcknowledgements.push(value),
+  });
+  assert.equal(secondReplacement.status, 200);
+  assert.deepEqual(secondAcknowledgements, [{
+    purchaseToken: secondReplacementToken,
+    productId: professionalProduct,
+  }]);
+  entitlement = __wixDataTest.items("Entitlements")[0];
+  assert.equal(entitlement._id, originalEntitlement._id);
+  assert.equal(entitlement.professionalId, originalProfessional._id);
+  assert.equal(entitlement.checkoutId, upgradeCheckout._id);
+  assert.equal(entitlement.planId, "professional");
+  assert.equal(entitlement.pendingPlanId, "");
+  assert.equal(__wixDataTest.items("Professionnel").length, 1);
+  assert.equal(__wixDataTest.items("Professionnel")[0].checkoutId, upgradeCheckout._id);
+
+  const expiredMiddleToken = await deliverRtdn({
+    token: replacementToken,
+    notificationType: 13,
+    messageId: "expired-middle-token-message-123456",
+    eventTime: firstEventAt + 4_000,
+    response: {
+      ...renewedSubscription,
+      subscriptionState: "SUBSCRIPTION_STATE_EXPIRED",
+      lineItems: [{
+        ...renewedSubscription.lineItems[0],
+        expiryTime: new Date(Date.now() - 2_000).toISOString(),
+        autoRenewingPlan: { autoRenewEnabled: false },
+      }, {
+        ...renewedSubscription.lineItems[1],
+        expiryTime: new Date(Date.now() - 1_000).toISOString(),
+        autoRenewingPlan: { autoRenewEnabled: false },
+      }],
+    },
+  });
+  assert.equal(expiredMiddleToken.status, 200);
+  assert.equal(expiredMiddleToken.body.ignored, true);
+  assert.equal(__wixDataTest.items("Entitlements")[0].status, "active");
+  assert.equal(__wixDataTest.items("Entitlements")[0].planId, "professional");
+  assert.equal(
+    __wixDataTest.items("PaymentEvents")
+      .filter((event) => event.eventType === "SUBSCRIPTION_EXPIRED")
+      .every((event) => event.outcome === "superseded_purchase_token"),
+    true,
+  );
+  const persisted = JSON.stringify({
+    events: __wixDataTest.items("PaymentEvents"),
+    checkouts: __wixDataTest.items("PaymentCheckouts"),
+    entitlements: __wixDataTest.items("Entitlements"),
+    professionals: __wixDataTest.items("Professionnel"),
+  });
+  assert.equal(persisted.includes(initialToken), false);
+  assert.equal(persisted.includes(replacementToken), false);
+  assert.equal(persisted.includes(secondReplacementToken), false);
+});
+
+test("la chaîne X vers Y vers Z répare le checkout Y resté incomplet après migration du profil", async () => {
+  const premiumProduct = "ca.indexcanada.app.premium.annual";
+  const professionalProduct = "ca.indexcanada.app.professional.annual";
+  const xToken = "interrupted-x-token-never-persisted";
+  const yToken = "interrupted-y-token-never-persisted";
+  const zToken = "interrupted-z-token-never-persisted";
+  const xCheckout = buildPersistedCheckoutDraft(createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400501" }),
+    planId: "premium",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now()), { profile: "", gallery: [] });
+  const xAccountToken = deriveStoreAccountToken(xCheckout, TEST_SIGNING_SECRET);
+  const initialResponse = {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+    acknowledgementState: "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+    startTime: new Date(Date.now() - 60_000).toISOString(),
+    lineItems: [{
+      productId: premiumProduct,
+      expiryTime: new Date(Date.now() + 60_000).toISOString(),
+      latestSuccessfulOrderId: "GPA.5151-5151-5151-51515",
+      autoRenewingPlan: { autoRenewEnabled: true },
+    }],
+    externalAccountIdentifiers: { obfuscatedExternalAccountId: xAccountToken },
+  };
+  seed({ PaymentCheckouts: [xCheckout] });
+  assert.equal((await post_confirmStorePurchase(storePostRequest({
+    checkoutId: xCheckout._id,
+    store: "google_play",
+    productId: premiumProduct,
+    verificationData: xToken,
+  }), {
+    verifyGoogle: async () => initialResponse,
+    acknowledgeGoogle: async () => assert.fail("achat X déjà acquitté"),
+  })).status, 200);
+
+  const yCheckout = buildPersistedCheckoutDraft(createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400502" }),
+    planId: "professional",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now()), { profile: "", gallery: [] });
+  const yAccountToken = deriveStoreAccountToken(yCheckout, TEST_SIGNING_SECRET);
+  seed({
+    PaymentCheckouts: [...__wixDataTest.items("PaymentCheckouts"), yCheckout],
+    Entitlements: __wixDataTest.items("Entitlements"),
+    Professionnel: __wixDataTest.items("Professionnel"),
+  });
+  assert.equal((await post_confirmStorePurchase(storePostRequest({
+    checkoutId: yCheckout._id,
+    store: "google_play",
+    productId: professionalProduct,
+    verificationData: yToken,
+  }), {
+    verifyGoogle: async () => ({
+      ...initialResponse,
+      linkedPurchaseToken: xToken,
+      lineItems: [{
+        productId: professionalProduct,
+        expiryTime: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+        latestSuccessfulOrderId: "GPA.5252-5252-5252-52525",
+        autoRenewingPlan: { autoRenewEnabled: true },
+        itemReplacement: {
+          productId: premiumProduct,
+          replacementMode: "WITH_TIME_PRORATION",
+        },
+      }],
+      externalAccountIdentifiers: { obfuscatedExternalAccountId: yAccountToken },
+      etag: "interrupted-y-etag",
+    }),
+    acknowledgeGoogle: async () => assert.fail("achat Y déjà acquitté"),
+  })).status, 200);
+  const yEntitlement = __wixDataTest.items("Entitlements")[0];
+  const migratedProfessional = __wixDataTest.items("Professionnel")[0];
+  assert.equal(migratedProfessional.checkoutId, yCheckout._id);
+
+  // État exact d'une panne après la migration de la fiche, mais avant le
+  // patch final du checkout Y : le droit et la fiche pointent Y, ses liens
+  // locaux ne sont pas encore écrits.
+  const interruptedCheckouts = __wixDataTest.items("PaymentCheckouts").map((item) => (
+    item._id === yCheckout._id
+      ? {
+        ...item,
+        status: "store_purchase_pending",
+        professionalId: "",
+        entitlementId: "",
+        finalizedAt: "",
+      }
+      : item
+  ));
+  const zCheckout = buildPersistedCheckoutDraft(createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400503" }),
+    planId: "premium",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now()), { profile: "", gallery: [] });
+  const zAccountToken = deriveStoreAccountToken(zCheckout, TEST_SIGNING_SECRET);
+  seed({
+    PaymentCheckouts: [...interruptedCheckouts, zCheckout],
+    Entitlements: [yEntitlement],
+    Professionnel: [migratedProfessional],
+  });
+  const deferredExpiry = new Date(Date.now() + 60_000).toISOString();
+  const zResult = await post_confirmStorePurchase(storePostRequest({
+    checkoutId: zCheckout._id,
+    store: "google_play",
+    productId: premiumProduct,
+    verificationData: zToken,
+  }), {
+    verifyGoogle: async () => ({
+      packageName: APP_BUNDLE_ID,
+      subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+      acknowledgementState: "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+      linkedPurchaseToken: yToken,
+      lineItems: [{
+        productId: professionalProduct,
+        expiryTime: deferredExpiry,
+        latestSuccessfulOrderId: "GPA.5252-5252-5252-52525",
+        autoRenewingPlan: { autoRenewEnabled: false },
+        deferredItemReplacement: { productId: premiumProduct },
+      }, {
+        productId: premiumProduct,
+      }],
+      externalAccountIdentifiers: { obfuscatedExternalAccountId: zAccountToken },
+      etag: "interrupted-z-etag",
+    }),
+    acknowledgeGoogle: async () => assert.fail("achat Z déjà acquitté"),
+  });
+
+  assert.equal(zResult.status, 200);
+  const [entitlement] = __wixDataTest.items("Entitlements");
+  const [professional] = __wixDataTest.items("Professionnel");
+  const checkouts = __wixDataTest.items("PaymentCheckouts");
+  const repairedY = checkouts.find((item) => item._id === yCheckout._id);
+  const finalizedZ = checkouts.find((item) => item._id === zCheckout._id);
+  assert.equal(entitlement.rootCheckoutId, xCheckout._id);
+  assert.equal(entitlement.checkoutId, zCheckout._id);
+  assert.equal(professional.checkoutId, zCheckout._id);
+  assert.equal(repairedY.entitlementId, entitlement._id);
+  assert.equal(repairedY.professionalId, professional._id);
+  assert.equal(finalizedZ.entitlementId, entitlement._id);
+  assert.equal(finalizedZ.professionalId, professional._id);
+  assert.equal(__wixDataTest.items("Professionnel").length, 1);
+  const persisted = JSON.stringify({ entitlement, professional, checkouts });
+  assert.equal(persisted.includes(xToken), false);
+  assert.equal(persisted.includes(yToken), false);
+  assert.equal(persisted.includes(zToken), false);
+});
+
+test("un remplacement refuse toute fiche ou checkout prédécesseur non lié au même droit", async () => {
+  const premiumProduct = "ca.indexcanada.app.premium.annual";
+  const professionalProduct = "ca.indexcanada.app.professional.annual";
+  const initialToken = "takeover-initial-token-never-persisted";
+  const replacementToken = "takeover-replacement-token-never-persisted";
+  const initialDraft = createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400303" }),
+    planId: "premium",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now());
+  const initialCheckout = buildPersistedCheckoutDraft(
+    initialDraft,
+    { profile: "", gallery: [] },
+  );
+  const initialAccountToken = deriveStoreAccountToken(initialCheckout, TEST_SIGNING_SECRET);
+  const initialResponse = {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+    acknowledgementState: "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+    startTime: new Date(Date.now() - 60_000).toISOString(),
+    lineItems: [{
+      productId: premiumProduct,
+      expiryTime: new Date(Date.now() + 60_000).toISOString(),
+      latestSuccessfulOrderId: "GPA.1010-1010-1010-10101",
+      autoRenewingPlan: { autoRenewEnabled: true },
+    }],
+    externalAccountIdentifiers: { obfuscatedExternalAccountId: initialAccountToken },
+  };
+  seed({ PaymentCheckouts: [initialCheckout] });
+  assert.equal((await post_confirmStorePurchase(storePostRequest({
+    checkoutId: initialCheckout._id,
+    store: "google_play",
+    productId: premiumProduct,
+    verificationData: initialToken,
+  }), {
+    verifyGoogle: async () => initialResponse,
+    acknowledgeGoogle: async () => assert.fail("achat déjà acquitté"),
+  })).status, 200);
+
+  const originalCheckout = __wixDataTest.items("PaymentCheckouts")[0];
+  const originalEntitlement = __wixDataTest.items("Entitlements")[0];
+  const originalProfessional = __wixDataTest.items("Professionnel")[0];
+  const replacementDraft = createStoreCheckoutDraft({
+    ...storeRegistration({ professionalId: "temp_1758812400304" }),
+    planId: "professional",
+    store: "google_play",
+  }, TEST_SIGNING_SECRET, Date.now());
+  const replacementCheckout = buildPersistedCheckoutDraft(
+    replacementDraft,
+    { profile: "", gallery: [] },
+  );
+  const replacementAccountToken = deriveStoreAccountToken(
+    replacementCheckout,
+    TEST_SIGNING_SECRET,
+  );
+  const replacementResponse = {
+    packageName: APP_BUNDLE_ID,
+    subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+    acknowledgementState: "ACKNOWLEDGEMENT_STATE_PENDING",
+    linkedPurchaseToken: initialToken,
+    startTime: initialResponse.startTime,
+    lineItems: [{
+      productId: professionalProduct,
+      expiryTime: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      latestSuccessfulOrderId: "GPA.2020-2020-2020-20202",
+      autoRenewingPlan: { autoRenewEnabled: true },
+      itemReplacement: {
+        productId: premiumProduct,
+        replacementMode: "WITH_TIME_PRORATION",
+      },
+    }],
+    externalAccountIdentifiers: { obfuscatedExternalAccountId: replacementAccountToken },
+  };
+  const replacementConfirmation = {
+    checkoutId: replacementCheckout._id,
+    store: "google_play",
+    productId: professionalProduct,
+    verificationData: replacementToken,
+  };
+  const replacementDependencies = {
+    verifyGoogle: async () => replacementResponse,
+    acknowledgeGoogle: async () => assert.fail("aucun acquittement après rejet"),
+  };
+
+  seed({
+    PaymentCheckouts: [originalCheckout, replacementCheckout],
+    Entitlements: [originalEntitlement],
+    Professionnel: [{
+      ...originalProfessional,
+      entitlementId: `ent_${"f".repeat(32)}`,
+    }],
+  });
+  const foreignProfessional = await post_confirmStorePurchase(
+    storePostRequest(replacementConfirmation),
+    replacementDependencies,
+  );
+  assert.equal(foreignProfessional.status, 409);
+  assert.equal(foreignProfessional.body.code, "PAYMENT_ALREADY_USED");
+  assert.equal(__wixDataTest.items("Professionnel")[0].checkoutId, originalCheckout._id);
+  assert.equal(__wixDataTest.items("PaymentCheckouts")[1].professionalId, "");
+
+  seed({
+    PaymentCheckouts: [{
+      ...originalCheckout,
+      entitlementId: `ent_${"e".repeat(32)}`,
+    }, replacementCheckout],
+    Entitlements: [originalEntitlement],
+    Professionnel: [originalProfessional],
+  });
+  const foreignPredecessor = await post_confirmStorePurchase(
+    storePostRequest(replacementConfirmation),
+    replacementDependencies,
+  );
+  assert.equal(foreignPredecessor.status, 409);
+  assert.equal(foreignPredecessor.body.code, "PAYMENT_ALREADY_USED");
+  assert.equal(__wixDataTest.items("Professionnel")[0].checkoutId, originalCheckout._id);
+  assert.equal(__wixDataTest.items("PaymentCheckouts")[1].professionalId, "");
+});
+
+test("post_appStoreServerNotificationV2 traite une expiration JWS validée", async () => {
+  const body = {
+    ...storeRegistration({ professionalId: "temp_1758812400001" }),
+    planId: "premium",
+    store: "app_store",
+  };
+  const draft = createStoreCheckoutDraft(body, TEST_SIGNING_SECRET, Date.now());
+  const checkout = buildPersistedCheckoutDraft(draft, { profile: "", gallery: [] });
+  const accountToken = deriveStoreAccountToken(checkout, TEST_SIGNING_SECRET);
+  const activeTransaction = {
+    bundleId: APP_BUNDLE_ID,
+    productId: "ca.indexcanada.app.premium.annual",
+    appAccountToken: accountToken,
+    environment: "Production",
+    transactionId: "2000000912345678",
+    originalTransactionId: "2000000812345678",
+    purchaseDate: Date.now() - 60_000,
+    expiresDate: Date.now() + 60_000,
+    signedDate: Date.now() - 500,
+    type: "Auto-Renewable Subscription",
+  };
+  seed({ PaymentCheckouts: [checkout] });
+  assert.equal((await post_confirmStorePurchase(storePostRequest({
+    checkoutId: checkout._id,
+    store: "app_store",
+    productId: activeTransaction.productId,
+    verificationData: "active.transaction.jws",
+    purchaseId: activeTransaction.transactionId,
+  }), {
+    verifyApple: async () => activeTransaction,
+  })).status, 200);
+  const expiredTransaction = {
+    ...activeTransaction,
+    expiresDate: Date.now() - 1,
+    signedDate: Date.now(),
+  };
+  const notification = {
+    notificationType: "EXPIRED",
+    subtype: "VOLUNTARY",
+    notificationUUID: "123e4567-e89b-42d3-a456-426614174099",
+    version: "2.0",
+    signedDate: Date.now(),
+    data: {
+      bundleId: APP_BUNDLE_ID,
+      environment: "Production",
+      status: 2,
+      signedTransactionInfo: "expired.transaction.jws",
+    },
+  };
+  const result = await post_appStoreServerNotificationV2(storePostRequest({
+    signedPayload: "expired.notification.jws",
+  }), {
+    verifyAppleNotification: async () => notification,
+    verifyAppleTransaction: async () => expiredTransaction,
+  });
+
+  assert.equal(result.status, 200);
+  assert.equal(result.body.received, true);
+  assert.equal(__wixDataTest.items("Entitlements")[0].status, "expired");
+  assert.equal(__wixDataTest.items("Professionnel")[0].entitlementStatus, "expired");
+  assert.equal(__wixDataTest.items("Professionnel")[0].isActive, false);
+  assert.equal(JSON.stringify(__wixDataTest.items("PaymentEvents"))
+    .includes("expired.notification.jws"), false);
+});
+
+test("les routes magasin refusent toute méthode autre que POST", () => {
+  assert.equal(use_createStoreCheckout(request()).status, 405);
+  assert.equal(use_confirmStorePurchase(request()).status, 405);
+  assert.equal(use_restoreStorePurchase(request()).status, 405);
+  assert.equal(use_appStoreServerNotificationV2(request()).status, 405);
+  assert.equal(use_googlePlayRtdn(request()).status, 405);
+  assert.equal(use_createStoreCheckout(request({}, { method: "OPTIONS" })).status, 204);
+  assert.equal(use_confirmStorePurchase(request({}, { method: "OPTIONS" })).status, 204);
+  assert.equal(use_restoreStorePurchase(request({}, { method: "OPTIONS" })).status, 204);
+  assert.equal(use_appStoreServerNotificationV2(request({}, { method: "OPTIONS" })).status, 204);
+  assert.equal(use_googlePlayRtdn(request({}, { method: "OPTIONS" })).status, 204);
 });
