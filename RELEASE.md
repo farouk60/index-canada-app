@@ -2,19 +2,39 @@
 
 ## Statut actuel : NO-GO production
 
-La version candidate migre les achats numériques mobiles vers StoreKit et Google Play Billing. Elle ne doit pas être publiée avant la validation de bout en bout des achats, restaurations, renouvellements, expirations et révocations avec le backend Wix. Stripe demeure réservé au Web et aux anciens clients compatibles.
+La version candidate migre les achats numériques mobiles vers StoreKit et
+Google Play Billing. Android 1.1.0 (27) est distribué en test interne et l'IPA
+iOS 1.1.0 (27) a été acceptée au téléversement TestFlight. Ces artefacts ciblent
+Wix préproduction. Ils ne doivent pas être publiés avant la promotion contrôlée
+du backend Wix production et la validation de bout en bout des achats,
+restaurations, renouvellements, expirations et révocations. Stripe demeure
+réservé au Web et aux anciens clients compatibles.
 
-État vérifié dans le dépôt :
+État vérifié dans Git et les workflows du commit fonctionnel `07e2197` :
 
 - version Flutter cible : `1.1.0+27` ;
-- versions déjà utilisées dans les stores : iOS TestFlight `1.1.0 (25)` et Android test interne `1.1.0 (26)` ;
 - identifiant Android et iOS : `ca.indexcanada.app` ;
 - nom affiché : `Index Canada` ;
 - le workflow Android Staging produit un AAB signé puis chiffré, à importer manuellement dans le canal de test interne ;
-- la CI iOS compile avec `--no-codesign` et ne produit donc pas une livraison App Store ;
+- le workflow iOS Staging produit une IPA signée et chiffrée et peut
+  téléverser vers TestFlight seulement avec l'option manuelle explicite ;
+- le workflow iOS Release reste réservé à `main` et à l'URL de production ;
 - Firebase Analytics est un service désactivé (stub) : aucun suivi Firebase ne doit être annoncé ;
-- le build iOS `1.1.0 (25)` validé par TestFlight contient encore l'ancien parcours Stripe natif et ne doit pas être soumis ;
-- le build Android `26` remplace Stripe natif par les produits annuels `ca.indexcanada.app.premium.annual` et `ca.indexcanada.app.professional.annual` ; le build correctif cible est désormais `27`.
+- les builds 27 remplacent Stripe natif par les produits annuels
+  `ca.indexcanada.app.premium.annual` et
+  `ca.indexcanada.app.professional.annual`.
+
+Preuves externes datées au 2 octobre 2026 :
+
+- Android `1.1.0 (27)` est disponible en test interne Google Play ;
+- l'IPA iOS `1.1.0 (27)` a été acceptée au téléversement TestFlight; son
+  traitement, son installation et ses essais restent à confirmer ;
+- aucune promotion Store Billing du backend Wix production n'est prouvée : le
+  verdict production reste NO-GO.
+
+L'état détaillé, les liens des workflows et l'écart entre la candidate et
+`main` sont consignés dans
+[docs/AI_PROJECT_HANDOFF.md](docs/AI_PROJECT_HANDOFF.md).
 
 ## 1. Critères bloquants avant une release
 
@@ -33,17 +53,25 @@ La version candidate migre les achats numériques mobiles vers StoreKit et Googl
 - Vérifier en préproduction les index Wix des états de visibilité, de la
   catégorie, du professionnel associé et de l'ordre `_id`; corriger tout scan
   lent ou erreur d'index avant promotion.
-- Configurer les secrets Apple, Google, Wix et Stripe côté serveur seulement. Aucun secret ne doit être intégré à l'application Flutter.
+- Confirmer les secrets Apple en préproduction, puis configurer et vérifier les
+  secrets Apple/Google requis dans Wix production au moment de la promotion.
+  Tous restent côté serveur; aucun secret ne doit être intégré à Flutter.
 
 ### 1.2 Abonnements Apple et Google
 
-- Créer dans App Store Connect et Google Play les deux abonnements annuels avec exactement les identifiants `ca.indexcanada.app.premium.annual` et `ca.indexcanada.app.professional.annual`.
+- Google Play : conserver les deux abonnements annuels déjà créés et activés,
+  puis prouver leur achat réel. App Store Connect : créer ou valider les deux
+  abonnements avec exactement les identifiants
+  `ca.indexcanada.app.premium.annual` et
+  `ca.indexcanada.app.professional.annual`.
 - Valider chaque transaction côté serveur auprès d'Apple ou Google avant d'accorder le droit Premium ou En Vedette.
 - Ne jamais accepter le prix, le produit, l'expiration, l'état ou le jeton comme une preuve fournie uniquement par le client.
 - Tester : achat réussi, achat en attente, refus, annulation, restauration, renouvellement, expiration, remboursement/révocation, changement de formule, réseau interrompu et notification rejouée.
 - Confirmer l'idempotence : une même transaction ou notification ne crée ni double droit, ni double profil, ni double événement financier.
 - Vérifier qu'un abonnement actif ne publie pas automatiquement le profil et ne contourne jamais la modération Wix.
-- Configurer App Store Server Notifications V2 et Google Real-time Developer Notifications vers les routes serveur prévues.
+- Google RTDN : le transport préproduction est configuré et le message natif de
+  test a répondu 200; prouver encore une vraie notification d'abonnement.
+  Configurer et tester séparément App Store Server Notifications V2.
 - Conserver Stripe uniquement pour le Web/legacy ; aucun PaymentSheet, schéma `flutterstripe` ou clé Stripe ne doit être requis par le binaire Android/iOS.
 
 ### 1.3 Validation fonctionnelle et appareils

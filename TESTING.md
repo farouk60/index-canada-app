@@ -11,7 +11,7 @@ ne concerne que le parcours Web/legacy séparé lorsqu'il est encore déployé.
 
 - Flutter `3.47.4` et Dart `3.13.3`;
 - JDK `17`, Gradle `8.14.5`, AGP `8.11.1` et KGP `2.2.21` pour Android;
-- Node.js `22` pour les tests backend en CI;
+- Node.js `18.19.0` pour les gates backend de CI/release;
 - les versions verrouillées dans `pubspec.lock`.
 
 ```bash
@@ -58,11 +58,21 @@ La couverture reste faible et ne doit pas être présentée comme une garantie
 de qualité « niveau production ». Elle mesure les lignes exercées, pas la qualité
 des scénarios ni l'intégration avec les services externes.
 
-L'Android SDK n'est pas installé sur la machine utilisée pour ce contrôle : le
-bundle Android n'y a donc pas été compilé. Une compilation iOS n'est pas
-possible sous Windows. Les jobs GitHub Actions correspondants sont configurés,
-mais n'ont pas été exécutés ici et ne doivent pas être annoncés comme réussis
-avant un vrai passage de CI.
+Le poste Windows courant ne permet pas à lui seul de compiler et signer toutes
+les plateformes. Les preuves distantes du commit fonctionnel `07e2197` sont :
+
+- [Flutter CI #46](https://github.com/farouk60/index-canada-app/actions/runs/37016569680),
+  succès;
+- [Android Staging #7](https://github.com/farouk60/index-canada-app/actions/runs/36912587516),
+  AAB 1.1.0 (27) signé et chiffré;
+- [iOS Staging #2](https://github.com/farouk60/index-canada-app/actions/runs/37019413309),
+  IPA 1.1.0 (27) signée/chiffrée et nettoyage réussi.
+
+Le run [iOS Staging #1](https://github.com/farouk60/index-canada-app/actions/runs/37014876742)
+a téléversé le build 27 avec succès auprès d'Apple, puis a échoué uniquement
+pendant le nettoyage local. Le correctif `07e2197` a été validé sans
+retéléverser le même build. Ces passages ne remplacent pas les achats sandbox,
+les notifications réelles ni les essais de parcours sur appareils.
 
 ## Preuve historique Stripe Web/legacy du 22 septembre 2026
 

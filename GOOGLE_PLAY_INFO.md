@@ -1,8 +1,13 @@
 # Préparation de la fiche Google Play
 
-## Statut : brouillon, non prêt à soumettre
+## Statut : build 27 en test interne, production non prête
 
-Ce document décrit les valeurs vérifiées dans le dépôt et propose des textes de fiche. Les déclarations de confidentialité restent à confirmer sur la version de production réellement déployée. Le guide [`WIX_DEPLOYMENT.md`](WIX_DEPLOYMENT.md), les tests de bout en bout et la liste [`production_checklist.md`](production_checklist.md) doivent être terminés avant une publication.
+Ce document décrit les valeurs vérifiées dans le dépôt et propose des textes de
+fiche. Android 1.1.0 (27) est accessible aux testeurs internes, mais les
+déclarations de confidentialité et les achats de bout en bout restent à
+confirmer avant une publication. Le guide
+[`WIX_DEPLOYMENT.md`](WIX_DEPLOYMENT.md), les tests réels et la liste
+[`production_checklist.md`](production_checklist.md) doivent être terminés.
 
 ## 1. Identité technique vérifiée
 
@@ -11,9 +16,9 @@ Ce document décrit les valeurs vérifiées dans le dépôt et propose des texte
 | Nom de l'application | Index Canada |
 | Package Android | `ca.indexcanada.app` |
 | Version candidate | `1.1.0` |
-| Code de version candidat | `26` |
+| Code de version candidat | `27` |
 | Firebase Analytics | Désactivé (stub) |
-| Artefact Android CI | AAB non signé, vérification seulement |
+| Artefact Android staging | AAB signé, contrôlé puis chiffré |
 
 Le package est déjà configuré. Ne pas suivre une ancienne instruction demandant de remplacer `com.example.mon_index_app`.
 
@@ -153,14 +158,21 @@ Référence officielle : [Ajouter des éléments d'aperçu à la fiche Play Stor
 ## 6. Configuration Play Console à terminer
 
 - [ ] Vérifier le profil développeur et les coordonnées publiques.
-- [ ] Créer ou confirmer l'application avec le package `ca.indexcanada.app`.
+- [x] Confirmer l'application avec le package `ca.indexcanada.app`.
 - [x] Play App Signing est actif.
-- [ ] Résoudre la demande de réinitialisation de la clé d'envoi et confirmer que le certificat local correspond au certificat d'importation attendu par Play Console.
-- [ ] Produire un AAB `1.1.0+27` **signé** avec l'URL Wix approuvée et sans clé Stripe.
-- [ ] Importer d'abord cet AAB dans le canal interne; Play Console exige un APK/AAB compatible avant de permettre la création des abonnements.
-- [ ] Créer les abonnements annuels `ca.indexcanada.app.premium.annual` et `ca.indexcanada.app.professional.annual`, leurs offres de base, prix CAD et localisations FR/EN.
-- [ ] Configurer Google Real-time Developer Notifications et valider le topic/compte de service côté Wix.
-- [ ] Tester cet AAB depuis le canal interne sur un appareil Android réel.
+- [x] Confirmer que le certificat d'envoi correspond au certificat
+  d'importation Play Console.
+- [x] Produire un AAB `1.1.0+27` **signé** avec l'URL Wix staging approuvée et
+  sans clé Stripe.
+- [x] Importer cet AAB et le publier dans le canal interne.
+- [x] Créer et activer les abonnements annuels
+  `ca.indexcanada.app.premium.annual` et
+  `ca.indexcanada.app.professional.annual` avec leurs offres de base Canada.
+- [x] Configurer Google RTDN préproduction et recevoir la notification native
+  de test en HTTP 200.
+- [ ] Tester un achat réel avec un testeur sous licence, sa restauration et une
+  vraie notification d'abonnement relue par l'API Google.
+- [ ] Terminer le contrôle de fumée du build 27 sur un appareil Android réel.
 - [ ] Ajouter les fiches locales français (Canada) et anglais (Canada).
 - [ ] Ajouter l'icône, la bannière, les captures et leurs textes alternatifs.
 - [ ] Fournir l'URL de politique de confidentialité.

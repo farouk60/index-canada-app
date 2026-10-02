@@ -1,29 +1,44 @@
 # Liste de contrôle de mise en production
 
-## Décision actuelle : migration abonnement en cours, distribution mobile NO-GO
+## Décision actuelle : bêta interne active, distribution publique NO-GO
 
 Cette liste est un registre de preuves, pas une estimation commerciale. Une case n'est cochée que lorsqu'une preuve reproductible existe pour la version candidate. Le backend Wix/Stripe Web existant ne prouve pas la nouvelle chaîne StoreKit/Google Play Billing. L'application ne doit pas être présentée comme prête avant la fermeture de tous les éléments marqués **bloquant**.
 
-## État confirmé dans le dépôt
+## État versionné et validé en CI
 
 - [x] Identifiant Android : `ca.indexcanada.app`.
 - [x] Bundle Identifier iOS : `ca.indexcanada.app`.
 - [x] Nom affiché Android/iOS : `Index Canada`.
-- [ ] Version candidate cible : `1.1.0+27`; le build TestFlight `1.1.0 (25)` contient encore Stripe natif et ne doit pas être soumis.
+- [x] Version candidate `1.1.0+27` produite pour Android et iOS staging sans
+  Stripe natif.
 - [x] Minification et réduction des ressources activées pour Android release.
 - [x] Le build Android release exige une signature, sauf dérogation CI explicite produisant un artefact non distribuable.
-- [x] La CI iOS compile sans signature et ne produit pas d'archive soumissible.
+- [x] Le workflow iOS Staging produit une IPA signée/chiffrée; le build 27 a
+  été accepté au téléversement TestFlight.
 - [x] Firebase Analytics est désactivé par un stub ; aucun événement Firebase n'est actuellement collecté.
 - [x] Permissions Android déclarées : réseau et caméra seulement. Aucune permission de localisation, d'appel téléphonique ou de stockage.
 - [x] Des contrôles automatisés existent pour l'analyse, les tests et les compilations.
-- [x] Passage complet réussi archivé sur le commit exact `19f9fdf` : [Flutter CI #6](https://github.com/farouk60/index-canada-app/actions/runs/35740889950), trois tâches vertes.
+- [x] Passage complet réussi sur `07e2197` :
+  [Flutter CI #46](https://github.com/farouk60/index-canada-app/actions/runs/37016569680)
+  et [iOS Staging #2](https://github.com/farouk60/index-canada-app/actions/runs/37019413309).
+
+## Preuves externes datées au 2 octobre 2026
+
+- [x] Android `1.1.0 (27)` est accessible en test interne Google Play.
+- [x] iOS `1.1.0 (27)` a été accepté au téléversement TestFlight.
+- [ ] Confirmer que le build iOS 27 a terminé son traitement, est installable et
+  passe les parcours critiques depuis TestFlight.
 - [ ] **Bloquant —** Exécuter et consigner les achats, restaurations et révocations StoreKit/Google Play Billing de bout en bout avec Wix sur de vrais appareils.
 
 ## 1. Backend Wix — bloquant
 
-- [ ] Exécuter intégralement le guide [`WIX_DEPLOYMENT.md`](WIX_DEPLOYMENT.md) dans l'environnement de préproduction, puis en production.
-- [ ] Installer dans Wix les versions exactes verrouillées par `backend/package-lock.json` et prouver leur chargement en préproduction.
-- [ ] Confirmer les schémas, index et permissions des collections utilisées, notamment les professionnels, catégories, avis, partenaires, offres, `PaymentCheckouts`, `Entitlements`, `PaymentEvents` et `ApiRateLimits`.
+- [x] Backend Store Billing, routes Apple/Google et Google RTDN publiés en
+  préproduction Wix.
+- [ ] Exécuter la promotion contrôlée vers Wix production; aucune promotion
+  Store Billing de cette candidate n'est prouvée au 2 octobre 2026.
+- [x] Dépendances Apple/Google/Stripe verrouillées et chargées en
+  préproduction.
+- [ ] Confirmer les schémas, index et permissions des collections utilisées, notamment les professionnels, catégories, avis, partenaires, offres, `PaymentCheckouts`, `Entitlements`, `PaymentEvents`, `ApiRateLimits` et `EngagementEvents`.
 - [ ] Interdire les écritures directes publiques sur les collections sensibles ; faire passer les mutations par les fonctions backend validées.
 - [x] Vérifier que seules les colonnes nécessaires sont retournées au client.
 - [ ] Tester la pagination sur plusieurs pages pour chaque collection et confirmer qu'aucune donnée n'est silencieusement tronquée.
@@ -34,7 +49,12 @@ Cette liste est un registre de preuves, pas une estimation commerciale. Une case
 - [ ] Confirmer que les images validées sont envoyées à Wix Media Manager et que les collections ne contiennent ni Base64 ni binaire volumineux.
 - [ ] Tester le nettoyage des médias en cas d'échec ou de concurrence entre deux inscriptions.
 - [ ] Ajouter une purge bornée des checkouts expirés et de leurs médias devenus orphelins, puis vérifier qu'elle n'efface jamais un média référencé.
-- [ ] **Bloquant —** Configurer les nouveaux secrets Apple/Google de Store Billing dans Wix Secrets Manager; aucun secret n'est exposé dans l'arbre courant ou les réponses publiques validées.
+- [x] Secrets Google RTDN préproduction configurés et message natif de test
+  authentifié en HTTP 200.
+- [ ] **Bloquant —** Confirmer tous les secrets Apple Store Billing en
+  préproduction, sans exposer leur valeur.
+- [ ] **Bloquant —** Configurer et vérifier les secrets Apple/Google requis
+  dans Wix production seulement au moment de la promotion contrôlée.
 - [x] Révoquer et remplacer les anciennes clés Wix ou Stripe connues; les valeurs historiques sont désormais inactives.
 - [ ] Vérifier les règles CORS, les limites de débit et les réponses d'erreur génériques depuis un domaine/appareil non autorisé.
 - [x] Vérifier qu'une finalisation financière n'active ni ne publie automatiquement un profil; l'approbation humaine Wix reste obligatoire.
@@ -42,17 +62,21 @@ Cette liste est un registre de preuves, pas une estimation commerciale. Une case
 
 ## 2. Abonnements Apple et Google — bloquant
 
-- [ ] Créer `ca.indexcanada.app.premium.annual` et `ca.indexcanada.app.professional.annual` dans App Store Connect et Google Play avec une période annuelle.
-- [ ] Vérifier les prix et localisations FR/EN directement dans chaque console.
+- [x] Créer et activer les deux abonnements annuels dans Google Play, avec les
+  offres de base Canada.
+- [ ] Créer/valider les deux abonnements annuels dans App Store Connect.
+- [ ] Vérifier prix et localisations FR/EN directement dans les deux consoles.
 - [ ] Tester le forfait gratuit sans démarrer d'achat store.
 - [ ] Valider côté serveur un achat sandbox Apple et un achat test Google; refuser toute assertion non vérifiée du client.
 - [ ] Tester achat réussi, en attente, refus, annulation, restauration, renouvellement, expiration, remboursement/révocation et interruption réseau.
 - [ ] Vérifier qu'un abonnement actif confirme seulement le droit commercial sans activer ni publier automatiquement le profil.
 - [ ] Rejouer la même transaction et la même notification; confirmer l'absence de double droit, double profil ou double événement.
 - [ ] Vérifier qu'un produit, jeton, compte ou application ne correspondant pas au checkout est refusé.
-- [ ] Configurer et tester App Store Server Notifications V2 et Google Real-time Developer Notifications.
+- [x] Configurer Google RTDN préproduction et recevoir une notification native
+  de test authentifiée en HTTP 200.
+- [ ] Prouver une vraie notification d'abonnement Google après achat test.
+- [ ] Configurer et tester App Store Server Notifications V2.
 - [ ] **Bloquant résilience —** Ajouter et valider une réconciliation quotidienne Apple/Google pour corriger un droit lorsque toutes les notifications temps réel ont été manquées.
-- [ ] **Bloquant confirmé —** Play Console affiche actuellement les notifications en temps réel désactivées et aucun sujet Cloud Pub/Sub; créer le sujet, accorder la publication Google, enregistrer son nom puis envoyer une notification test.
 - [ ] Confirmer l'absence de PaymentSheet, schéma `flutterstripe` et clé Stripe dans les binaires mobiles; Stripe reste Web/legacy seulement.
 
 ## 3. Confidentialité et aspects juridiques — bloquant
@@ -69,8 +93,10 @@ Cette liste est un registre de preuves, pas une estimation commerciale. Une case
 
 ## 4. QA de la version candidate — bloquant
 
-- [x] Geler le commit `19f9fdf` et consigner la version `1.0.3+21`, la configuration et l'environnement testés.
-- [x] Analyse statique, suites automatisées et compilations non signées réussies sur ce commit dans la CI.
+- [x] Geler la base fonctionnelle `07e2197` et consigner la version
+  `1.1.0+27`, la configuration staging et les preuves CI.
+- [x] Analyse, tests, backend, AAB signé et IPA signée validés dans GitHub
+  Actions pour cette candidate.
 - [ ] Android réel : installation depuis Google Play test interne, démarrage et parcours critiques réussis.
 - [ ] iPhone réel : installation depuis TestFlight, démarrage et parcours critiques réussis.
 - [ ] Vérifier FR et EN, changement de langue, petite largeur et grande taille de texte.
@@ -84,14 +110,18 @@ Cette liste est un registre de preuves, pas une estimation commerciale. Une case
 ## 5. Android / Google Play — bloquant
 
 - [ ] Compte développeur et profil Play Console vérifiés.
-- [ ] Application créée avec le package immuable `ca.indexcanada.app`.
-- [ ] Play App Signing activé et clé d'envoi sauvegardée de façon sécurisée.
-- [ ] `android/key.properties` local configuré sans être versionné.
+- [x] Application créée avec le package immuable `ca.indexcanada.app`.
+- [x] Play App Signing activé et certificat d'envoi vérifié.
+- [x] Signature Android fournie au workflow via l'environnement GitHub
+  protégé, sans fichier suivi.
 - [ ] AAB de production compilé avec les vraies valeurs approuvées et une signature vérifiée.
-- [ ] Résoudre la demande de réinitialisation de la clé d'envoi Google Play et confirmer que le certificat local correspond au certificat d'importation attendu avant tout téléversement.
+- [x] Confirmer que le certificat de la clé d'envoi correspond au certificat
+  d'importation Google Play.
 - [ ] Démarrage de l'AAB confirmé avec `APP_ENVIRONMENT=production` et une `API_BASE_URL` HTTPS non factice, sans clé Stripe.
 - [ ] Google Play Billing reconnaît les deux produits annuels et le bouton Restaurer/Actualiser les achats rétablit le droit.
-- [ ] Version installée et testée depuis le canal interne Google Play.
+- [x] Version 27 publiée dans le canal interne Google Play.
+- [ ] Parcours critiques et achats/restaurations testés depuis ce canal sur un
+  appareil réel.
 - [ ] Exigences de test fermé du compte vérifiées et satisfaites, si applicables.
 - [ ] Politique de confidentialité, sécurité des données, accès à l'application, public cible, classification du contenu et déclarations requises complétés.
 - [ ] Icône, bannière et captures conformes et représentatives de la version testée.
@@ -102,11 +132,14 @@ Cette liste est un registre de preuves, pas une estimation commerciale. Une case
 
 - [ ] Adhésion Apple Developer et contrats App Store Connect actifs.
 - [ ] **Bloquant financier confirmé —** Le contrat « applications payantes » est en attente d'informations de l'utilisateur. Ajouter le compte bancaire et compléter le formulaire Québec FP 2506-V ainsi que le questionnaire fiscal des États-Unis avant de recevoir des paiements.
-- [ ] App ID `ca.indexcanada.app`, équipe, certificats et profils de provisionnement configurés.
-- [ ] Archive Release signée avec les vraies valeurs de production.
+- [x] App ID `ca.indexcanada.app`, équipe, certificat et profil de staging
+  configurés.
+- [x] IPA staging 1.1.0 (27) signée, chiffrée et acceptée par TestFlight.
+- [ ] Archive Release production générée depuis `main` avec le backend
+  production Store Billing prêt.
 - [ ] Démarrage de l'archive confirmé avec `APP_ENVIRONMENT=production` et une `API_BASE_URL` HTTPS non factice, sans clé Stripe.
 - [ ] StoreKit reconnaît les deux produits annuels et Restaurer les achats rétablit le droit.
-- [ ] Version installée et testée depuis TestFlight.
+- [ ] Build 27 installé et parcours critiques/achats testés depuis TestFlight.
 - [ ] `Info.plist` et `PrivacyInfo.xcprivacy` validés contre les SDK et comportements réels.
 - [ ] Fiche App Privacy, public cible, classification et informations de révision complétées.
 - [ ] Captures et métadonnées FR/EN représentatives de la version testée.

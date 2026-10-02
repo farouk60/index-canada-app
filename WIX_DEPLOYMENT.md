@@ -512,8 +512,8 @@ Ne pas promouvoir si un point échoue :
   curseurs opaques;
 - secrets présents, trousseau de rotation configuré et anciennes clés encore
   nécessaires conservées uniquement dans Wix Secrets Manager;
-- 149 tests Flutter et 120 tests backend réussis le 25 septembre 2026, ou
-  résultats ultérieurs équivalents consignés pour la version candidate;
+- suites Flutter et backend du commit exact réussies; joindre le lien du
+  workflow plutôt qu'un total de tests rapidement obsolète;
 - `flutter analyze` sans anomalie;
 - builds CI Web, Android et iOS réellement verts;
 - inscriptions gratuite et payante inactives et `pending_review` jusqu'à

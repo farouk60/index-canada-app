@@ -11,8 +11,25 @@ serveur avant l'attribution d'un droit.
 Le dépôt a été renforcé pour rendre le code reproductible, limiter
 l'exposition des données et sécuriser le parcours inscription → paiement →
 publication. Cela ne constitue pas, à lui seul, une garantie de disponibilité
-ou de succès commercial : un déploiement de préproduction et des essais réels
-restent obligatoires.
+ou de succès commercial : la validation de bout en bout en préproduction, les
+essais réels et une promotion contrôlée vers la production restent obligatoires.
+
+## Reprise rapide du projet
+
+Une IA ou une nouvelle personne doit commencer par :
+
+- [AGENTS.md](AGENTS.md) pour les règles non négociables;
+- [docs/AI_PROJECT_HANDOFF.md](docs/AI_PROJECT_HANDOFF.md) pour l'état daté,
+  l'architecture, l'historique des changements, les preuves et le travail
+  restant;
+- [SECURITY.md](SECURITY.md), [TESTING.md](TESTING.md),
+  [RELEASE.md](RELEASE.md) et [WIX_DEPLOYMENT.md](WIX_DEPLOYMENT.md) pour les
+  procédures spécialisées.
+
+Au 2 octobre 2026, Android 1.1.0 (27) est en test interne et iOS 1.1.0
+(27) a été accepté au téléversement TestFlight. Ces builds ciblent la
+préproduction Wix; aucune publication publique ni promotion Store Billing du
+backend Wix production n'est prouvée.
 
 ## Architecture retenue
 
@@ -161,11 +178,12 @@ flutter test --coverage --reporter expanded
 npm test --prefix backend
 ```
 
-La CI est configurée pour contrôler les secrets, le format, l'analyse, les
-tests, puis compiler Web, Android release non signé et iOS release sans
-signature. Elle n'a pas été exécutée depuis cet environnement local : une
-configuration présente n'est pas une preuve de pipeline vert. Consultez
-[TESTING.md](TESTING.md) pour les résultats et limites connus.
+La CI contrôle les secrets, le backend, le format, l'analyse et les tests, puis
+compile les plateformes prévues. Le commit fonctionnel `07e2197` a un
+[passage Flutter CI vert](https://github.com/farouk60/index-canada-app/actions/runs/37016569680)
+et une [validation iOS staging verte](https://github.com/farouk60/index-canada-app/actions/runs/37019413309).
+Ces preuves automatisées ne remplacent ni les achats réels, ni les tests sur
+appareils, ni une décision de production. Consultez [TESTING.md](TESTING.md).
 
 ## Structure utile
 
