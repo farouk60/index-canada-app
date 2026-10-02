@@ -29,6 +29,11 @@ enum AppEnvironment {
 /// Configuration immuable lue au démarrage depuis les `--dart-define`.
 @immutable
 final class AppConfig {
+  static const productionApiBaseUrl =
+      'https://www.immigrantindex.com/_functions';
+  static const stagingApiBaseUrl =
+      'https://immigrantindex.wixsite.com/website-1/_functions';
+
   const AppConfig({
     required this.environment,
     required this.appName,
@@ -52,7 +57,7 @@ final class AppConfig {
       ),
       apiBaseUrl: const String.fromEnvironment(
         'API_BASE_URL',
-        defaultValue: 'https://www.immigrantindex.com/_functions',
+        defaultValue: productionApiBaseUrl,
       ),
       imageCacheMaximumSize: const int.fromEnvironment(
         'IMAGE_CACHE_MAXIMUM_SIZE',
@@ -98,6 +103,15 @@ final class AppConfig {
         apiUri.hasFragment ||
         apiUri.host.endsWith('.invalid')) {
       issues.add('API_BASE_URL_INVALID');
+    } else {
+      final canonicalApiBaseUrl = switch (environment) {
+        AppEnvironment.production => productionApiBaseUrl,
+        AppEnvironment.staging => stagingApiBaseUrl,
+        AppEnvironment.development => null,
+      };
+      if (canonicalApiBaseUrl != null && apiBaseUrl != canonicalApiBaseUrl) {
+        issues.add('API_BASE_URL_ENVIRONMENT_MISMATCH');
+      }
     }
     if (imageCacheMaximumSize < 1 || imageCacheMaximumSizeBytes < 1) {
       issues.add('IMAGE_CACHE_LIMIT_INVALID');

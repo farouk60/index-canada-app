@@ -56,10 +56,12 @@ void main() {
 
     test('les compilations mobiles CI ne reçoivent aucun secret Stripe', () {
       final ci = _read('.github/workflows/ci.yml');
+      final androidRelease = _read('.github/workflows/android-release.yml');
       final release = _read('.github/workflows/ios-release.yml');
       final mobileSteps = [
         _workflowStep(ci, 'Compiler le bundle Android release sans signature'),
         _workflowStep(ci, 'Compiler la cible iOS sans signature'),
+        _workflowStep(androidRelease, "Compiler l'AAB de production signé"),
         _workflowStep(release, "Compiler l'IPA App Store"),
       ];
 
@@ -67,7 +69,36 @@ void main() {
         expect(step, isNot(contains('STRIPE_')));
       }
       expect(ci, isNot(contains('STRIPE_PUBLISHABLE_KEY')));
+      expect(androidRelease, isNot(contains('IOS_STRIPE_PUBLISHABLE_KEY')));
       expect(release, isNot(contains('IOS_STRIPE_PUBLISHABLE_KEY')));
+    });
+
+    test('la release Android verrouille le build et le backend production', () {
+      final release = _read('.github/workflows/android-release.yml');
+
+      expect(release, contains('refs/heads/main'));
+      expect(release, contains('MOBILE_PRODUCTION_APPROVED_SHA'));
+      expect(release, contains('1.1.0+28'));
+      expect(
+        release,
+        contains('API_BASE_URL=https://www.immigrantindex.com/_functions'),
+      );
+      expect(
+        release,
+        contains('https://immigrantindex.wixsite.com/website-1/_functions'),
+      );
+      expect(release, contains('GOOGLE_PLAY_UPLOAD_SERVICE_ACCOUNT_JSON'));
+      expect(release, isNot(contains('GOOGLE_PLAY_SERVICE_ACCOUNT_JSON:')));
+    });
+
+    test('la release iOS prouve l’URL production compilée', () {
+      final release = _read('.github/workflows/ios-release.yml');
+
+      expect(release, contains('MOBILE_PRODUCTION_APPROVED_SHA'));
+      expect(release, contains('1.1.0+28'));
+      expect(release, contains(r'grep -Fq "$PRODUCTION_API_BASE_URL"'));
+      expect(release, contains(r'$FORBIDDEN_STAGING_API_BASE_URL'));
+      expect(release, contains(r'$FORBIDDEN_CI_API_BASE_URL'));
     });
 
     test('la release iOS est testée et lit sa version depuis pubspec', () {

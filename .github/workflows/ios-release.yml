@@ -16,9 +16,60 @@ concurrency:
   group: ios-release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  PRODUCTION_API_BASE_URL: https://www.immigrantindex.com/_functions
+  FORBIDDEN_STAGING_API_BASE_URL: https://immigrantindex.wixsite.com/website-1/_functions
+  FORBIDDEN_CI_API_BASE_URL: https://ci.index-canada.example/_functions
+
 jobs:
+  release-gate:
+    name: Gate production iOS
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Refuser tout déclenchement, branche ou SHA non approuvé
+        shell: bash
+        env:
+          MOBILE_PRODUCTION_APPROVED_SHA: ${{ vars.MOBILE_PRODUCTION_APPROVED_SHA }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+            echo "::error title=Déclenchement interdit::Ce workflow de production accepte uniquement workflow_dispatch."
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error title=Branche interdite::La livraison iOS production doit provenir de main."
+            exit 1
+          fi
+          if [[ ! "$MOBILE_PRODUCTION_APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=SHA de production invalide::MOBILE_PRODUCTION_APPROVED_SHA doit contenir 40 caractères hexadécimaux minuscules."
+            exit 1
+          fi
+          if [[ "$GITHUB_SHA" != "$MOBILE_PRODUCTION_APPROVED_SHA" ]]; then
+            echo "::error title=Révision non approuvée::Le SHA iOS ne correspond pas à la révision de production approuvée."
+            exit 1
+          fi
+
+      - name: Récupérer la révision production verrouillée
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Vérifier la version production
+        shell: bash
+        run: |
+          set -euo pipefail
+          version_value="$(awk '$1 == "version:" { print $2; exit }' pubspec.yaml)"
+          if [[ "$version_value" != "1.1.0+28" ]]; then
+            echo "::error title=Version production inattendue::La livraison autorisée est 1.1.0+28."
+            exit 1
+          fi
+
   release-quality:
     name: Analyse et tests avant livraison
+    needs: release-gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -70,6 +121,7 @@ jobs:
 
   backend-store-billing-quality:
     name: Backend Store Billing vérifié
+    needs: release-gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -492,7 +544,43 @@ jobs:
           fi
 
           executable="$(plutil -extract CFBundleExecutable raw -o - "$app_path/Info.plist")"
-          vtool_output="$(xcrun vtool -show-build "$app_path/$executable")"
+          runner_binary="$app_path/$executable"
+          dart_app_binary="$app_path/Frameworks/App.framework/App"
+          compiled_strings="$RUNNER_TEMP/compiled-production-strings.txt"
+          if [[ ! -s "$runner_binary" || ! -s "$dart_app_binary" ]]; then
+            echo "::error title=Binaire IPA incomplet::Runner et App.framework doivent être présents avant de vérifier la configuration production."
+            exit 1
+          fi
+
+          {
+            xcrun strings -a "$runner_binary"
+            xcrun strings -a "$dart_app_binary"
+          } > "$compiled_strings"
+          if ! grep -Fq "$PRODUCTION_API_BASE_URL" "$compiled_strings"; then
+            echo "::error title=URL production absente::Les binaires compilés ne contiennent pas l'URL Wix production attendue."
+            exit 1
+          fi
+          for forbidden_url in \
+            "$FORBIDDEN_STAGING_API_BASE_URL" \
+            "$FORBIDDEN_CI_API_BASE_URL"; do
+            if grep -Fq "$forbidden_url" "$compiled_strings"; then
+              echo "::error title=URL interdite compilée::L'IPA production contient une URL staging ou CI."
+              exit 1
+            fi
+          done
+
+          embedded_secret_files="$({
+            grep -aRIlE \
+              '(sk_(live|test)_[[:alnum:]]{16,}|rk_(live|test)_[[:alnum:]]{16,}|whsec_[[:alnum:]]{16,}|AIza[[:alnum:]_-]{30,}|AKIA[0-9A-Z]{16}|gh[pousr]_[[:alnum:]]{20,}|-----BEGIN ((RSA|EC|OPENSSH) )?PRIVATE KEY-----)' \
+              "$extracted"
+          } || true)"
+          if [[ -n "$embedded_secret_files" ]]; then
+            echo "::error title=Secret potentiel dans l'IPA::Le contenu sensible n'est jamais affiché; seuls les fichiers concernés suivent."
+            printf '%s\n' "$embedded_secret_files"
+            exit 1
+          fi
+
+          vtool_output="$(xcrun vtool -show-build "$runner_binary")"
           binary_sdk="$(awk '$1 == "sdk" { print $2; exit }' <<< "$vtool_output")"
           binary_sdk_major="${binary_sdk%%.*}"
           echo "$vtool_output"

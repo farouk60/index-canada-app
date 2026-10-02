@@ -35,5 +35,39 @@ void main() {
       expect(insecure.validationIssues(), contains('API_BASE_URL_INVALID'));
       expect(placeholder.validationIssues(), contains('API_BASE_URL_INVALID'));
     });
+
+    test('refuse le backend staging dans une livraison production', () {
+      final config = buildConfig(apiBaseUrl: AppConfig.stagingApiBaseUrl);
+
+      expect(
+        config.validationIssues(),
+        contains('API_BASE_URL_ENVIRONMENT_MISMATCH'),
+      );
+      expect(
+        config.validateForRuntime,
+        throwsA(isA<AppConfigurationException>()),
+      );
+    });
+
+    test('refuse le backend production dans une livraison staging', () {
+      final config = buildConfig(
+        environment: AppEnvironment.staging,
+        apiBaseUrl: AppConfig.productionApiBaseUrl,
+      );
+
+      expect(
+        config.validationIssues(),
+        contains('API_BASE_URL_ENVIRONMENT_MISMATCH'),
+      );
+    });
+
+    test('accepte uniquement l’URL canonique de staging en staging', () {
+      final config = buildConfig(
+        environment: AppEnvironment.staging,
+        apiBaseUrl: AppConfig.stagingApiBaseUrl,
+      );
+
+      expect(config.validationIssues(), isEmpty);
+    });
   });
 }

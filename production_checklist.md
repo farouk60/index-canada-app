@@ -9,8 +9,9 @@ Cette liste est un registre de preuves, pas une estimation commerciale. Une case
 - [x] Identifiant Android : `ca.indexcanada.app`.
 - [x] Bundle Identifier iOS : `ca.indexcanada.app`.
 - [x] Nom affiché Android/iOS : `Index Canada`.
-- [x] Version candidate `1.1.0+27` produite pour Android et iOS staging sans
-  Stripe natif.
+- [x] Version `1.1.0+27` produite pour Android et iOS staging sans Stripe natif.
+- [ ] Version source `1.1.0+28` verrouillée sur Wix production; les deux
+  artefacts restent à générer et à téléverser depuis le SHA exact de `main`.
 - [x] Minification et réduction des ressources activées pour Android release.
 - [x] Le build Android release exige une signature, sauf dérogation CI explicite produisant un artefact non distribuable.
 - [x] Le workflow iOS Staging produit une IPA signée/chiffrée; le build 27 a

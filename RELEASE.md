@@ -4,23 +4,27 @@
 
 La version candidate migre les achats numériques mobiles vers StoreKit et
 Google Play Billing. Android 1.1.0 (27) est distribué en test interne et l'IPA
-iOS 1.1.0 (27) a été acceptée au téléversement TestFlight. Ces artefacts ciblent
-Wix préproduction. Ils ne doivent pas être publiés avant la promotion contrôlée
-du backend Wix production et la validation de bout en bout des achats,
+iOS 1.1.0 (27) a été acceptée au téléversement TestFlight; ces deux artefacts
+historiques ciblent Wix préproduction. La source de livraison est maintenant
+1.1.0 (28), verrouillée sur Wix production. Elle ne doit pas être publiée avant
+la promotion contrôlée du backend Wix production et la validation des achats,
 restaurations, renouvellements, expirations et révocations. Stripe demeure
 réservé au Web et aux anciens clients compatibles.
 
-État vérifié dans Git et les workflows du commit fonctionnel `07e2197` :
+État préparé dans Git sur la branche de livraison 28 :
 
-- version Flutter cible : `1.1.0+27` ;
+- version Flutter cible : `1.1.0+28` ;
 - identifiant Android et iOS : `ca.indexcanada.app` ;
 - nom affiché : `Index Canada` ;
-- le workflow Android Staging produit un AAB signé puis chiffré, à importer manuellement dans le canal de test interne ;
+- le workflow Android Release exige `main`, le SHA de production approuvé,
+  l'URL Wix production et la version 28 avant de signer, vérifier et
+  éventuellement téléverser l'AAB vers le canal interne ;
 - le workflow iOS Staging produit une IPA signée et chiffrée et peut
   téléverser vers TestFlight seulement avec l'option manuelle explicite ;
-- le workflow iOS Release reste réservé à `main` et à l'URL de production ;
+- le workflow iOS Release exige également `main`, le SHA de production approuvé,
+  l'URL Wix production et la version 28 ;
 - Firebase Analytics est un service désactivé (stub) : aucun suivi Firebase ne doit être annoncé ;
-- les builds 27 remplacent Stripe natif par les produits annuels
+- les builds 27 ont remplacé Stripe natif; le build 28 conserve les produits annuels
   `ca.indexcanada.app.premium.annual` et
   `ca.indexcanada.app.professional.annual`.
 

@@ -37,18 +37,19 @@ L'évolution majeure de septembre 2026 est la migration des paiements mobiles :
 - les renouvellements, changements de formule, expirations, remboursements et
   révocations sont traités de manière idempotente.
 
-La version courante est **1.1.0+27**.
+La version source candidate est **1.1.0+28**. Les preuves externes du build 27
+restent historiques jusqu'à la génération et au téléversement du build 28.
 
 | Surface | État prouvé au 2 octobre 2026 |
 | --- | --- |
-| Android | 1.1.0 (27) disponible en test interne Google Play |
-| iOS | 1.1.0 (27) acceptée au téléversement TestFlight |
+| Android | 1.1.0 (27) disponible en test interne; 1.1.0 (28) en préparation production |
+| iOS | 1.1.0 (27) acceptée au téléversement TestFlight; 1.1.0 (28) en préparation production |
 | Wix préproduction | backend Store Billing et Google RTDN publiés et testés au niveau transport |
 | Wix production | aucune promotion Store Billing de cette candidate prouvée |
 | Google Play production | non publiée |
 | App Store production | non soumise |
-| Branche candidate | distante à 07e2197 avant le commit de cette documentation |
-| main distant | d18b8c1; la candidate n'y est pas encore fusionnée |
+| Branche de livraison | <code>release/1.1.0-production-28</code>, à fusionner après validation |
+| main distant | la livraison 28 n'y est pas encore fusionnée à ce stade du document |
 
 **Verdict actuel : bêta interne utile, mais NO-GO pour une publication publique.**
 
@@ -100,7 +101,7 @@ préproduction utilisé pour RTDN est <code>index-immigrant-index-2025</code>.
 - backend Wix Velo en modules JavaScript ESM;
 - Node 18.19.0 dans les gates backend de release;
 - package et Bundle ID : <code>ca.indexcanada.app</code>;
-- version : <code>1.1.0+27</code>.
+- version source candidate : <code>1.1.0+28</code>.
 
 Points d'entrée :
 
@@ -368,6 +369,7 @@ une conversation.
 | <code>.github/workflows/ci.yml</code> | secrets, backend, format, analyse, tests, Web, Android non distribuable et iOS sans signature |
 | <code>android-staging.yml</code> | AAB staging signé puis chiffré; upload Play manuel |
 | <code>ios-staging.yml</code> | IPA staging signée/chiffrée; upload TestFlight optionnel |
+| <code>android-release.yml</code> | AAB production 28 depuis main/SHA approuvé; téléversement interne optionnel |
 | <code>ios-release.yml</code> | IPA production depuis main seulement; upload TestFlight optionnel |
 
 Les workflows staging sont verrouillés par :
@@ -509,13 +511,10 @@ Les opérations ci-dessus ne prouvent pas un état identique en production.
 
 ### Bloquants avant production
 
-1. Intégrer la candidate dans <code>main</code> par PR revue. Au moment de cette
-   consolidation, la candidate est 22 commits devant et 2 commits derrière
-   <code>origin/main</code>. Les deux commits présents seulement sur main sont
-   <code>a43c2d4</code> et <code>d18b8c1</code>, avec un chevauchement fonctionnel
-   autour des workflows staging; résoudre cette divergence par revue, pas par
-   écrasement de branche.
-2. Rejouer la CI complète sur le commit de fusion exact.
+1. Intégrer <code>release/1.1.0-production-28</code> dans <code>main</code> par PR
+   revue, sans écraser l'historique de la branche principale.
+2. Rejouer la CI complète sur le commit de fusion exact et verrouiller
+   <code>MOBILE_PRODUCTION_APPROVED_SHA</code> sur ce SHA avant les builds.
 3. Vérifier que le build iOS 27 est traité, installable et testé depuis
    TestFlight sur un iPhone réel.
 4. Tester les deux produits sur Android et iOS : achat, pending, annulation,
