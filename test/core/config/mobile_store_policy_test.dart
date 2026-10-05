@@ -136,6 +136,25 @@ void main() {
       expect(release, contains('refs/heads/main'));
       expect(release, contains('MOBILE_PRODUCTION_APPROVED_SHA'));
       expect(release, contains('1.1.0+28'));
+      expect(release, isNot(contains('apkanalyzer')));
+      for (final job in [signedJob, uploadJob]) {
+        final install = _workflowStep(job, 'Installer bundletool vérifié');
+        expect(install, contains('bundletool-all-1.18.3.jar'));
+        expect(
+          install,
+          contains(
+            'a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29',
+          ),
+        );
+        expect(install, contains('sha256sum --check --strict'));
+        expect(install, contains('set -euo pipefail'));
+        expect(job, contains("--xpath='/manifest/@package'"));
+        expect(job, contains("--xpath='/manifest/@android:versionCode'"));
+        expect(
+          job.indexOf('Installer bundletool vérifié'),
+          lessThan(job.indexOf('dump manifest')),
+        );
+      }
       expect(
         release,
         contains('API_BASE_URL=https://www.immigrantindex.com/_functions'),
@@ -230,11 +249,17 @@ void main() {
       );
       expect(
         verifyDownloadedBundleStep,
-        contains(r'apkanalyzer manifest application-id "$AAB_PATH"'),
+        contains(
+          r'''dump manifest --bundle="$AAB_PATH" --xpath='/manifest/@package' '''
+              .trim(),
+        ),
       );
       expect(
         verifyDownloadedBundleStep,
-        contains(r'apkanalyzer manifest version-code "$AAB_PATH"'),
+        contains(
+          r'''dump manifest --bundle="$AAB_PATH" --xpath='/manifest/@android:versionCode' '''
+              .trim(),
+        ),
       );
       expect(
         verifyDownloadedBundleStep,

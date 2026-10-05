@@ -1,6 +1,6 @@
 # Index Canada — dossier de reprise pour une IA
 
-Dernière consolidation : **2 octobre 2026**
+Dernière consolidation : **5 octobre 2026**
 
 Base fonctionnelle auditée : **07e2197608495733e0f9b89ac996295742067573**
 
@@ -42,14 +42,14 @@ restent historiques jusqu'à la génération et au téléversement du build 28.
 
 | Surface | État prouvé au 5 octobre 2026 |
 | --- | --- |
-| Android | 1.1.0 (27) disponible en test interne; source 1.1.0 (28) corrigée, CI et nouveau téléversement interne à terminer |
-| iOS | 1.1.0 (27) acceptée au téléversement TestFlight; source 1.1.0 (28) corrigée, CI et nouveau téléversement TestFlight à terminer |
+| Android | 1.1.0 (27) disponible en test interne; AAB 28 compilé, contrôle bloqué par apkanalyzer absent; correctif bundletool préparé, nouveau téléversement à terminer |
+| iOS | 1.1.0 (28) acceptée au téléversement TestFlight le 5 octobre; traitement Apple et disponibilité à vérifier; ne pas retéléverser le même build |
 | Wix préproduction | backend Store Billing et Google RTDN publiés et testés au niveau transport |
 | Wix production | Store Billing publié; catalogue v2, routes, preflights et refus de signatures invalides vérifiés |
 | Google Play production | non publiée |
 | App Store production | non soumise |
-| Branche corrective | <code>fix/store-release-1.1.0-28</code>, créée depuis le vrai <code>origin/main</code> |
-| main distant | candidate 28 fusionnée par la PR #10; correctifs finaux iOS/Android à fusionner après CI |
+| Branche corrective | <code>fix/android-bundletool-verification</code>, créée depuis <code>origin/main=e205b50</code> |
+| main distant | PR #12 fusionnée en <code>e205b503c7faaf1e6f5d7e1aa915f06786c8821f</code>; correction de vérification Android à fusionner après CI |
 
 **Verdict actuel : bêta interne utile, mais NO-GO pour une publication publique.**
 
@@ -405,6 +405,21 @@ production, puis demande le jeton WIF immédiatement avant l'envoi. Le job
 
 ## 10. Preuves datées disponibles
 
+- CI PR #12 entièrement verte :
+  <https://github.com/farouk60/index-canada-app/actions/runs/37323688993>.
+- iOS Release 28 : quatre jobs réussis, `VERIFY SUCCEEDED` et
+  `UPLOAD SUCCEEDED` le 5 octobre à 14:53:54 UTC :
+  <https://github.com/farouk60/index-canada-app/actions/runs/37327446684>.
+  Cela ne prouve pas encore le traitement ni une publication App Store.
+- Android Release 28, tentative 2 : compilation signée réussie puis échec
+  `apkanalyzer: command not found`, aucun envoi Play :
+  <https://github.com/farouk60/index-canada-app/actions/runs/37327321388>.
+  Le correctif remplace les deux lectures de manifeste par bundletool 1.18.3
+  téléchargé depuis Google et vérifié par SHA-256 dans chaque job isolé.
+  Les contrôles de signature, package, version, URL et chiffrement restent actifs.
+- L'environnement `mobile-staging` autorise maintenant exactement `main` et
+  la branche candidate historique; son approbation requise est conservée.
+
 - Correctif PR #12 (5 octobre 2026) : la CI du commit `dbf4bd4` a
   validé le backend, le format, l'analyse et la compilation iOS, mais a
   révélé que `Uri` normalise le port HTTPS explicite `443`. La validation
@@ -536,12 +551,12 @@ Les opérations ci-dessus ne prouvent pas un état identique en production.
 
 ### Bloquants avant production
 
-1. Intégrer <code>fix/store-release-1.1.0-28</code> dans <code>main</code> par PR
+1. Intégrer <code>fix/android-bundletool-verification</code> dans <code>main</code> par PR
    revue, sans inclure la PR Dependabot #11 sans rapport.
 2. Rejouer la CI complète sur le commit de fusion exact et verrouiller
    <code>MOBILE_PRODUCTION_APPROVED_SHA</code> sur ce SHA avant les builds.
 3. Lancer <code>Android Release</code> avec <code>upload_internal=true</code> et
-   <code>iOS Release</code> avec <code>upload_testflight=true</code>, puis prouver
+   vérifier le traitement iOS 28 déjà téléversé, puis prouver
    1.1.0 (28) dans la piste interne et TestFlight sans promotion publique.
 4. Tester les deux produits du store sur Android et iOS : achat, pending, annulation,
    erreur, restauration, renouvellement, expiration, remboursement/révocation
