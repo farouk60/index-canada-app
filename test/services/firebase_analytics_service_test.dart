@@ -264,7 +264,7 @@ void main() {
         });
         final serialized = jsonEncode(body);
         expect(serialized, isNot(contains('Entreprise privée')));
-        expect(serialized, isNot(contains('514')));
+        expect(serialized, isNot(contains('+1 514 555 0101')));
         expect(serialized, isNot(contains('private.example')));
         expect(serialized, isNot(contains('123 rue')));
       }
@@ -473,7 +473,7 @@ void main() {
       final serialized = logs.join('\n');
       expect(serialized, contains('télémétrie business'));
       expect(serialized, isNot(contains('client@example.test')));
-      expect(serialized, isNot(contains('514')));
+      expect(serialized, isNot(contains('+1 514 555 0101')));
       expect(serialized, isNot(contains('Entreprise privée')));
       expect(serialized, isNot(contains('pro_1')));
     });

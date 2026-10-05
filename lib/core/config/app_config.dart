@@ -31,8 +31,9 @@ enum AppEnvironment {
 final class AppConfig {
   static const productionApiBaseUrl =
       'https://www.immigrantindex.com/_functions';
-  static const stagingApiBaseUrl =
-      'https://immigrantindex.wixsite.com/website-1/_functions';
+  static const _stagingApiScheme = 'https';
+  static const _stagingApiHost = 'immigrantindex.wixsite.com';
+  static const _stagingApiPath = '/website-1/_functions';
 
   const AppConfig({
     required this.environment,
@@ -104,12 +105,12 @@ final class AppConfig {
         apiUri.host.endsWith('.invalid')) {
       issues.add('API_BASE_URL_INVALID');
     } else {
-      final canonicalApiBaseUrl = switch (environment) {
-        AppEnvironment.production => productionApiBaseUrl,
-        AppEnvironment.staging => stagingApiBaseUrl,
-        AppEnvironment.development => null,
+      final matchesEnvironment = switch (environment) {
+        AppEnvironment.production => apiBaseUrl == productionApiBaseUrl,
+        AppEnvironment.staging => _isStagingApiUri(apiUri),
+        AppEnvironment.development => true,
       };
-      if (canonicalApiBaseUrl != null && apiBaseUrl != canonicalApiBaseUrl) {
+      if (!matchesEnvironment) {
         issues.add('API_BASE_URL_ENVIRONMENT_MISMATCH');
       }
     }
@@ -117,6 +118,17 @@ final class AppConfig {
       issues.add('IMAGE_CACHE_LIMIT_INVALID');
     }
     return List.unmodifiable(issues);
+  }
+
+  static bool _isStagingApiUri(Uri apiUri) {
+    return apiUri.scheme == _stagingApiScheme &&
+        apiUri.host == _stagingApiHost &&
+        apiUri.path == _stagingApiPath &&
+        apiUri.authority == _stagingApiHost &&
+        !apiUri.hasPort &&
+        apiUri.userInfo.isEmpty &&
+        !apiUri.hasQuery &&
+        !apiUri.hasFragment;
   }
 
   void validateForRuntime() {

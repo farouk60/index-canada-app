@@ -40,16 +40,16 @@ L'évolution majeure de septembre 2026 est la migration des paiements mobiles :
 La version source candidate est **1.1.0+28**. Les preuves externes du build 27
 restent historiques jusqu'à la génération et au téléversement du build 28.
 
-| Surface | État prouvé au 2 octobre 2026 |
+| Surface | État prouvé au 5 octobre 2026 |
 | --- | --- |
-| Android | 1.1.0 (27) disponible en test interne; 1.1.0 (28) en préparation production |
-| iOS | 1.1.0 (27) acceptée au téléversement TestFlight; 1.1.0 (28) en préparation production |
+| Android | 1.1.0 (27) disponible en test interne; source 1.1.0 (28) corrigée, CI et nouveau téléversement interne à terminer |
+| iOS | 1.1.0 (27) acceptée au téléversement TestFlight; source 1.1.0 (28) corrigée, CI et nouveau téléversement TestFlight à terminer |
 | Wix préproduction | backend Store Billing et Google RTDN publiés et testés au niveau transport |
-| Wix production | aucune promotion Store Billing de cette candidate prouvée |
+| Wix production | Store Billing publié; catalogue v2, routes, preflights et refus de signatures invalides vérifiés |
 | Google Play production | non publiée |
 | App Store production | non soumise |
-| Branche de livraison | <code>release/1.1.0-production-28</code>, à fusionner après validation |
-| main distant | la livraison 28 n'y est pas encore fusionnée à ce stade du document |
+| Branche corrective | <code>fix/store-release-1.1.0-28</code>, créée depuis le vrai <code>origin/main</code> |
+| main distant | candidate 28 fusionnée par la PR #10; correctifs finaux iOS/Android à fusionner après CI |
 
 **Verdict actuel : bêta interne utile, mais NO-GO pour une publication publique.**
 
@@ -342,6 +342,16 @@ Règles absolues :
 - <code>ANDROID_UPLOAD_CERT_SHA256</code>;
 - <code>ANDROID_ARTIFACT_ENCRYPTION_PASSWORD</code>.
 
+Le téléversement Google Play n'utilise plus de clé JSON durable dans GitHub.
+Le workflow échange le jeton GitHub OIDC contre un jeton Google de 900 secondes
+au moyen du provider
+<code>github-index-canada/index-canada-android-release</code> et du compte
+<code>indexca-play-uploader-prod@index-immigrant-index-2025.iam.gserviceaccount.com</code>.
+Le provider exige le dépôt, le propriétaire, <code>main</code>,
+<code>workflow_dispatch</code>, le workflow Android exact et l'environnement
+<code>mobile-staging</code>. Ne jamais réintroduire
+<code>GOOGLE_PLAY_UPLOAD_SERVICE_ACCOUNT_JSON</code>.
+
 ### 8.3 Secrets GitHub iOS
 
 - <code>IOS_DISTRIBUTION_P12_BASE64</code>;
@@ -352,10 +362,11 @@ Règles absolues :
 - <code>ASC_ISSUER_ID</code>;
 - <code>ASC_PRIVATE_KEY_P8_BASE64</code>.
 
-Variable GitHub de gate :
+Variables GitHub de gate :
 
-- <code>MOBILE_STAGING_APPROVED_SHA</code> doit être le SHA complet exact du
-  commit autorisé.
+- <code>MOBILE_STAGING_APPROVED_SHA</code> verrouille les workflows staging;
+- <code>MOBILE_PRODUCTION_APPROVED_SHA</code> doit être le SHA complet exact de
+  <code>main</code> autorisé pour les deux workflows de production.
 
 Une première clé API App Store Connect exposée accidentellement a été révoquée.
 La clé de remplacement est stockée uniquement dans GitHub Secrets. Ne jamais
@@ -369,7 +380,7 @@ une conversation.
 | <code>.github/workflows/ci.yml</code> | secrets, backend, format, analyse, tests, Web, Android non distribuable et iOS sans signature |
 | <code>android-staging.yml</code> | AAB staging signé puis chiffré; upload Play manuel |
 | <code>ios-staging.yml</code> | IPA staging signée/chiffrée; upload TestFlight optionnel |
-| <code>android-release.yml</code> | AAB production 28 depuis main/SHA approuvé; téléversement interne optionnel |
+| <code>android-release.yml</code> | AAB production 28 depuis main/SHA approuvé; build signé sans OIDC, artefact chiffré, puis job de téléversement interne optionnel avec WIF |
 | <code>ios-release.yml</code> | IPA production depuis main seulement; upload TestFlight optionnel |
 
 Les workflows staging sont verrouillés par :
@@ -384,6 +395,13 @@ Les workflows staging sont verrouillés par :
 
 Les artefacts signés sont chiffrés avant stockage. Un artefact temporaire ou
 une courte rétention ne remplace pas le chiffrement.
+
+Dans la release Android, seul <code>upload-google-play</code> possède
+<code>id-token: write</code>. Il télécharge exclusivement le fichier
+<code>.aab.enc</code>, vérifie les deux empreintes, déchiffre, contrôle ZIP,
+signature, package <code>ca.indexcanada.app</code>, versionCode 28 et URL Wix
+production, puis demande le jeton WIF immédiatement avant l'envoi. Le job
+<code>signed-aab</code> reste limité à <code>contents: read</code>.
 
 ## 10. Preuves datées disponibles
 
@@ -511,13 +529,14 @@ Les opérations ci-dessus ne prouvent pas un état identique en production.
 
 ### Bloquants avant production
 
-1. Intégrer <code>release/1.1.0-production-28</code> dans <code>main</code> par PR
-   revue, sans écraser l'historique de la branche principale.
+1. Intégrer <code>fix/store-release-1.1.0-28</code> dans <code>main</code> par PR
+   revue, sans inclure la PR Dependabot #11 sans rapport.
 2. Rejouer la CI complète sur le commit de fusion exact et verrouiller
    <code>MOBILE_PRODUCTION_APPROVED_SHA</code> sur ce SHA avant les builds.
-3. Vérifier que le build iOS 27 est traité, installable et testé depuis
-   TestFlight sur un iPhone réel.
-4. Tester les deux produits sur Android et iOS : achat, pending, annulation,
+3. Lancer <code>Android Release</code> avec <code>upload_internal=true</code> et
+   <code>iOS Release</code> avec <code>upload_testflight=true</code>, puis prouver
+   1.1.0 (28) dans la piste interne et TestFlight sans promotion publique.
+4. Tester les deux produits du store sur Android et iOS : achat, pending, annulation,
    erreur, restauration, renouvellement, expiration, remboursement/révocation
    et changement de formule.
 5. Prouver au moins une vraie <code>subscriptionNotification</code> Google
@@ -528,8 +547,9 @@ Les opérations ci-dessus ne prouvent pas un état identique en production.
    par Git.
 8. Revalider la banque, la fiscalité, App Privacy, Google Data Safety, la
    politique de confidentialité, les conditions et le support.
-9. Promouvoir le backend vers Wix production seulement après vérification des
-   schémas, index, permissions, secrets, packages, médias et sauvegardes.
+9. Conserver les preuves de la promotion Wix production du 5 octobre 2026 et
+   revalider schémas, index, permissions, secrets et sauvegardes avant chaque
+   évolution ultérieure.
 10. Ajouter une réconciliation périodique Apple/Google pour réparer un droit si
     toutes les notifications ont été manquées.
 11. Mettre une protection edge/CDN devant les écritures publiques sensibles.

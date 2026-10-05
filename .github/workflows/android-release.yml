@@ -159,6 +159,13 @@ jobs:
     needs:
       - release-gate
       - quality
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.encrypted_bundle.outputs.artifact_name }}
+      encrypted_file_name: ${{ steps.encrypted_bundle.outputs.encrypted_file_name }}
+      encrypted_sha256: ${{ steps.encrypted_bundle.outputs.encrypted_sha256 }}
+      bundle_sha256: ${{ steps.encrypted_bundle.outputs.bundle_sha256 }}
     # Les secrets de signature historiques sont conservés dans cet environnement.
     # Les gates ci-dessus garantissent que seul main au SHA approuvé peut les utiliser.
     environment: mobile-staging
@@ -363,8 +370,181 @@ jobs:
           fi
           echo "bundle_path=$bundle_path" >> "$GITHUB_OUTPUT"
 
+      - name: Chiffrer et vérifier l'AAB production
+        id: encrypted_bundle
+        shell: bash
+        env:
+          ANDROID_ARTIFACT_ENCRYPTION_PASSWORD: ${{ secrets.ANDROID_ARTIFACT_ENCRYPTION_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          bundle_path="${{ steps.bundle.outputs.bundle_path }}"
+          encrypted_path="${bundle_path}.enc"
+          roundtrip_path="$RUNNER_TEMP/index-canada-android-production-roundtrip.aab"
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -in "$bundle_path" -out "$encrypted_path" -pass env:ANDROID_ARTIFACT_ENCRYPTION_PASSWORD
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$encrypted_path" -out "$roundtrip_path" -pass env:ANDROID_ARTIFACT_ENCRYPTION_PASSWORD
+          cmp -s "$bundle_path" "$roundtrip_path"
+          rm -f "$roundtrip_path"
+          artifact_name="index-canada-android-production-${{ steps.app_version.outputs.version_name }}-${{ steps.app_version.outputs.build_number }}-${{ github.run_id }}-encrypted"
+          {
+            echo "artifact_name=$artifact_name"
+            echo "encrypted_path=$encrypted_path"
+            echo "encrypted_file_name=$(basename "$encrypted_path")"
+            echo "encrypted_sha256=$(sha256sum "$encrypted_path" | awk '{print $1}')"
+            echo "bundle_sha256=$(sha256sum "$bundle_path" | awk '{print $1}')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publier uniquement l'AAB production chiffré
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.encrypted_bundle.outputs.artifact_name }}
+          path: ${{ steps.encrypted_bundle.outputs.encrypted_path }}
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Résumer la livraison sans téléversement
+        if: ${{ inputs.upload_internal == false }}
+        shell: bash
+        run: |
+          echo "AAB 1.1.0 (28) vérifié et archivé; aucun téléversement Google Play demandé." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Nettoyer les éléments temporaires
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          rm -f android/key.properties "$RUNNER_TEMP/index-canada-upload.jks" "$RUNNER_TEMP/android-production-app-strings.txt" "$RUNNER_TEMP/index-canada-android-production-roundtrip.aab"
+          if [[ -n "${{ steps.bundle.outputs.bundle_path }}" ]]; then
+            rm -f "${{ steps.bundle.outputs.bundle_path }}" "${{ steps.bundle.outputs.bundle_path }}.enc"
+          fi
+          rm -rf "$RUNNER_TEMP/android-production-aab"
+
+  upload-google-play:
+    name: Téléversement interne Google Play
+    if: ${{ inputs.upload_internal }}
+    needs:
+      - release-gate
+      - quality
+      - signed-aab
+    permissions:
+      contents: read
+      id-token: write
+    environment: mobile-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Télécharger uniquement l'AAB production chiffré
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: ${{ needs.signed-aab.outputs.artifact_name }}
+          path: ${{ runner.temp }}/android-production-encrypted-artifact
+
+      - name: Installer Java 17
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Déchiffrer et revérifier l'AAB avant envoi
+        id: verified_bundle
+        shell: bash
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/android-production-encrypted-artifact
+          ENCRYPTED_FILE_NAME: ${{ needs.signed-aab.outputs.encrypted_file_name }}
+          EXPECTED_ENCRYPTED_SHA256: ${{ needs.signed-aab.outputs.encrypted_sha256 }}
+          EXPECTED_BUNDLE_SHA256: ${{ needs.signed-aab.outputs.bundle_sha256 }}
+          ANDROID_ARTIFACT_ENCRYPTION_PASSWORD: ${{ secrets.ANDROID_ARTIFACT_ENCRYPTION_PASSWORD }}
+          CANONICAL_CERTIFICATE_SHA256: ${{ secrets.ANDROID_UPLOAD_CERT_SHA256 }}
+          AAB_PATH: ${{ runner.temp }}/index-canada-android-production-upload.aab
+        run: |
+          set -euo pipefail
+          umask 077
+          if (( ${#ANDROID_ARTIFACT_ENCRYPTION_PASSWORD} < 32 )); then
+            echo "::error title=Secret de chiffrement invalide::ANDROID_ARTIFACT_ENCRYPTION_PASSWORD doit contenir au moins 32 caractères."
+            exit 1
+          fi
+          if [[ ! "$ENCRYPTED_FILE_NAME" =~ ^[A-Za-z0-9._-]+\.aab\.enc$ ]]; then
+            echo "::error title=Nom d'artefact invalide::Le fichier chiffré attendu n'est pas canonique."
+            exit 1
+          fi
+          for expected_hash_name in EXPECTED_ENCRYPTED_SHA256 EXPECTED_BUNDLE_SHA256; do
+            if [[ ! "${!expected_hash_name:-}" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error title=Empreinte d'artefact invalide::$expected_hash_name est absent ou invalide."
+              exit 1
+            fi
+          done
+
+          mapfile -d '' artifact_files < <(find "$ARTIFACT_DIR" -maxdepth 1 -type f -print0)
+          encrypted_path="$ARTIFACT_DIR/$ENCRYPTED_FILE_NAME"
+          if (( ${#artifact_files[@]} != 1 )) || [[ "${artifact_files[0]}" != "$encrypted_path" || ! -s "$encrypted_path" ]]; then
+            echo "::error title=Artefact chiffré ambigu::Un seul fichier chiffré non vide est attendu."
+            exit 1
+          fi
+          actual_encrypted_sha256="$(sha256sum "$encrypted_path" | awk '{print $1}')"
+          if [[ "$actual_encrypted_sha256" != "$EXPECTED_ENCRYPTED_SHA256" ]]; then
+            echo "::error title=Intégrité de l'artefact refusée::L'empreinte du fichier chiffré a changé."
+            exit 1
+          fi
+
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$encrypted_path" -out "$AAB_PATH" -pass env:ANDROID_ARTIFACT_ENCRYPTION_PASSWORD
+          chmod 600 "$AAB_PATH"
+          actual_bundle_sha256="$(sha256sum "$AAB_PATH" | awk '{print $1}')"
+          if [[ "$actual_bundle_sha256" != "$EXPECTED_BUNDLE_SHA256" ]]; then
+            echo "::error title=Intégrité de l'AAB refusée::L'AAB déchiffré ne correspond pas au build signé."
+            exit 1
+          fi
+
+          unzip -tq "$AAB_PATH"
+          jarsigner -verify "$AAB_PATH" >/dev/null
+          actual_sha256="$(LC_ALL=C keytool -printcert -jarfile "$AAB_PATH" | sed -n 's/^[[:space:]]*SHA256: //p' | head -n 1)"
+          normalize() { printf '%s' "$1" | tr -d '[:space:]:' | tr '[:lower:]' '[:upper:]'; }
+          normalized_actual="$(normalize "$actual_sha256")"
+          normalized_canonical="$(normalize "$CANONICAL_CERTIFICATE_SHA256")"
+          if [[ ! "$normalized_canonical" =~ ^[0-9A-F]{64}$ || "$normalized_actual" != "$normalized_canonical" ]]; then
+            echo "::error title=Signature Android inattendue::Le certificat de l'AAB téléchargé ne correspond pas à l'empreinte Google Play approuvée."
+            exit 1
+          fi
+
+          if ! command -v apkanalyzer >/dev/null 2>&1; then
+            echo "::error title=Analyseur Android absent::apkanalyzer est requis pour revérifier l'AAB avant envoi."
+            exit 1
+          fi
+          application_id="$(apkanalyzer manifest application-id "$AAB_PATH")"
+          version_code="$(apkanalyzer manifest version-code "$AAB_PATH")"
+          if [[ "$application_id" != "ca.indexcanada.app" || "$version_code" != "28" ]]; then
+            echo "::error title=Identité AAB inattendue::Le package ou le versionCode ne correspond pas à ca.indexcanada.app / 28."
+            exit 1
+          fi
+
+          extracted="$RUNNER_TEMP/android-production-upload-aab"
+          rm -rf "$extracted"
+          mkdir -p "$extracted"
+          unzip -q "$AAB_PATH" -d "$extracted"
+          app_strings="$RUNNER_TEMP/android-production-upload-strings.txt"
+          find "$extracted" -type f -name 'libapp.so' -print0 | xargs -0 -r strings > "$app_strings"
+          if [[ ! -s "$app_strings" ]]; then
+            echo "::error title=Configuration AAB illisible::Aucune chaîne applicative n'a pu être extraite de l'AAB déchiffré."
+            exit 1
+          fi
+          if ! grep -Fq "$API_BASE_URL" "$app_strings"; then
+            echo "::error title=URL production absente::L'AAB déchiffré ne contient pas l'URL Wix production attendue."
+            exit 1
+          fi
+          for forbidden_url in "$FORBIDDEN_STAGING_API_BASE_URL" "$FORBIDDEN_CI_API_BASE_URL"; do
+            if grep -Fq "$forbidden_url" "$app_strings"; then
+              echo "::error title=URL interdite intégrée::L'AAB déchiffré contient une URL staging ou CI."
+              exit 1
+            fi
+          done
+          echo "aab_path=$AAB_PATH" >> "$GITHUB_OUTPUT"
+
       - name: Utiliser Node.js verrouillé pour Google Play
-        if: ${{ inputs.upload_internal }}
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "18.19.0"
@@ -372,42 +552,46 @@ jobs:
           cache-dependency-path: backend/package-lock.json
 
       - name: Installer le client Google Play
-        if: ${{ inputs.upload_internal }}
-        run: npm ci --prefix backend
+        run: npm ci --prefix backend --ignore-scripts
+
+      - name: Obtenir un jeton éphémère Google Play
+        id: google_play_auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/762725959551/locations/global/workloadIdentityPools/github-index-canada/providers/index-canada-android-release
+          service_account: indexca-play-uploader-prod@index-immigrant-index-2025.iam.gserviceaccount.com
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/androidpublisher
+          access_token_lifetime: 900s
+          create_credentials_file: false
 
       - name: Téléverser vers le test interne Google Play
-        if: ${{ inputs.upload_internal }}
         shell: bash
         working-directory: backend
         env:
-          AAB_PATH: ${{ github.workspace }}/${{ steps.bundle.outputs.bundle_path }}
-          GOOGLE_PLAY_UPLOAD_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_UPLOAD_SERVICE_ACCOUNT_JSON }}
+          AAB_PATH: ${{ steps.verified_bundle.outputs.aab_path }}
+          GOOGLE_PLAY_ACCESS_TOKEN: ${{ steps.google_play_auth.outputs.access_token }}
         run: |
           set -euo pipefail
-          if [[ -z "$GOOGLE_PLAY_UPLOAD_SERVICE_ACCOUNT_JSON" ]]; then
-            echo "::error title=Compte Play manquant::GOOGLE_PLAY_UPLOAD_SERVICE_ACCOUNT_JSON doit être configuré avec des droits minimaux de publication."
+          if [[ -z "$GOOGLE_PLAY_ACCESS_TOKEN" ]]; then
+            echo "::error title=Jeton Play manquant::L'authentification OIDC/WIF n'a pas fourni de jeton Google Play."
             exit 1
           fi
           if [[ ! -s "$AAB_PATH" ]]; then
-            echo "::error title=AAB absent::Le bundle vérifié à téléverser est introuvable."
+            echo "::error title=AAB absent::Le bundle revérifié à téléverser est introuvable."
             exit 1
           fi
           node --input-type=module <<'NODE'
           import { createReadStream } from "node:fs";
           import * as library from "@googleapis/androidpublisher";
+          import { OAuth2Client } from "google-auth-library";
 
           const packageName = "ca.indexcanada.app";
           const expectedVersionCode = "28";
-          let credentials;
-          try {
-            credentials = JSON.parse(process.env.GOOGLE_PLAY_UPLOAD_SERVICE_ACCOUNT_JSON);
-          } catch {
-            throw new Error("Le secret Google Play n'est pas un JSON valide.");
-          }
-          const auth = new library.auth.GoogleAuth({
-            credentials,
-            scopes: ["https://www.googleapis.com/auth/androidpublisher"],
-          });
+          const accessToken = process.env.GOOGLE_PLAY_ACCESS_TOKEN?.trim();
+          if (!accessToken) throw new Error("Le jeton Google Play éphémère est absent.");
+          const auth = new OAuth2Client();
+          auth.setCredentials({ access_token: accessToken });
           const publisher = library.androidpublisher({ version: "v3", auth });
           const inserted = await publisher.edits.insert({ packageName });
           const editId = inserted.data.id;
@@ -447,47 +631,15 @@ jobs:
           }
           NODE
 
-      - name: Chiffrer et vérifier l'AAB production
-        id: encrypted_bundle
-        shell: bash
-        env:
-          ANDROID_ARTIFACT_ENCRYPTION_PASSWORD: ${{ secrets.ANDROID_ARTIFACT_ENCRYPTION_PASSWORD }}
-        run: |
-          set -euo pipefail
-          umask 077
-          bundle_path="${{ steps.bundle.outputs.bundle_path }}"
-          encrypted_path="${bundle_path}.enc"
-          roundtrip_path="$RUNNER_TEMP/index-canada-android-production-roundtrip.aab"
-          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -in "$bundle_path" -out "$encrypted_path" -pass env:ANDROID_ARTIFACT_ENCRYPTION_PASSWORD
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -in "$encrypted_path" -out "$roundtrip_path" -pass env:ANDROID_ARTIFACT_ENCRYPTION_PASSWORD
-          cmp -s "$bundle_path" "$roundtrip_path"
-          rm -f "$roundtrip_path"
-          echo "encrypted_path=$encrypted_path" >> "$GITHUB_OUTPUT"
-
-      - name: Publier uniquement l'AAB production chiffré
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: index-canada-android-production-${{ steps.app_version.outputs.version_name }}-${{ steps.app_version.outputs.build_number }}-${{ github.run_id }}-encrypted
-          path: ${{ steps.encrypted_bundle.outputs.encrypted_path }}
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Résumer la livraison
         shell: bash
         run: |
-          if [[ "${{ inputs.upload_internal }}" == "true" ]]; then
-            echo "AAB 1.1.0 (28) vérifié et téléversé vers le test interne Google Play." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "AAB 1.1.0 (28) vérifié et archivé; aucun téléversement Google Play demandé." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          echo "AAB 1.1.0 (28) vérifié et téléversé vers le test interne Google Play." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Nettoyer les éléments temporaires
+      - name: Nettoyer l'AAB déchiffré et l'artefact temporaire
         if: always()
         shell: bash
         run: |
           set +e
-          rm -f android/key.properties "$RUNNER_TEMP/index-canada-upload.jks" "$RUNNER_TEMP/android-production-app-strings.txt" "$RUNNER_TEMP/index-canada-android-production-roundtrip.aab"
-          if [[ -n "${{ steps.bundle.outputs.bundle_path }}" ]]; then
-            rm -f "${{ steps.bundle.outputs.bundle_path }}" "${{ steps.bundle.outputs.bundle_path }}.enc"
-          fi
-          rm -rf "$RUNNER_TEMP/android-production-aab"
+          rm -f "$RUNNER_TEMP/index-canada-android-production-upload.aab" "$RUNNER_TEMP/android-production-upload-strings.txt"
+          rm -rf "$RUNNER_TEMP/android-production-upload-aab" "$RUNNER_TEMP/android-production-encrypted-artifact"
