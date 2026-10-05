@@ -306,6 +306,15 @@ jobs:
           set -euo pipefail
           flutter build appbundle --release --no-pub --dart-define=APP_ENVIRONMENT=production --dart-define=API_BASE_URL=https://www.immigrantindex.com/_functions
 
+      - name: Installer bundletool vérifié
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundletool_path="$RUNNER_TEMP/bundletool-1.18.3.jar"
+          curl --fail --silent --show-error --location --retry 3 --proto '=https' --proto-redir '=https' --output "$bundletool_path" https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar
+          printf '%s  %s\n' 'a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29' "$bundletool_path" | sha256sum --check --strict
+          java -jar "$bundletool_path" version
+
       - name: Vérifier l'AAB, sa signature et sa configuration
         id: bundle
         shell: bash
@@ -331,8 +340,8 @@ jobs:
             exit 1
           fi
 
-          application_id="$(apkanalyzer manifest application-id "$bundle_path")"
-          version_code="$(apkanalyzer manifest version-code "$bundle_path")"
+          application_id="$(java -jar "$RUNNER_TEMP/bundletool-1.18.3.jar" dump manifest --bundle="$bundle_path" --xpath='/manifest/@package')"
+          version_code="$(java -jar "$RUNNER_TEMP/bundletool-1.18.3.jar" dump manifest --bundle="$bundle_path" --xpath='/manifest/@android:versionCode')"
           if [[ "$application_id" != "ca.indexcanada.app" || "$version_code" != "28" ]]; then
             echo "::error title=Identité AAB inattendue::Le package ou le versionCode ne correspond pas à ca.indexcanada.app / 28."
             exit 1
@@ -451,6 +460,15 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Installer bundletool vérifié
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundletool_path="$RUNNER_TEMP/bundletool-1.18.3.jar"
+          curl --fail --silent --show-error --location --retry 3 --proto '=https' --proto-redir '=https' --output "$bundletool_path" https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar
+          printf '%s  %s\n' 'a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29' "$bundletool_path" | sha256sum --check --strict
+          java -jar "$bundletool_path" version
+
       - name: Déchiffrer et revérifier l'AAB avant envoi
         id: verified_bundle
         shell: bash
@@ -511,12 +529,8 @@ jobs:
             exit 1
           fi
 
-          if ! command -v apkanalyzer >/dev/null 2>&1; then
-            echo "::error title=Analyseur Android absent::apkanalyzer est requis pour revérifier l'AAB avant envoi."
-            exit 1
-          fi
-          application_id="$(apkanalyzer manifest application-id "$AAB_PATH")"
-          version_code="$(apkanalyzer manifest version-code "$AAB_PATH")"
+          application_id="$(java -jar "$RUNNER_TEMP/bundletool-1.18.3.jar" dump manifest --bundle="$AAB_PATH" --xpath='/manifest/@package')"
+          version_code="$(java -jar "$RUNNER_TEMP/bundletool-1.18.3.jar" dump manifest --bundle="$AAB_PATH" --xpath='/manifest/@android:versionCode')"
           if [[ "$application_id" != "ca.indexcanada.app" || "$version_code" != "28" ]]; then
             echo "::error title=Identité AAB inattendue::Le package ou le versionCode ne correspond pas à ca.indexcanada.app / 28."
             exit 1

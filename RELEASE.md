@@ -106,6 +106,13 @@ L'état détaillé, les liens des workflows et l'écart entre la candidate et
 
 ## 3. Android
 
+Le workflow de release lit le manifeste AAB avec **bundletool 1.18.3**,
+téléchargé depuis le dépôt officiel Google et vérifié par SHA-256 avant
+exécution dans chacun des deux jobs. Ne pas utiliser `apkanalyzer`, destiné
+aux APK, ni supposer qu'un outil installé dans le job de compilation existe
+dans le job de téléversement. Les contrôles package/version ne remplacent pas
+les contrôles de signature, d'intégrité et d'URL embarquée.
+
 ### 3.1 Prérequis
 
 - Flutter et Android SDK compatibles avec le projet ;
