@@ -227,22 +227,22 @@ void main() {
           'openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000',
         ),
       );
-      expect(verifyDownloadedBundleStep, contains('sha256sum "$AAB_PATH"'));
+      expect(verifyDownloadedBundleStep, contains(r'sha256sum "$AAB_PATH"'));
       expect(
         verifyDownloadedBundleStep,
-        contains('jarsigner -verify "$AAB_PATH"'),
+        contains(r'jarsigner -verify "$AAB_PATH"'),
       );
       expect(
         verifyDownloadedBundleStep,
-        contains('apkanalyzer manifest application-id "$AAB_PATH"'),
+        contains(r'apkanalyzer manifest application-id "$AAB_PATH"'),
       );
       expect(
         verifyDownloadedBundleStep,
-        contains('apkanalyzer manifest version-code "$AAB_PATH"'),
+        contains(r'apkanalyzer manifest version-code "$AAB_PATH"'),
       );
       expect(
         verifyDownloadedBundleStep,
-        contains('grep -Fq "$API_BASE_URL" "$app_strings"'),
+        contains(r'grep -Fq "$API_BASE_URL" "$app_strings"'),
       );
       expect(
         verifyDownloadedBundleStep,
