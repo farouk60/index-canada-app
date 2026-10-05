@@ -405,6 +405,13 @@ production, puis demande le jeton WIF immédiatement avant l'envoi. Le job
 
 ## 10. Preuves datées disponibles
 
+- Correctif PR #12 (5 octobre 2026) : la CI du commit `dbf4bd4` a
+  validé le backend, le format, l'analyse et la compilation iOS, mais a
+  révélé que `Uri` normalise le port HTTPS explicite `443`. La validation
+  staging compare désormais aussi l'adresse originale à sa représentation
+  normalisée; les variantes de port, casse et chemin restent refusées.
+  Le passage complet de la CI du nouveau commit reste à vérifier.
+
 - CI de la migration Store Billing :
   <https://github.com/farouk60/index-canada-app/actions/runs/36427764178>
 - build Android staging signé 26 :

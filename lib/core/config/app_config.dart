@@ -107,7 +107,8 @@ final class AppConfig {
     } else {
       final matchesEnvironment = switch (environment) {
         AppEnvironment.production => apiBaseUrl == productionApiBaseUrl,
-        AppEnvironment.staging => _isStagingApiUri(apiUri),
+        AppEnvironment.staging =>
+          apiBaseUrl == apiUri.toString() && _isStagingApiUri(apiUri),
         AppEnvironment.development => true,
       };
       if (!matchesEnvironment) {

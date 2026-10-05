@@ -85,6 +85,12 @@ void main() {
             'API_BASE_URL_ENVIRONMENT_MISMATCH',
         'https://immigrantindex.wixsite.com:443/website-1/_functions':
             'API_BASE_URL_ENVIRONMENT_MISMATCH',
+        'https://immigrantindex.wixsite.com:0443/website-1/_functions':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
+        'https://IMMIGRANTINDEX.wixsite.com/website-1/_functions':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
+        'https://immigrantindex.wixsite.com/website-1/./_functions':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
         'https://immigrantindex.wixsite.com/website-1/_functions?rc=test-site':
             'API_BASE_URL_INVALID',
         'https://immigrantindex.wixsite.com/website-1/_functions#staging':
