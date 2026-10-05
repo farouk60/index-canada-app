@@ -1,6 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:index_canada/core/config/app_config.dart';
 
+const stagingApiBaseUrl =
+    'https://immigrantindex.wixsite.com/website-1/_functions';
+
 AppConfig buildConfig({
   AppEnvironment environment = AppEnvironment.production,
   String apiBaseUrl = 'https://www.immigrantindex.com/_functions',
@@ -37,7 +40,7 @@ void main() {
     });
 
     test('refuse le backend staging dans une livraison production', () {
-      final config = buildConfig(apiBaseUrl: AppConfig.stagingApiBaseUrl);
+      final config = buildConfig(apiBaseUrl: stagingApiBaseUrl);
 
       expect(
         config.validationIssues(),
@@ -64,10 +67,80 @@ void main() {
     test('accepte uniquement l’URL canonique de staging en staging', () {
       final config = buildConfig(
         environment: AppEnvironment.staging,
-        apiBaseUrl: AppConfig.stagingApiBaseUrl,
+        apiBaseUrl: stagingApiBaseUrl,
       );
 
       expect(config.validationIssues(), isEmpty);
+    });
+
+    test('valide tous les composants de l’URI staging', () {
+      final invalidStagingUrls = <String, String>{
+        'http://immigrantindex.wixsite.com/website-1/_functions':
+            'API_BASE_URL_INVALID',
+        'https://staging.immigrantindex.wixsite.com/website-1/_functions':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
+        'https://immigrantindex.wixsite.com/website-2/_functions':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
+        'https://immigrantindex.wixsite.com/website-1/_functions/':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
+        'https://immigrantindex.wixsite.com:443/website-1/_functions':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
+        'https://immigrantindex.wixsite.com:0443/website-1/_functions':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
+        'https://IMMIGRANTINDEX.wixsite.com/website-1/_functions':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
+        'https://immigrantindex.wixsite.com/website-1/./_functions':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
+        'https://immigrantindex.wixsite.com/website-1/_functions?rc=test-site':
+            'API_BASE_URL_INVALID',
+        'https://immigrantindex.wixsite.com/website-1/_functions#staging':
+            'API_BASE_URL_INVALID',
+        'https://deploy@immigrantindex.wixsite.com/website-1/_functions':
+            'API_BASE_URL_INVALID',
+        'https://@immigrantindex.wixsite.com/website-1/_functions':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
+      };
+
+      for (final entry in invalidStagingUrls.entries) {
+        final config = buildConfig(
+          environment: AppEnvironment.staging,
+          apiBaseUrl: entry.key,
+        );
+
+        expect(
+          config.validationIssues(),
+          contains(entry.value),
+          reason: 'L’URI staging non canonique doit être refusée: ${entry.key}',
+        );
+      }
+    });
+
+    test('conserve le verrouillage exact du backend production', () {
+      final invalidProductionUrls = <String, String>{
+        'https://www.immigrantindex.com/_functions/':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
+        'https://www.immigrantindex.com:443/_functions':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
+        'https://immigrantindex.com/_functions':
+            'API_BASE_URL_ENVIRONMENT_MISMATCH',
+        'https://www.immigrantindex.com/_functions?source=release':
+            'API_BASE_URL_INVALID',
+        'https://www.immigrantindex.com/_functions#release':
+            'API_BASE_URL_INVALID',
+        'https://deploy@www.immigrantindex.com/_functions':
+            'API_BASE_URL_INVALID',
+      };
+
+      for (final entry in invalidProductionUrls.entries) {
+        final config = buildConfig(apiBaseUrl: entry.key);
+
+        expect(
+          config.validationIssues(),
+          contains(entry.value),
+          reason:
+              'L’URI production non canonique doit être refusée: ${entry.key}',
+        );
+      }
     });
   });
 }
