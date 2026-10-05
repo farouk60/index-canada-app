@@ -212,9 +212,7 @@ void main() {
       );
       expect(
         encryptedArtifactStep,
-        contains(
-          r'path: ${{ steps.encrypted_bundle.outputs.encrypted_path }}',
-        ),
+        contains(r'path: ${{ steps.encrypted_bundle.outputs.encrypted_path }}'),
       );
       expect(encryptedArtifactStep, contains('retention-days: 1'));
       expect(
@@ -223,9 +221,7 @@ void main() {
       );
       expect(
         verifyDownloadedBundleStep,
-        contains(
-          'openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000',
-        ),
+        contains('openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000'),
       );
       expect(verifyDownloadedBundleStep, contains(r'sha256sum "$AAB_PATH"'));
       expect(
@@ -254,9 +250,7 @@ void main() {
       );
       expect(
         uploadStep,
-        contains(
-          r'AAB_PATH: ${{ steps.verified_bundle.outputs.aab_path }}',
-        ),
+        contains(r'AAB_PATH: ${{ steps.verified_bundle.outputs.aab_path }}'),
       );
       expect(
         uploadStep,

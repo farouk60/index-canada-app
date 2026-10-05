@@ -131,7 +131,8 @@ void main() {
         expect(
           config.validationIssues(),
           contains(entry.value),
-          reason: 'L’URI production non canonique doit être refusée: ${entry.key}',
+          reason:
+              'L’URI production non canonique doit être refusée: ${entry.key}',
         );
       }
     });
