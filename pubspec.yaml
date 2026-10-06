@@ -34,14 +34,14 @@ dependencies:
   flutter_localizations:
     sdk: flutter
 
-  cupertino_icons: ^1.0.9
+  cupertino_icons: ^2.0.0
   font_awesome_flutter: ^11.0.0
   http: ^1.2.1
   shared_preferences: ^2.2.2
-  cached_network_image: ^3.3.1
-  connectivity_plus: ^6.1.0
+  cached_network_image: ^4.0.4
+  connectivity_plus: ^7.3.2
   flutter_cache_manager: ^3.3.1
-  url_launcher: ^6.2.5
+  url_launcher: ^6.3.3
   crypto: ^3.0.3
   image_picker: ^1.0.7
   image: ^4.10.1
