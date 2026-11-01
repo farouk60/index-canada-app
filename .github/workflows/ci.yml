@@ -28,7 +28,7 @@ jobs:
           persist-credentials: false
 
       - name: Installer Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v7.1.0
         with:
           # Reproduit le plancher du runtime backend/Wix déclaré dans
           # backend/package.json; un test sous Node 22 masquerait une rupture.
